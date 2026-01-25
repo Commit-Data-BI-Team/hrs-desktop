@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>HRS Desktop</title>
+    
+    <!-- SECURITY: Content Security Policy -->
+    <meta http-equiv="Content-Security-Policy" content="
+      default-src 'self';
+      script-src 'self' 'unsafe-inline' 'unsafe-eval';
+      style-src 'self' 'unsafe-inline';
+      img-src 'self' data: https:;
+      font-src 'self' data:;
+      connect-src 'self' https://hrs.comm-it.co.il https://*.atlassian.net;
+      frame-src 'none';
+      object-src 'none';
+      base-uri 'self';
+      form-action 'self' https://hrs.comm-it.co.il;
+    ">
+    
+    <!-- Minimal script to prevent white flash -->
+    <script>
+      (function() {
+        try {
+          const savedColorScheme = localStorage.getItem('hrs-color-scheme');
+          const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+          const colorScheme = savedColorScheme || (prefersDark ? 'dark' : 'light');
+          
+          document.documentElement.setAttribute('data-mantine-color-scheme', colorScheme);
+          document.documentElement.style.colorScheme = colorScheme;
+        } catch (e) {
+          console.error('Theme script error:', e);
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

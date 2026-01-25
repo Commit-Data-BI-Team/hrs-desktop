@@ -1,0 +1,70 @@
+{
+  "buildCommand" : {
+    "command" : "build",
+    "skipDependencies" : false,
+    "style" : "buildOnly"
+  },
+  "configuredTargets" : [
+    {
+      "guid" : "c75bc13c0af61f99c65d8bdde22cc59cc7dfacd190f57ddbcd9efea14ba0d9b0"
+    }
+  ],
+  "containerPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop.xcodeproj",
+  "continueBuildingAfterErrors" : false,
+  "dependencyScope" : "workspace",
+  "enableIndexBuildArena" : false,
+  "hideShellScriptEnvironment" : false,
+  "parameters" : {
+    "action" : "build",
+    "activeArchitecture" : "undefined_arch",
+    "activeRunDestination" : {
+      "disableOnlyActiveArch" : true,
+      "platform" : "iphoneos",
+      "sdk" : "iphoneos26.0",
+      "sdkVariant" : "iphoneos",
+      "supportedArchitectures" : [
+        "armv4t",
+        "armv5",
+        "armv6",
+        "armv7",
+        "armv7f",
+        "armv7s",
+        "armv7k",
+        "arm64",
+        "arm64e"
+      ],
+      "targetArchitecture" : "undefined_arch"
+    },
+    "arenaInfo" : {
+      "buildIntermediatesPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex",
+      "buildProductsPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Products",
+      "derivedDataPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData",
+      "indexDataStoreFolderPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Index.noindex/DataStore",
+      "indexEnableDataStore" : true,
+      "indexPCHPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Index.noindex/PrecompiledHeaders",
+      "pchPath" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/PrecompiledHeaders"
+    },
+    "configurationName" : "Debug",
+    "overrides" : {
+      "commandLine" : {
+        "table" : {
+
+        }
+      },
+      "synthesized" : {
+        "table" : {
+          "ACTION" : "build",
+          "ENABLE_PREVIEWS" : "NO",
+          "ENABLE_XOJIT_PREVIEWS" : "YES",
+          "ONLY_ACTIVE_ARCH" : "YES"
+        }
+      }
+    }
+  },
+  "schemeCommand" : "launch",
+  "showNonLoggedProgress" : true,
+  "useDryRun" : false,
+  "useImplicitDependencies" : true,
+  "useLegacyBuildLocations" : false,
+  "useParallelTargets" : true
+}

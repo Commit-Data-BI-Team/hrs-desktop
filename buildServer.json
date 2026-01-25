@@ -1,0 +1,19 @@
+{
+	"name": "xcode build server",
+	"version": "0.2",
+	"bspVersion": "2.0",
+	"languages": [
+		"c",
+		"cpp",
+		"objective-c",
+		"objective-cpp",
+		"swift"
+	],
+	"argv": [
+		"/opt/homebrew/bin/xcode-build-server"
+	],
+	"workspace": "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop.xcodeproj/project.xcworkspace",
+	"build_root": "/Users/drorr/Library/Developer/Xcode/DerivedData/HRSDesktop-ajzitoywelodxmcbamaupnxipllp",
+	"scheme": "HRSDesktop",
+	"kind": "xcode"
+}

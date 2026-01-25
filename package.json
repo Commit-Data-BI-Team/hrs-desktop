@@ -1,0 +1,137 @@
+{
+  "name": "hrs-desktop",
+  "description": "HRS Desktop time logging app",
+  "private": true,
+  "version": "0.0.0",
+  "author": "b4db1r3",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "icon:mac": "node scripts/generate-icon.mjs",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:mac:arm64": "npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run build && electron-builder --mac --x64",
+    "dist:mac:universal": "npm run build && electron-builder --mac --universal",
+    "dist:win": "npm run build && electron-builder --win",
+    "dist:win:x64": "npm run build && electron-builder --win --x64",
+    "dist:win:ia32": "npm run build && electron-builder --win --ia32",
+    "dist:all": "npm run build && electron-builder --mac --win"
+  },
+  "dependencies": {
+    "@mantine/core": "^8.3.11",
+    "@mantine/dates": "^8.3.11",
+    "@mantine/hooks": "^8.3.11",
+    "@mantine/notifications": "^8.3.11",
+    "@tabler/icons-react": "^3.36.1",
+    "dayjs": "^1.11.19",
+    "electron-store": "^11.0.2",
+    "keytar": "^7.9.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-window": "^1.8.10",
+    "xlsx": "^0.18.5",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.64",
+    "@types/react-dom": "^18.2.21",
+    "@types/react-window": "^1.8.8",
+    "@typescript-eslint/eslint-plugin": "^7.1.1",
+    "@typescript-eslint/parser": "^7.1.1",
+    "@vitejs/plugin-react": "^4.2.1",
+    "electron": "^30.5.1",
+    "electron-builder": "^24.13.3",
+    "eslint": "^8.57.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
+    "eslint-plugin-react-refresh": "^0.4.5",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.6",
+    "vite-plugin-electron": "^0.28.6",
+    "vite-plugin-electron-renderer": "^0.14.5"
+  },
+  "main": "dist-electron/main.js",
+  "build": {
+    "appId": "com.b4db1r3.hrsdesktop",
+    "productName": "HRS Desktop",
+    "directories": {
+      "buildResources": "build",
+      "output": "dist"
+    },
+    "files": [
+      "dist-renderer/**",
+      "dist-electron/**",
+      "package.json"
+    ],
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["x64", "arm64"]
+        },
+        {
+          "target": "zip",
+          "arch": ["x64", "arm64"]
+        }
+      ],
+      "identity": null,
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist"
+    },
+    "dmg": {
+      "window": {
+        "width": 540,
+        "height": 380
+      },
+      "iconSize": 128,
+      "contents": [
+        {
+          "x": 130,
+          "y": 220,
+          "type": "file"
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ],
+      "sign": false
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64", "ia32"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "build/icon.ico",
+      "publisherName": "HRS Desktop",
+      "verifyUpdateCodeSignature": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": true,
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeader": "build/installerHeader.bmp",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "HRS Desktop"
+    },
+    "portable": {
+      "artifactName": "${productName}-${version}-portable.exe"
+    }
+  }
+}

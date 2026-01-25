@@ -1,0 +1,1 @@
+@rpath/HRSDesktop.debug.dylib

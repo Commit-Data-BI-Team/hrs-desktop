@@ -1,0 +1,133 @@
+name: Build & Release
+
+on:
+  # Trigger on version tags (e.g., v1.0.0, v1.2.3)
+  push:
+    tags:
+      - 'v*'
+  
+  # Allow manual trigger from GitHub UI
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version number (e.g., 1.0.0)'
+        required: false
+        default: '0.0.0'
+
+jobs:
+  build-macos:
+    name: Build macOS
+    runs-on: macos-latest
+    
+    steps:
+      - name: 🛎️ Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: 📦 Install dependencies
+        run: npm ci
+      
+      - name: 🏗️ Build React app
+        run: npm run build
+      
+      - name: 🍎 Build macOS Universal Binary
+        run: npm run dist:mac:universal
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 📊 List build output
+        run: ls -lh dist/
+      
+      - name: 📤 Upload macOS artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: |
+            dist/*.dmg
+            dist/*.zip
+          retention-days: 30
+      
+      - name: 📝 Upload to GitHub Release (if tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*.dmg
+            dist/*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-windows:
+    name: Build Windows
+    runs-on: windows-latest
+    
+    steps:
+      - name: 🛎️ Checkout code
+        uses: actions/checkout@v4
+      
+      - name: 🔧 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+      
+      - name: 📦 Install dependencies
+        run: npm ci
+      
+      - name: 🏗️ Build React app
+        run: npm run build
+      
+      - name: 🪟 Build Windows 64-bit
+        run: npm run dist:win:x64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: 📊 List build output
+        run: dir dist/
+      
+      - name: 📤 Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            dist/*.exe
+          retention-days: 30
+      
+      - name: 📝 Upload to GitHub Release (if tag)
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            dist/*.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  build-summary:
+    name: Build Summary
+    needs: [build-macos, build-windows]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: 📋 Summary
+        run: |
+          echo "## 🎉 Build Complete!" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Build Status:" >> $GITHUB_STEP_SUMMARY
+          echo "- macOS: ${{ needs.build-macos.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- Windows: ${{ needs.build-windows.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "${{ github.ref_type }}" == "tag" ]; then
+            echo "### 📦 Release created at:" >> $GITHUB_STEP_SUMMARY
+            echo "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### 📦 Download artifacts from:" >> $GITHUB_STEP_SUMMARY
+            echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
+          fi
+

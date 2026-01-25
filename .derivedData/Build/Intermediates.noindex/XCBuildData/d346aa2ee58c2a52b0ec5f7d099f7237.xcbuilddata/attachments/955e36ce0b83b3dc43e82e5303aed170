@@ -1,0 +1,239 @@
+{
+  "" : {
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktop-master.dia",
+    "emit-module-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktop-master-emit-module.d",
+    "emit-module-diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktop-master-emit-module.dia",
+    "pch" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktop-master-Bridging-header.pch",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktop-master.swiftdeps"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/AppState.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppState~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/HRSDesktopApp.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSDesktopApp~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Models/HRSModels.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSModels~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Models/WarmupSnapshot.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupSnapshot~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/RootView.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/RootView~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/APIClient.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/APIClient~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/ActivityMonitor.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/ActivityMonitor~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/HRSViewModel.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSViewModel~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/JiraClient.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraClient~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/JiraViewModel.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraViewModel~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/KeychainStore.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/KeychainStore~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/PerformanceMonitor.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PerformanceMonitor~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/SecureCache.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SecureCache~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/SessionStore.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/SessionStore~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Services/WarmupService.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/WarmupService~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/AppBackground.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/AppBackground~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/DashboardView.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/DashboardView~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/GlassCard.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/GlassCard~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/HRSLoginWebView.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/HRSLoginWebView~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/JiraView.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/JiraView~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/LoadingView.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoadingView~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/LoginView.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/LoginView~partial.swiftmodule"
+  },
+  "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/ios/HRSDesktop/Sources/Views/PageHeader.swift" : {
+    "const-values" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.swiftconstvalues",
+    "dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.d",
+    "diagnostics" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.dia",
+    "index-unit-output-path" : "/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.o",
+    "llvm-bc" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.bc",
+    "object" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.o",
+    "swift-dependencies" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader.swiftdeps",
+    "swiftmodule" : "/Users/drorr/Desktop/hrs-desktop/hrs-desktop/.derivedData/Build/Intermediates.noindex/HRSDesktop.build/Debug-iphoneos/HRSDesktop.build/Objects-normal/arm64/PageHeader~partial.swiftmodule"
+  }
+}

@@ -1,0 +1,2 @@
+Target dependency graph (1 target)
+Target 'HRSDesktop' in project 'HRSDesktop' (no dependencies)

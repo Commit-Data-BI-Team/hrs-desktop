@@ -60,3 +60,6 @@ coverage/
 # Optional: Keep build resources
 # build/
 # !build/.gitkeep
+
+# Ignore invalid Windows icon (use proper converter to create)
+build/icon.ico

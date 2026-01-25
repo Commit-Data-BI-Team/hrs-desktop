@@ -115,7 +115,6 @@
           "arch": ["x64"]
         }
       ],
-      "icon": "build/icon.ico",
       "publisherName": "HRS Desktop",
       "verifyUpdateCodeSignature": false
     },

@@ -260,7 +260,7 @@ body {
 }
 
 .stat-card {
-  padding: 18px 20px;
+  padding: 14px 16px;
 }
 
 .focus-action.is-active {
@@ -602,17 +602,18 @@ body {
 }
 
 .trend-caption {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .active-sparkline {
-  margin-top: 14px;
+  margin-top: 8px;
+  padding-bottom: 10px;
   width: 100%;
 }
 
 .active-sparkline svg {
   width: 100%;
-  height: 70px;
+  height: 60px;
   display: block;
 }
 
@@ -694,14 +695,15 @@ body {
 }
 
 .hours-sparkline {
-  margin-top: 12px;
+  margin-top: 8px;
+  padding-bottom: 10px;
   width: 100%;
   position: relative;
 }
 
 .hours-sparkline svg {
   width: 100%;
-  height: 60px;
+  height: 52px;
   display: block;
 }
 

@@ -4876,6 +4876,48 @@ export default function App() {
   }, [monthlyReport, reportMonth])
 
   useEffect(() => {
+    if (!monthlyReport) return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    const targetDay = Math.min(dayjs().date(), dayjs(reportMonth).daysInMonth())
+    const totalMinutes = monthlyReport.days.reduce(
+      (sum, day) =>
+        sum +
+        day.reports.reduce(
+          (daySum, report) => daySum + parseHoursHHMMToMinutes(report.hours_HHMM),
+          0
+        ),
+      0
+    )
+    const mtdMinutes = monthlyReport.days.reduce((sum, day) => {
+      const dayNumber = dayjs(day.date).date()
+      if (dayNumber > targetDay) return sum
+      return (
+        sum +
+        day.reports.reduce(
+          (daySum, report) => daySum + parseHoursHHMMToMinutes(report.hours_HHMM),
+          0
+        )
+      )
+    }, 0)
+    const totalHours = Number(monthlyReport.totalHours)
+    const normalizedTotalHours = Number.isFinite(totalHours)
+      ? totalHours
+      : Math.round((totalMinutes / 60) * 10) / 10
+    const mtdHours = Math.round((mtdMinutes / 60) * 10) / 10
+    setHoursTrend(prev => {
+      const index = prev.findIndex(item => item.monthKey === monthKey)
+      if (index === -1) return prev
+      const next = [...prev]
+      next[index] = {
+        ...next[index],
+        totalHours: normalizedTotalHours,
+        mtdHours
+      }
+      return next
+    })
+  }, [monthlyReport, reportMonth])
+
+  useEffect(() => {
     if (!loggedIn) return
     loadLogs()
   }, [loggedIn])
@@ -6425,22 +6467,23 @@ export default function App() {
     return { diff, percent, current, prev }
   }, [activeClientTrend, uniqueClientsCount, monthlyReport])
 
+  const topClientsLimit = 7
   const topClients = useMemo(() => {
     const items = Array.from(clientHours.entries())
       .sort((a, b) => b[1] - a[1])
-      .slice(0, 5)
+      .slice(0, topClientsLimit)
       .map(([client, minutes]) => ({
         client,
         hours: Math.round((minutes / 60) * 10) / 10
       }))
     return items
-  }, [clientHours])
+  }, [clientHours, topClientsLimit])
 
   const topClientsGap = useMemo(() => {
-    const missing = 5 - topClients.length
+    const missing = topClientsLimit - topClients.length
     if (missing <= 0) return 6
     return 6 + missing * 4
-  }, [topClients.length])
+  }, [topClients.length, topClientsLimit])
 
   const exportMonthLabel = useMemo(() => dayjs(reportMonth).format('MMMM YYYY'), [reportMonth])
   const exportMonthKey = useMemo(() => dayjs(reportMonth).format('YYYY-MM'), [reportMonth])

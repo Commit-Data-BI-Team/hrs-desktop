@@ -1,10 +1,116 @@
 import { BrowserWindow, ipcMain, session, Session } from 'electron'
+import dayjs from 'dayjs'
 import { clearCustomAuth, getCustomAuth, setCustomAuth } from '../hrs/config'
 import { clearHrsCredentials, getHrsCredentials, setHrsCredentials } from '../hrs/credentials'
 
 const HRS_ORIGIN = 'https://hrs.comm-it.co.il'
 const ADMIN_KEY_URL = `${HRS_ORIGIN}/admin/reactuserreporting/`
 const HRS_CACHE_TTL_MS = 5 * 60 * 1000
+const HRS_E2E = process.env.HRS_E2E === '1'
+
+const E2E_TASKS = [
+  {
+    taskId: 101,
+    taskName: 'Design sync',
+    customerName: 'Acme Labs',
+    projectName: 'Website revamp',
+    projectInstance: 'Website revamp',
+    reporting_mode: 'FROM_TO',
+    commentsRequired: true,
+    projectColor: '#6bd1e7',
+    isActiveTask: true
+  },
+  {
+    taskId: 102,
+    taskName: 'Bug triage',
+    customerName: 'Northwind',
+    projectName: 'Core platform',
+    projectInstance: 'Core platform',
+    reporting_mode: 'FROM_TO',
+    commentsRequired: true,
+    projectColor: '#f0c36b',
+    isActiveTask: true
+  },
+  {
+    taskId: 103,
+    taskName: 'Reporting',
+    customerName: 'Globex',
+    projectName: 'Analytics',
+    projectInstance: 'Analytics',
+    reporting_mode: 'FROM_TO',
+    commentsRequired: false,
+    projectColor: '#7bd38a',
+    isActiveTask: true
+  }
+]
+
+function minutesToHHMM(totalMinutes: number) {
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+function buildE2EReport(startDate: string, endDate: string) {
+  const start = dayjs(startDate)
+  const end = dayjs(endDate)
+  const days = []
+  let totalMinutes = 0
+  let cursor = start
+
+  while (cursor.isSame(end, 'day') || cursor.isBefore(end, 'day')) {
+    const date = cursor.format('YYYY-MM-DD')
+    const weekday = cursor.day()
+    const reports = []
+
+    if (weekday !== 0 && weekday !== 6 && cursor.date() % 3 === 0) {
+      const task = E2E_TASKS[cursor.date() % E2E_TASKS.length]
+      const minutes = 90
+      reports.push({
+        taskId: task.taskId,
+        taskName: task.taskName,
+        projectInstance: task.projectInstance,
+        hours_HHMM: minutesToHHMM(minutes),
+        comment: 'E2E log',
+        reporting_from: 'HRS'
+      })
+      totalMinutes += minutes
+    }
+
+    if (cursor.date() === 1) {
+      const task = E2E_TASKS[1]
+      const minutes = 120
+      reports.push({
+        taskId: task.taskId,
+        taskName: task.taskName,
+        projectInstance: task.projectInstance,
+        hours_HHMM: minutesToHHMM(minutes),
+        comment: 'Kickoff',
+        reporting_from: 'HRS'
+      })
+      totalMinutes += minutes
+    }
+
+    days.push({
+      date,
+      minWorkLog: 0,
+      isHoliday: false,
+      reports
+    })
+
+    cursor = cursor.add(1, 'day')
+  }
+
+  const totalHours = Math.round((totalMinutes / 60) * 10) / 10
+
+  return {
+    totalHoursNeeded: 160,
+    totalHours,
+    closed_date: end.format('YYYY-MM-DD'),
+    totalDays: days.length,
+    days,
+    weekend: 'Sat-Sun'
+  }
+}
 
 const hrsCache = new Map<string, { expiresAt: number; value: unknown }>()
 
@@ -48,6 +154,25 @@ export function registerHrsIpc(
   openLoginWindow: (options?: { username?: string; password?: string; autoSubmit?: boolean }) => Promise<boolean>
 ) {
   console.log('[ipc] registerHrsIpc')
+
+  if (HRS_E2E) {
+    ipcMain.handle('hrs:connectViaAdminLogin', async () => true)
+    ipcMain.handle('hrs:getCredentials', async () => ({
+      username: 'e2e@hrs.local',
+      hasPassword: false
+    }))
+    ipcMain.handle('hrs:setCredentials', async () => true)
+    ipcMain.handle('hrs:clearCredentials', async () => true)
+    ipcMain.handle('hrs:autoLogin', async () => true)
+    ipcMain.handle('hrs:checkSession', async () => true)
+    ipcMain.handle('hrs:getWorkLogs', async () => E2E_TASKS)
+    ipcMain.handle('hrs:getReports', async (_event, startDate: string, endDate: string) =>
+      buildE2EReport(startDate, endDate)
+    )
+    ipcMain.handle('hrs:logWork', async () => true)
+    ipcMain.handle('hrs:deleteLog', async () => true)
+    return
+  }
 
   ipcMain.handle('hrs:connectViaAdminLogin', async () => {
     await openLoginWindow()

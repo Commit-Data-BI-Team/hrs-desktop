@@ -1,6 +1,7 @@
-import { app, BrowserWindow, ipcMain, nativeImage, session } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeImage, session, Tray, Menu, screen } from 'electron'
 import fs from 'node:fs'
 import path from 'node:path'
+import util from 'node:util'
 import { fileURLToPath } from 'node:url'
 import { registerHrsIpc } from './ipc/hrs'
 import { registerJiraIpc } from './ipc/jira'
@@ -13,22 +14,99 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
 let mainWindow: BrowserWindow | null = null
 let floatingWindow: BrowserWindow | null = null
+let trayWindow: BrowserWindow | null = null
+let tray: Tray | null = null
+let isQuitting = false
+let openMainRequested = false
+const startInTray = true
 const iconPath = path.join(app.getAppPath(), 'build', 'icon.icns')
+const trayIconCandidates = {
+  macTemplate: [
+    path.join(process.resourcesPath, 'build', 'tray-icon-macTemplate.png'),
+    path.join(process.resourcesPath, 'tray-icon-macTemplate.png'),
+    path.join(app.getAppPath(), 'build', 'tray-icon-macTemplate.png')
+  ],
+  win: [
+    path.join(process.resourcesPath, 'build', 'icon.ico'),
+    path.join(process.resourcesPath, 'icon.ico'),
+    path.join(app.getAppPath(), 'build', 'icon.ico')
+  ],
+  png: [
+    path.join(process.resourcesPath, 'build', 'tray-icon.png'),
+    path.join(process.resourcesPath, 'tray-icon.png'),
+    path.join(process.resourcesPath, 'build', 'icon.png'),
+    path.join(process.resourcesPath, 'icon.png'),
+    path.join(app.getAppPath(), 'build', 'icon.png')
+  ]
+}
 const floatingSizes = {
   collapsed: { width: 360, height: 75 },
   expanded: { width: 360, height: 320 }
 } as const
+const trayWindowSize = { width: 430, height: 660 }
+
+function getMainLogPaths(): string[] {
+  const paths = new Set<string>()
+  paths.add(path.join(app.getPath('temp'), 'hrs-desktop-main.log'))
+  try {
+    paths.add(path.join(app.getPath('userData'), 'logs', 'main.log'))
+  } catch {}
+  if (process.env.PORTABLE_EXECUTABLE_DIR) {
+    paths.add(path.join(process.env.PORTABLE_EXECUTABLE_DIR, 'logs', 'main.log'))
+  }
+  return Array.from(paths)
+}
+
+function writeMainLog(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
+  const timestamp = new Date().toISOString()
+  const line = `[${timestamp}] [${level}] ${parts
+    .map(part =>
+      typeof part === 'string'
+        ? part
+        : util.inspect(part, { depth: 4, breakLength: 120, compact: true })
+    )
+    .join(' ')}`
+  for (const logPath of getMainLogPaths()) {
+    try {
+      fs.mkdirSync(path.dirname(logPath), { recursive: true })
+      fs.appendFileSync(logPath, `${line}\n`)
+    } catch {}
+  }
+}
+
+function logInfo(...parts: unknown[]) {
+  writeMainLog('INFO', ...parts)
+  console.log(...parts)
+}
+
+function logWarn(...parts: unknown[]) {
+  writeMainLog('WARN', ...parts)
+  console.warn(...parts)
+}
+
+function logError(...parts: unknown[]) {
+  writeMainLog('ERROR', ...parts)
+  console.error(...parts)
+}
+
+process.on('uncaughtException', error => {
+  logError('[process] uncaughtException', error)
+})
+
+process.on('unhandledRejection', reason => {
+  logError('[process] unhandledRejection', reason)
+})
 
 function attachRendererLogging(window: BrowserWindow, label: string) {
   const contents = window.webContents
   contents.on('console-message', (_event, level, message, line, sourceId) => {
-    console.log(`[renderer:${label}]`, message, sourceId ? `${sourceId}:${line}` : '')
+    logInfo(`[renderer:${label}]`, `L${level}`, message, sourceId ? `${sourceId}:${line}` : '')
   })
   contents.on('did-fail-load', (_event, code, desc, url) => {
-    console.error(`[main] ${label} failed to load`, code, desc, url)
+    logError(`[main] ${label} failed to load`, code, desc, url)
   })
   contents.on('did-finish-load', () => {
-    console.log(`[main] ${label} loaded`, contents.getURL())
+    logInfo(`[main] ${label} loaded`, contents.getURL())
   })
   contents.on('dom-ready', async () => {
     try {
@@ -40,13 +118,13 @@ function attachRendererLogging(window: BrowserWindow, label: string) {
         })`,
         true
       )
-      console.log(`[main] ${label} dom-ready`, info)
+      logInfo(`[main] ${label} dom-ready`, info)
     } catch (error) {
-      console.error(`[main] ${label} dom-ready probe failed`, error)
+      logError(`[main] ${label} dom-ready probe failed`, error)
     }
   })
   contents.on('render-process-gone', (_event, details) => {
-    console.error(`[main] ${label} renderer gone`, details.reason)
+    logError(`[main] ${label} renderer gone`, details.reason)
   })
 }
 
@@ -56,8 +134,47 @@ function applyDockIcon() {
   try {
     app.dock.setIcon(nativeImage.createFromPath(iconPath))
   } catch (error) {
-    console.warn('[main] failed to set dock icon', error)
+    logWarn('[main] failed to set dock icon', error)
   }
+}
+
+function getTrayIcon() {
+  const fallback = nativeImage.createEmpty()
+  const isWin = process.platform === 'win32'
+  const isMac = process.platform === 'darwin'
+  const macTemplatePath = trayIconCandidates.macTemplate.find(candidate => fs.existsSync(candidate))
+  const winPath = trayIconCandidates.win.find(candidate => fs.existsSync(candidate))
+  const pngPath = trayIconCandidates.png.find(candidate => fs.existsSync(candidate))
+  if (isMac && macTemplatePath) {
+    const templateImage = nativeImage.createFromPath(macTemplatePath)
+    if (!templateImage.isEmpty()) {
+      templateImage.setTemplateImage(true)
+      return templateImage
+    }
+  }
+  const iconPath = pngPath ?? winPath
+  let base = iconPath ? nativeImage.createFromPath(iconPath) : null
+  if (!base || base.isEmpty()) {
+    const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">
+      <rect x="1" y="2" width="14" height="13" rx="3" fill="#1f7a8c"/>
+      <rect x="1" y="2" width="14" height="4" rx="2" fill="#49c2d0"/>
+      <rect x="4" y="8" width="3" height="3" rx="1" fill="#0b1a20"/>
+      <rect x="9" y="8" width="3" height="3" rx="1" fill="#0b1a20"/>
+    </svg>`
+    const dataUrl = `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`
+    base = nativeImage.createFromDataURL(dataUrl)
+  }
+  if (base.isEmpty()) return fallback
+  if (isWin && winPath && !pngPath) {
+    const test = nativeImage.createFromPath(winPath)
+    if (!test.isEmpty()) {
+      return winPath
+    }
+  }
+  const size = isWin ? 16 : 18
+  const image = base.resize({ width: size, height: size })
+  if (isMac) image.setTemplateImage(true)
+  return image
 }
 
 function hideMainWindowForFloating() {
@@ -76,6 +193,29 @@ function restoreMainWindowFromFloating() {
   if (mainWindow.isMinimized()) {
     mainWindow.restore()
   }
+  if (process.platform === 'darwin') {
+    app.dock.show()
+  }
+}
+
+function hideMainWindowToTray() {
+  if (!mainWindow) return
+  mainWindow.hide()
+  mainWindow.setSkipTaskbar(true)
+  if (process.platform === 'darwin') {
+    app.dock.hide()
+  }
+}
+
+function showMainWindow() {
+  if (!mainWindow) return
+  openMainRequested = true
+  mainWindow.setSkipTaskbar(false)
+  mainWindow.show()
+  if (mainWindow.isMinimized()) {
+    mainWindow.restore()
+  }
+  mainWindow.focus()
   if (process.platform === 'darwin') {
     app.dock.show()
   }
@@ -110,25 +250,31 @@ function getFloatingOptions() {
   } as const
 }
 
-function loadRendererWindow(window: BrowserWindow, isFloating: boolean) {
-  const devServerUrl =
-    process.env.VITE_DEV_SERVER_URL || (!app.isPackaged ? 'http://localhost:5173/' : null)
+function loadRendererWindow(window: BrowserWindow, mode: 'main' | 'floating' | 'tray') {
+  const useFile =
+    app.isPackaged || process.env.E2E_USE_FILE === '1' || process.env.HRS_E2E === '1'
+  const devServerUrl = !useFile
+    ? process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173/'
+    : null
+  const query =
+    mode === 'floating' ? { floating: '1' } : mode === 'tray' ? { tray: '1' } : null
   if (devServerUrl) {
     const baseUrl = devServerUrl.endsWith('/') ? devServerUrl.slice(0, -1) : devServerUrl
-    const url = isFloating ? `${baseUrl}?floating=1` : baseUrl
-    console.log('[main] loading dev URL', url)
+    const url = query ? `${baseUrl}?${new URLSearchParams(query).toString()}` : baseUrl
+    logInfo('[main] loading dev URL', url)
     window.loadURL(url)
     return
   }
   const indexPath = path.join(app.getAppPath(), 'dist-renderer', 'index.html')
-  console.log('[main] loading file', indexPath)
-  window.loadFile(indexPath, isFloating ? { query: { floating: '1' } } : undefined)
+  logInfo('[main] loading file', indexPath)
+  window.loadFile(indexPath, query ? { query } : undefined)
 }
 
-function createMainWindow() {
+function createMainWindow(startHidden = false) {
   mainWindow = new BrowserWindow({
     width: 1200,
     height: 800,
+    show: !startHidden,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -160,13 +306,13 @@ function createMainWindow() {
     
     if (!allowedOrigins.some(origin => url.startsWith(origin))) {
       event.preventDefault()
-      console.warn('[security] Blocked navigation to external URL:', url)
+      logWarn('[security] blocked navigation to external URL', url)
     }
   })
   
   // SECURITY: Prevent opening new windows
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    console.warn('[security] Blocked attempt to open new window:', url)
+    logWarn('[security] blocked attempt to open new window', url)
     return { action: 'deny' }
   })
   
@@ -176,8 +322,24 @@ function createMainWindow() {
     }
   })
 
+  mainWindow.on('close', event => {
+    if (isQuitting || !tray) return
+    event.preventDefault()
+    hideMainWindowToTray()
+  })
+
+  if (startHidden) {
+    mainWindow.once('ready-to-show', () => {
+      if (openMainRequested || !tray) {
+        showMainWindow()
+      } else {
+        hideMainWindowToTray()
+      }
+    })
+  }
+
   console.log('[main] loading UI')
-  loadRendererWindow(mainWindow, false)
+  loadRendererWindow(mainWindow, 'main')
 }
 
 function createFloatingWindow() {
@@ -203,11 +365,142 @@ function createFloatingWindow() {
     floatingWindow = null
     restoreMainWindowFromFloating()
   })
-  loadRendererWindow(floatingWindow, true)
+  loadRendererWindow(floatingWindow, 'floating')
+}
+
+function createTrayWindow() {
+  if (trayWindow) return
+  trayWindow = new BrowserWindow({
+    width: trayWindowSize.width,
+    height: trayWindowSize.height,
+    resizable: false,
+    minimizable: false,
+    maximizable: false,
+    fullscreenable: false,
+    alwaysOnTop: true,
+    skipTaskbar: true,
+    frame: false,
+    transparent: false,
+    show: false,
+    hasShadow: true,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      enableRemoteModule: false,
+      navigateOnDragDrop: false
+    }
+  })
+  attachRendererLogging(trayWindow, 'tray')
+  trayWindow.on('blur', () => {
+    trayWindow?.hide()
+  })
+  trayWindow.on('closed', () => {
+    trayWindow = null
+  })
+  loadRendererWindow(trayWindow, 'tray')
+}
+
+function getTrayWindowPosition() {
+  if (!trayWindow || !tray) return null
+  const trayBounds = tray.getBounds()
+  const windowBounds = trayWindow.getBounds()
+  const display = screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y })
+  const workArea = display.workArea
+
+  let x = Math.round(trayBounds.x + trayBounds.width / 2 - windowBounds.width / 2)
+  let y = Math.round(trayBounds.y + trayBounds.height + 6)
+
+  if (process.platform === 'win32') {
+    y = Math.round(trayBounds.y - windowBounds.height - 6)
+  }
+
+  if (x + windowBounds.width > workArea.x + workArea.width) {
+    x = workArea.x + workArea.width - windowBounds.width - 8
+  }
+  if (x < workArea.x) x = workArea.x + 8
+  if (y + windowBounds.height > workArea.y + workArea.height) {
+    y = workArea.y + workArea.height - windowBounds.height - 8
+  }
+  if (y < workArea.y) y = workArea.y + 8
+  return { x, y }
+}
+
+function toggleTrayWindow() {
+  if (!trayWindow) createTrayWindow()
+  if (!trayWindow) return
+  if (trayWindow.isVisible()) {
+    trayWindow.hide()
+    return
+  }
+  const position = getTrayWindowPosition()
+  if (position) {
+    trayWindow.setPosition(position.x, position.y, false)
+  }
+  trayWindow.show()
+  trayWindow.focus()
+  trayWindow.webContents.send('app:trayOpened')
+}
+
+function buildTrayMenu() {
+  return Menu.buildFromTemplate([
+    {
+      label: 'Open App',
+      click: () => showMainWindow()
+    },
+    {
+      label: 'Open Quick Log',
+      click: () => toggleTrayWindow()
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        isQuitting = true
+        app.quit()
+      }
+    }
+  ])
+}
+
+function createTray(): boolean {
+  if (tray) return true
+  try {
+    const trayIcon = getTrayIcon()
+    tray = new Tray(trayIcon as Parameters<typeof Tray>[0])
+    tray.setToolTip('HRS Desktop')
+    tray.on('click', () => toggleTrayWindow())
+    tray.on('right-click', () => {
+      tray?.popUpContextMenu(buildTrayMenu())
+    })
+    tray.on('destroyed', () => {
+      tray = null
+      if (!isQuitting) {
+        showMainWindow()
+      }
+    })
+    // Keep context menu on explicit right-click only.
+    return true
+  } catch (error) {
+    tray = null
+    logError('[main] failed to create tray', error)
+    return false
+  }
 }
 
 app.whenReady().then(() => {
-  console.log('[main] app ready')
+  logInfo('[main] app ready')
+  logInfo('[main] logging to', getMainLogPaths())
+  app.on('before-quit', () => {
+    isQuitting = true
+    logInfo('[main] before-quit')
+  })
   registerHrsIpc(openLoginWindow)
   registerJiraIpc()
   registerPreferencesIpc()
@@ -215,6 +508,14 @@ app.whenReady().then(() => {
   registerNotificationIpc()
   registerMeetingsIpc()
   applyDockIcon()
+  const trayReady = createTray()
+  ipcMain.handle('app:openMainWindow', () => {
+    showMainWindow()
+    if (trayWindow?.isVisible()) {
+      trayWindow.hide()
+    }
+    return true
+  })
   ipcMain.handle('app:openFloatingTimer', () => {
     hideMainWindowForFloating()
     createFloatingWindow()
@@ -230,10 +531,12 @@ app.whenReady().then(() => {
     floatingWindow.setSize(size.width, size.height, false)
     return true
   })
-  createMainWindow()
+  createMainWindow(startInTray && trayReady)
 })
 
 app.on('window-all-closed', () => {
+  logInfo('[main] window-all-closed', `tray=${Boolean(tray)}`, `isQuitting=${isQuitting}`)
+  if (tray && !isQuitting) return
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -270,7 +573,7 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
       }
     })
 
-    console.log('[auth] opening login window')
+    logInfo('[auth] opening login window')
 
     let resolved = false
     let autoShowTimer: NodeJS.Timeout | null = null
@@ -298,7 +601,7 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
     }
 
     loginWindow.webContents.on('did-navigate', async (_e, url) => {
-      console.log('[auth] navigated:', url)
+      logInfo('[auth] navigated', url)
 
       if (url.startsWith('https://hrs.comm-it.co.il/admin/')) {
         const cookies = await loginSession.cookies.get({

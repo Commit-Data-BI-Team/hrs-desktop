@@ -899,7 +899,12 @@ body {
 }
 
 .calendar-widget {
-  --day-size: clamp(34px, calc((100% - 48px) / 7), 58px);
+  --day-gap: 8px;
+  --day-size: clamp(38px, calc((100% - (var(--day-gap) * 6)) / 7), 120px);
+  --day-height: calc(var(--day-size) + 12px);
+  max-width: 720px;
+  width: 100%;
+  margin: 0 auto;
   --dch-control-size: 30px;
   --dch-fz: 11px;
 }
@@ -917,9 +922,9 @@ body {
   grid-template-rows: 1fr auto;
   align-items: center;
   justify-items: center;
-  gap: 4px;
-  padding: 10px 8px;
-  border-radius: 14px;
+  gap: 2px;
+  padding: 6px 6px;
+  border-radius: 10px;
   width: 100%;
   height: 100%;
   font-weight: 600;
@@ -932,13 +937,13 @@ body {
 
 .calendar-date {
   line-height: 1;
-  font-size: 0.95rem;
+  font-size: 0.9rem;
   align-self: start;
   margin-top: 2px;
 }
 
 .calendar-selected-row {
-  margin-top: 4px;
+  margin-top: 2px;
 }
 
 .calendar-selected-date {
@@ -998,12 +1003,12 @@ body {
   align-items: center;
   justify-content: center;
   gap: 4px;
-  font-size: 0.62rem;
+  font-size: 0.56rem;
   color: var(--muted);
   position: static;
   max-width: calc(100% - 8px);
   align-self: end;
-  min-height: 16px;
+  min-height: 14px;
 }
 
 .calendar-meta.is-empty {
@@ -1011,20 +1016,20 @@ body {
 }
 
 .calendar-dot {
-  width: 6px;
-  height: 6px;
+  width: 4px;
+  height: 4px;
   border-radius: 999px;
   background: var(--accent);
-  box-shadow: 0 0 0 4px rgba(31, 122, 140, 0.1);
+  box-shadow: 0 0 0 3px rgba(31, 122, 140, 0.1);
 }
 
 .calendar-hours {
   font-weight: 600;
   color: var(--calendar-ink);
-  padding: 2px 5px;
+  padding: 1px 4px;
   border-radius: 999px;
   background: rgba(31, 122, 140, 0.2);
-  font-size: 0.55rem;
+  font-size: 0.5rem;
   white-space: nowrap;
 }
 
@@ -1047,11 +1052,11 @@ body {
 .mantine-DatePicker-month {
   border-radius: 18px;
   background: var(--calendar-bg);
-  padding: 8px;
+  padding: 6px;
   border: 1px solid var(--stroke);
   border-collapse: separate;
-  border-spacing: 2px;
-  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+  border-spacing: var(--day-gap, 6px);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.18);
   width: 100%;
   max-width: 100%;
   overflow: hidden;
@@ -1066,25 +1071,29 @@ body {
 }
 
 .calendar-card .mantine-DatePicker-monthRow td {
-  padding: 4px;
-  width: 14.285%;
-  min-width: 0;
+  padding: 0;
+  width: var(--day-size);
+  min-width: var(--day-size);
   text-align: center;
   vertical-align: middle;
-  height: var(--day-size);
+  height: var(--day-height);
+  box-sizing: border-box;
 }
 
 .calendar-card .mantine-DatePicker-weekday {
-  width: 100%;
-  min-width: 0;
+  width: var(--day-size);
+  min-width: var(--day-size);
 }
 
 .calendar-card .mantine-DatePicker-day {
   min-width: 0;
   width: 100%;
   height: 100%;
-  margin: 0;
-  display: block;
+  min-height: var(--day-height);
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .mantine-DatePicker-calendarHeader {
@@ -2159,4 +2168,257 @@ body.floating-mode {
   .stat-value {
     font-size: 1.8rem;
   }
+}
+
+body.tray-mode {
+  background: transparent;
+}
+
+html[data-platform='windows'] body.tray-mode {
+  font-family: 'Segoe UI', 'Segoe UI Variable', 'SegoeUI', 'Tahoma', sans-serif;
+}
+
+html[data-platform='mac'] body.tray-mode {
+  font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'SF Pro Display', sans-serif;
+}
+
+.tray-shell {
+  height: 100vh;
+  padding: 6px 10px 0;
+  box-sizing: border-box;
+  background: linear-gradient(180deg, rgba(18, 26, 32, 0.95), rgba(10, 16, 20, 0.98));
+}
+
+.tray-content {
+  height: 100%;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+  padding-bottom: 0;
+}
+
+.tray-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: linear-gradient(180deg, rgba(18, 26, 32, 0.98), rgba(18, 26, 32, 0.9));
+  padding: 6px 0 10px;
+}
+
+.tray-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tray-month-nav {
+  margin-top: 0;
+}
+
+.tray-month-label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.tray-calendar-shell {
+  padding: 10px;
+  border-radius: 16px;
+  background: rgba(11, 18, 22, 0.75);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tray-calendar {
+  --tray-day-gap: 8px;
+  --tray-day-height: 52px;
+  --tray-day-radius: 10px;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+html[data-platform='windows'] .tray-calendar {
+  --tray-day-height: 58px;
+  --tray-day-gap: 8px;
+}
+
+.tray-calendar-weekdays,
+.tray-calendar-row {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(0, 1fr));
+  gap: var(--tray-day-gap);
+}
+
+.tray-calendar-weekdays {
+  margin-bottom: 2px;
+}
+
+.tray-calendar-grid {
+  display: flex;
+  flex-direction: column;
+  gap: var(--tray-day-gap);
+}
+
+.tray-calendar-weekday {
+  height: 18px;
+  text-align: center;
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  color: rgba(235, 244, 248, 0.75);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 700;
+}
+
+.tray-day-tooltip-target {
+  display: block;
+  width: 100%;
+}
+
+.tray-day-button {
+  width: 100%;
+  height: var(--tray-day-height);
+  border-radius: var(--tray-day-radius);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(11, 18, 22, 0.5);
+  color: #edf4f6;
+  padding: 0;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.tray-day-button:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(73, 194, 208, 0.45);
+  background: rgba(20, 34, 42, 0.78);
+}
+
+.tray-day-button:disabled {
+  cursor: default;
+}
+
+.tray-day-button.is-outside {
+  background: rgba(11, 18, 22, 0.2);
+  border-color: rgba(255, 255, 255, 0.03);
+  color: rgba(235, 244, 248, 0.3);
+}
+
+.tray-day-button.has-reports {
+  background: rgba(31, 122, 140, 0.22);
+  border-color: rgba(73, 194, 208, 0.5);
+}
+
+.tray-day-button.has-reports.heatmap {
+  background: rgba(31, 122, 140, calc(0.24 + var(--heat, 0) * 0.7));
+  border-color: rgba(73, 194, 208, calc(0.36 + var(--heat, 0) * 0.5));
+}
+
+.tray-day-button.is-holiday {
+  background: rgba(180, 74, 49, 0.28);
+  border-color: rgba(180, 74, 49, 0.55);
+}
+
+.tray-day-button.is-weekend {
+  background: rgba(11, 18, 22, 0.24);
+  border-color: rgba(255, 255, 255, 0.07);
+  color: rgba(231, 237, 240, 0.8);
+}
+
+.tray-day-button.is-missing {
+  background: rgba(220, 68, 78, 0.3);
+  border-color: rgba(220, 68, 78, 0.58);
+}
+
+.tray-day-button.is-selected {
+  background: linear-gradient(135deg, var(--accent), var(--accent-2));
+  border-color: rgba(255, 214, 122, 0.55);
+  color: #0b1a20;
+  box-shadow: 0 8px 22px rgba(0, 0, 0, 0.28);
+}
+
+.tray-day-button.is-today:not(.is-selected) {
+  box-shadow: inset 0 0 0 1px rgba(115, 216, 226, 0.65);
+}
+
+.tray-day-number {
+  font-size: 1rem;
+  line-height: 1;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.tray-time-grid {
+  margin-top: 2px;
+}
+
+.tray-duration {
+  margin-top: -10px;
+}
+
+.tray-loading {
+  padding: 10px 8px 6px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(9, 14, 18, 0.6);
+  width: 100%;
+}
+
+.tray-loading-bar {
+  width: 100%;
+  height: 4px;
+  border-radius: 999px;
+  background: linear-gradient(
+    90deg,
+    rgba(73, 194, 208, 0.2),
+    rgba(73, 194, 208, 0.9),
+    rgba(73, 194, 208, 0.2)
+  );
+  background-size: 200% 100%;
+  animation: tray-loading 1.2s ease-in-out infinite;
+}
+
+@keyframes tray-loading {
+  0% {
+    background-position: 0% 50%;
+  }
+  50% {
+    background-position: 100% 50%;
+  }
+  100% {
+    background-position: 0% 50%;
+  }
+}
+
+.tray-filters .mantine-Select-label {
+  font-size: 0.65rem;
+}
+
+.tray-filters .mantine-Select-input {
+  padding-left: 8px;
+  padding-right: 24px;
+}
+
+.tray-log-submit {
+  width: 100%;
+}
+
+html[data-platform='windows'] .tray-shell {
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow: 0 18px 42px rgba(0, 0, 0, 0.5);
+}
+
+html[data-platform='mac'] .tray-shell {
+  border-radius: 18px;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
 }

@@ -159,5 +159,13 @@ contextBridge.exposeInMainWorld('hrs', {
   openFloatingTimer: () => ipcRenderer.invoke('app:openFloatingTimer'),
   closeFloatingTimer: () => ipcRenderer.invoke('app:closeFloatingTimer'),
   setFloatingCollapsed: (collapsed: boolean) =>
-    ipcRenderer.invoke('app:setFloatingCollapsed', collapsed)
+    ipcRenderer.invoke('app:setFloatingCollapsed', collapsed),
+  openMainWindow: () => ipcRenderer.invoke('app:openMainWindow'),
+  onTrayOpened: (handler: () => void) => {
+    const listener = () => handler()
+    ipcRenderer.on('app:trayOpened', listener)
+    return () => {
+      ipcRenderer.removeListener('app:trayOpened', listener)
+    }
+  }
 })

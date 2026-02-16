@@ -438,6 +438,14 @@ function getMonthRange(date: Date) {
   return { start, end }
 }
 
+function normalizeReportDateKey(value: string) {
+  const parsed = dayjs(value)
+  if (parsed.isValid()) {
+    return parsed.format('YYYY-MM-DD')
+  }
+  return value.slice(0, 10)
+}
+
 function parseHoursHHMMToMinutes(value: string): number {
   const match = value.match(/^(\d{1,2}):(\d{2})$/)
   if (!match) return 0
@@ -1075,6 +1083,8 @@ const JIRA_TIMEOUT_MS = 60000
 const JIRA_EPICS_RETRY_MS = 60000
 const SESSION_TIMEOUT_MS = 30000
 const SESSION_RETRY_LIMIT = 2
+const AUTO_LOGIN_RETRY_COOLDOWN_MS = 60000
+const CURRENT_MONTH_REFRESH_INTERVAL_MS = 60000
 const JIRA_PREFETCH_TIMEOUT_MS = 120000
 const JIRA_LIGHT_PREFETCH_TIMEOUT_MS = 45000
 const JIRA_DETAIL_TIMEOUT_MS = 180000
@@ -1133,9 +1143,13 @@ export default function App() {
   const [logsLoaded, setLogsLoaded] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [checkingSession, setCheckingSession] = useState(true)
+  const [bootComplete, setBootComplete] = useState(false)
   const [sessionError, setSessionError] = useState<string | null>(null)
   const [duoPending, setDuoPending] = useState(false)
+  const [duoHint, setDuoHint] = useState(false)
   const sessionRetryCount = useRef(0)
+  const sessionRetryErrorRef = useRef<string | null>(null)
+  const credentialsAutoSaveRef = useRef(false)
 
   const [projectName, setProjectName] = useState<string | null>(null)
   const [customerName, setCustomerName] = useState<string | null>(null)
@@ -1448,6 +1462,8 @@ export default function App() {
   const [historyModalLoading, setHistoryModalLoading] = useState(false)
   const [historyModalError, setHistoryModalError] = useState<string | null>(null)
   const autoLoginAttemptedRef = useRef(false)
+  const autoLoginLastAttemptAtRef = useRef(0)
+  const autoLoginInFlightRef = useRef(false)
   const hoursSparklineRef = useRef<HTMLDivElement | null>(null)
   const reportListRef = useRef<HTMLDivElement | null>(null)
   const logWorkRef = useRef<HTMLDivElement | null>(null)
@@ -1470,9 +1486,30 @@ export default function App() {
     }
   } as const
 
+  const traySelectStyles = {
+    label: {
+      fontWeight: 600,
+      fontSize: '0.7rem',
+      marginBottom: 4
+    }
+  } as const
+
   const isFloating = useMemo(() => {
     if (typeof window === 'undefined') return false
     return new URLSearchParams(window.location.search).get('floating') === '1'
+  }, [])
+
+  const isTray = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('tray') === '1'
+  }, [])
+
+  const platform = useMemo(() => {
+    if (typeof navigator === 'undefined') return 'other'
+    const ua = navigator.userAgent
+    if (ua.includes('Windows')) return 'windows'
+    if (ua.includes('Mac')) return 'mac'
+    return 'other'
   }, [])
 
   useEffect(() => {
@@ -1482,6 +1519,16 @@ export default function App() {
       document.body.classList.remove('floating-mode')
     }
   }, [isFloating])
+
+  useEffect(() => {
+    if (typeof document === 'undefined') return
+    if (isTray) {
+      document.body.classList.add('tray-mode')
+    } else {
+      document.body.classList.remove('tray-mode')
+    }
+    document.documentElement.setAttribute('data-platform', platform)
+  }, [isTray, platform])
 
   useEffect(() => {
     if (!isFloating) return
@@ -1495,7 +1542,7 @@ export default function App() {
 
   const appReady = useMemo(() => {
     if (isFloating) return true
-    if (checkingSession || !preferencesLoaded || !jiraStatusLoaded) return false
+    if (!bootComplete || !preferencesLoaded || !jiraStatusLoaded) return false
     if (!loggedIn) return true
     if (jiraConfigured && !jiraPrefetchDone) return false
     if (!logsLoaded || !reportsLoaded) return false
@@ -1504,6 +1551,7 @@ export default function App() {
   }, [
     isFloating,
     checkingSession,
+    bootComplete,
     preferencesLoaded,
     jiraStatusLoaded,
     loggedIn,
@@ -1542,6 +1590,52 @@ export default function App() {
     }
   }
 
+  async function tryAutoLogin(reason: string): Promise<boolean | null> {
+    const autoLoginActive = hasStoredPassword && (autoLoginEnabled || isTray)
+    if (!autoLoginActive) return null
+    if (autoLoginInFlightRef.current) return null
+    const now = Date.now()
+    if (
+      autoLoginAttemptedRef.current &&
+      now - autoLoginLastAttemptAtRef.current < AUTO_LOGIN_RETRY_COOLDOWN_MS
+    ) {
+      return null
+    }
+    autoLoginInFlightRef.current = true
+    autoLoginAttemptedRef.current = true
+    autoLoginLastAttemptAtRef.current = now
+    setDuoHint(true)
+    setDuoPending(true)
+    setBootStatus('Sent DUO to phone for approval…')
+    setSessionError(null)
+    try {
+      const autoLogged = await window.hrs.autoLogin()
+      setDuoPending(false)
+      if (!autoLogged) {
+        setLoggedIn(false)
+        setSessionError(`${reason} Auto-login retrying…`)
+        return false
+      }
+      setBootStatus('Rechecking session…')
+      const recheck = await window.hrs.checkSession()
+      setLoggedIn(recheck)
+      if (recheck) {
+        autoLoginAttemptedRef.current = false
+        setSessionError(null)
+        return true
+      }
+      setSessionError('Waiting for DUO approval. Auto-login will retry…')
+      return false
+    } catch {
+      setDuoPending(false)
+      setLoggedIn(false)
+      setSessionError(`${reason} Auto-login retrying…`)
+      return false
+    } finally {
+      autoLoginInFlightRef.current = false
+    }
+  }
+
   async function checkSession() {
     setCheckingSession(true)
     setBootStatus('Checking session…')
@@ -1549,28 +1643,15 @@ export default function App() {
     try {
       const ok = await withTimeout(window.hrs.checkSession(), SESSION_TIMEOUT_MS, 'Session check')
       sessionRetryCount.current = 0
-      if (!ok && autoLoginEnabled && hasStoredPassword && !autoLoginAttemptedRef.current) {
-        autoLoginAttemptedRef.current = true
-        setDuoPending(true)
-        setBootStatus('Sent DUO to phone for approval…')
-        setSessionError(null)
-        const autoLogged = await window.hrs.autoLogin()
-        setDuoPending(false)
-        if (autoLogged) {
-          setBootStatus('Rechecking session…')
-          const recheck = await window.hrs.checkSession()
-          setLoggedIn(recheck)
-          setSessionError(recheck ? null : 'Auto-login failed. Please login again.')
-          return recheck
-        }
-        setLoggedIn(false)
-        setSessionError('Auto-login failed. Please login again.')
-        return false
+      if (!ok) {
+        const autoLoginResult = await tryAutoLogin('Session expired.')
+        if (autoLoginResult !== null) return autoLoginResult
       }
       setLoggedIn(ok)
       if (!ok) {
         setSessionError('Session expired. Please login again.')
       } else {
+        autoLoginAttemptedRef.current = false
         setDuoPending(false)
         setSessionError(null)
       }
@@ -1587,21 +1668,8 @@ export default function App() {
         }, 1200)
         return false
       }
-      if (autoLoginEnabled && hasStoredPassword && !autoLoginAttemptedRef.current) {
-        autoLoginAttemptedRef.current = true
-        setDuoPending(true)
-        setBootStatus('Sent DUO to phone for approval…')
-        setSessionError(null)
-        const autoLogged = await window.hrs.autoLogin()
-        setDuoPending(false)
-        if (autoLogged) {
-          setBootStatus('Rechecking session…')
-          const recheck = await window.hrs.checkSession()
-          setLoggedIn(recheck)
-          setSessionError(recheck ? null : 'Auto-login failed. Please login again.')
-          return recheck
-        }
-      }
+      const autoLoginResult = await tryAutoLogin('Session check failed.')
+      if (autoLoginResult !== null) return autoLoginResult
       setSessionError(message)
       setLoggedIn(false)
       return false
@@ -1656,12 +1724,13 @@ export default function App() {
   async function loadReportsForMonth(month: Date) {
     const requestId = ++reportsRequestId.current
     const monthKey = dayjs(month).format('YYYY-MM')
+    const isCurrentMonth = dayjs(month).isSame(dayjs(), 'month')
     const cached = reportsCacheRef.current.get(monthKey)
     if (cached) {
       setMonthlyReport(cached)
       setReportsLoading(false)
       setReportsLoaded(true)
-      return
+      if (!isCurrentMonth) return
     }
     setReportsLoading(true)
     setReportsError(null)
@@ -2741,9 +2810,30 @@ export default function App() {
     )
   }
 
+  function applySummaryToRow(
+    epicKey: string,
+    cachedDetails: { items: JiraWorkItem[]; partial: boolean }
+  ) {
+    const totals = computeJiraTotals(cachedDetails.items)
+    const ratio = totals.estimateSeconds ? totals.spentSeconds / totals.estimateSeconds : 0
+    setJiraBudgetRows(prev =>
+      prev.map(row =>
+        row.epicKey === epicKey
+          ? {
+              ...row,
+              items: cachedDetails.items,
+              estimateSeconds: totals.estimateSeconds,
+              spentSeconds: totals.spentSeconds,
+              ratio,
+              summaryPartial: cachedDetails.partial
+            }
+          : row
+      )
+    )
+  }
+
   async function prefetchLightBudget(epicKey: string) {
     // Lightweight prefetch: tasks only (no worklogs) to show basic info quickly
-    // Don't apply to rows - let user expand to fetch full data with worklogs
     const cached = jiraBudgetDetailsCacheRef.current.get(epicKey)
     if (cached) return cached
     const items = (await withTimeout(
@@ -2756,8 +2846,6 @@ export default function App() {
       items: uniqueItems,
       partial: uniqueItems.length >= 200
     }
-    // Cache the light data but don't mark row as loaded
-    // This allows first expand to fetch full data, subsequent expands use cache
     jiraBudgetDetailsCacheRef.current.set(epicKey, entry)
     return entry
   }
@@ -2878,12 +2966,14 @@ export default function App() {
           }
         }))
         try {
-          // Load FULL details with worklogs for accurate contributor data
-          await loadBudgetTasks(epicKey)
-          const cached = jiraBudgetDetailsCacheRef.current.get(epicKey)
+          // Incremental fetch: load lightweight tasks first, full details on expand
+          const cached = await prefetchLightBudget(epicKey)
           const taskCount = cached?.items.length ?? 0
           const subtaskCount =
             cached?.items.reduce((sum, item) => sum + (item.subtasks?.length ?? 0), 0) ?? 0
+          if (cached) {
+            applySummaryToRow(epicKey, cached)
+          }
           done += 1
           jiraBudgetDetailsFailureRef.current.delete(epicKey)
           setJiraPrefetchEntries(prev => ({
@@ -4821,16 +4911,112 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (!autoLoginEnabled || !hasStoredPassword) return
+    if (bootComplete) return
+    if (preferencesLoaded && jiraStatusLoaded && !checkingSession) {
+      setBootComplete(true)
+    }
+  }, [bootComplete, preferencesLoaded, jiraStatusLoaded, checkingSession])
+
+  useEffect(() => {
+    if (loggedIn) {
+      setDuoHint(false)
+    }
+  }, [loggedIn])
+
+  useEffect(() => {
+    if (!(hasStoredPassword && (autoLoginEnabled || isTray))) {
+      setDuoHint(false)
+    }
+  }, [autoLoginEnabled, hasStoredPassword, isTray])
+
+  useEffect(() => {
+    if (!(hasStoredPassword && (autoLoginEnabled || isTray))) {
+      sessionRetryErrorRef.current = null
+      autoLoginAttemptedRef.current = false
+      autoLoginInFlightRef.current = false
+      return
+    }
+    if (!sessionError) {
+      sessionRetryErrorRef.current = null
+      return
+    }
     if (loggedIn || checkingSession) return
-    if (!sessionError) return
+    if (sessionRetryErrorRef.current === sessionError) return
+    sessionRetryErrorRef.current = sessionError
     void checkSession()
-  }, [autoLoginEnabled, hasStoredPassword, loggedIn, checkingSession, sessionError])
+  }, [autoLoginEnabled, hasStoredPassword, isTray, loggedIn, checkingSession, sessionError])
+
+  useEffect(() => {
+    if (!isTray || !hasStoredPassword) return
+    if (loggedIn || checkingSession) return
+    const retryId = window.setTimeout(() => {
+      void checkSession()
+    }, AUTO_LOGIN_RETRY_COOLDOWN_MS)
+    return () => window.clearTimeout(retryId)
+  }, [isTray, autoLoginEnabled, hasStoredPassword, loggedIn, checkingSession, sessionError])
+
+  useEffect(() => {
+    if (!credentialsModalOpen) {
+      credentialsAutoSaveRef.current = false
+      return
+    }
+    if (storedUsername || hasStoredPassword) return
+    if (!credentialsUsername || !credentialsPassword) {
+      credentialsAutoSaveRef.current = false
+      return
+    }
+    if (credentialsAutoSaveRef.current) return
+    credentialsAutoSaveRef.current = true
+    void saveHrsCredentials()
+  }, [
+    credentialsModalOpen,
+    storedUsername,
+    hasStoredPassword,
+    credentialsUsername,
+    credentialsPassword
+  ])
 
   useEffect(() => {
     if (!loggedIn) return
     loadReportsForMonth(reportMonth)
   }, [loggedIn, reportMonth])
+
+  useEffect(() => {
+    if (!loggedIn) return
+    if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
+    const intervalId = window.setInterval(() => {
+      void loadReportsForMonth(reportMonth)
+    }, CURRENT_MONTH_REFRESH_INTERVAL_MS)
+    const onFocus = () => {
+      void loadReportsForMonth(reportMonth)
+    }
+    window.addEventListener('focus', onFocus)
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [loggedIn, reportMonth])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn) return
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
+      if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
+      void loadReportsForMonth(reportMonth)
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+    }
+  }, [isTray, loggedIn, reportMonth])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn || !window.hrs?.onTrayOpened) return
+    return window.hrs.onTrayOpened(() => {
+      if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
+      void loadReportsForMonth(reportMonth)
+    })
+  }, [isTray, loggedIn, reportMonth])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -5064,8 +5250,11 @@ export default function App() {
         if (cancelled) return
         jiraBudgetPrefetchQueueRef.current.add(epicKey)
         try {
-          // Load FULL details with worklogs immediately on startup
-          await loadBudgetTasks(epicKey)
+          // Incremental fetch: lightweight data on startup
+          const cached = await prefetchLightBudget(epicKey)
+          if (cached) {
+            applySummaryToRow(epicKey, cached)
+          }
           jiraBudgetDetailsFailureRef.current.delete(epicKey)
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
@@ -5541,7 +5730,7 @@ export default function App() {
         (sum, report) => sum + parseHoursHHMMToMinutes(report.hours_HHMM),
         0
       )
-      map.set(day.date, { day, totalMinutes })
+      map.set(normalizeReportDateKey(day.date), { day, totalMinutes })
     }
     return map
   }, [monthlyReport])
@@ -7112,6 +7301,391 @@ export default function App() {
     )
   }
 
+  if (isTray) {
+    return (
+      <Box className="tray-shell">
+        <Stack gap="sm" className="tray-content">
+          {!window.hrs && (
+            <Alert color="red" variant="light" radius="md">
+              App bridge failed to load. Please restart the app.
+            </Alert>
+          )}
+
+          {window.hrs && !appReady && (
+            <Stack gap="xs" align="center" className="tray-loading">
+              <Loader size="sm" />
+              <Text size="sm" c="dimmed">
+                Loading Quick Log…
+              </Text>
+              <div className="tray-loading-bar" />
+            </Stack>
+          )}
+
+          {window.hrs && appReady && !loggedIn && (
+            <Stack gap="sm">
+              <Text size="sm" c="dimmed">
+                Sign in to log work from the tray.
+              </Text>
+              {duoPending && (
+                <Alert className="duo-banner" color="cyan" variant="light" radius="md">
+                  <Group gap="xs">
+                    <Loader size="xs" />
+                    <Text size="sm">Sent DUO to phone for approval. Waiting…</Text>
+                  </Group>
+                </Alert>
+              )}
+              {!duoPending && duoHint && sessionError?.includes('Session expired') && (
+                <Alert className="duo-banner" color="cyan" variant="light" radius="md">
+                  <Group gap="xs">
+                    <Loader size="xs" />
+                    <Text size="sm">
+                      Sent DUO to phone for approval. Please approve, then login.
+                    </Text>
+                  </Group>
+                </Alert>
+              )}
+              {sessionError && (
+                <Alert color="red" variant="light" radius="md">
+                  {sessionError}
+                </Alert>
+              )}
+            </Stack>
+          )}
+
+          {window.hrs && appReady && loggedIn && (
+            <Stack gap="xs">
+              <Group justify="space-between" align="center" className="tray-month-nav">
+                <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(-1)}>
+                  Prev
+                </Button>
+                <Text className="tray-month-label">
+                  {dayjs(reportMonth).format('MMMM YYYY')}
+                </Text>
+                <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(1)}>
+                  Next
+                </Button>
+              </Group>
+
+              <div className="tray-calendar-shell">
+                {(() => {
+                  const monthStart = dayjs(reportMonth).startOf('month')
+                  const monthEnd = monthStart.endOf('month')
+                  const gridStart = monthStart.startOf('week')
+                  const gridEnd = monthEnd.endOf('week')
+                  const selectedDayKey = logDate ? dayjs(logDate).format('YYYY-MM-DD') : null
+                  const todayDayKey = dayjs().format('YYYY-MM-DD')
+                  const cells: Array<{ key: string; date: Date; inMonth: boolean }> = []
+                  let cursor = gridStart
+                  while (cursor.isBefore(gridEnd, 'day') || cursor.isSame(gridEnd, 'day')) {
+                    cells.push({
+                      key: cursor.format('YYYY-MM-DD'),
+                      date: cursor.toDate(),
+                      inMonth: cursor.isSame(monthStart, 'month')
+                    })
+                    cursor = cursor.add(1, 'day')
+                  }
+                  const weeks: Array<Array<{ key: string; date: Date; inMonth: boolean }>> = []
+                  for (let index = 0; index < cells.length; index += 7) {
+                    weeks.push(cells.slice(index, index + 7))
+                  }
+                  return (
+                    <div className="tray-calendar" role="grid" aria-label="Quick log calendar">
+                      <div className="tray-calendar-weekdays" role="row">
+                        {['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].map(label => (
+                          <span key={label} className="tray-calendar-weekday" role="columnheader">
+                            {label}
+                          </span>
+                        ))}
+                      </div>
+                      <div className="tray-calendar-grid">
+                        {weeks.map((week, weekIndex) => (
+                          <div className="tray-calendar-row" role="row" key={`week-${weekIndex}`}>
+                            {week.map(dayCell => {
+                              const info = reportsByDate.get(dayCell.key)
+                              const dateValue = dayjs(dayCell.date)
+                              const hasReports = Boolean(info?.day.reports.length)
+                              const isHoliday = Boolean(info?.day.isHoliday)
+                              const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
+                              const isFuture = dateValue.isAfter(dayjs(), 'day')
+                              const isMissing =
+                                dayCell.inMonth &&
+                                !hasReports &&
+                                !isWeekend &&
+                                !isHoliday &&
+                                !isFuture
+                              const isSelected = selectedDayKey === dayCell.key
+                              const isToday = todayDayKey === dayCell.key
+                              const heatmapActive =
+                                heatmapEnabled &&
+                                dayCell.inMonth &&
+                                hasReports &&
+                                info &&
+                                maxDayMinutes &&
+                                !isWeekend
+                              const intensity = heatmapActive
+                                ? Math.min(info.totalMinutes / maxDayMinutes, 1)
+                                : 0
+                              const tooltipLabel = info?.day.reports.length ? (
+                                <div className="calendar-tooltip">
+                                  {info.day.reports.map((report, index) => {
+                                    const meta = taskMetaById.get(report.taskId)
+                                    const projectLabel =
+                                      meta?.projectName || report.projectInstance || report.taskName
+                                    return (
+                                      <div
+                                        key={`${report.taskId}-${index}`}
+                                        className="calendar-tooltip-row"
+                                      >
+                                        <span className="calendar-tooltip-project">{projectLabel}</span>
+                                        <span className="calendar-tooltip-task">{report.taskName}</span>
+                                        <span className="calendar-tooltip-hours">
+                                          {report.hours_HHMM}
+                                        </span>
+                                      </div>
+                                    )
+                                  })}
+                                </div>
+                              ) : (
+                                'No reports'
+                              )
+                              return (
+                                <Tooltip
+                                  key={dayCell.key}
+                                  disabled={!dayCell.inMonth}
+                                  label={tooltipLabel}
+                                  position="top"
+                                  withArrow
+                                  classNames={{
+                                    tooltip: 'calendar-tooltip-shell',
+                                    arrow: 'calendar-tooltip-arrow'
+                                  }}
+                                >
+                                  <span className="tray-day-tooltip-target" role="gridcell">
+                                    <button
+                                      type="button"
+                                      className={[
+                                        'tray-day-button',
+                                        dayCell.inMonth ? '' : 'is-outside',
+                                        hasReports ? 'has-reports' : '',
+                                        isMissing ? 'is-missing' : '',
+                                        isHoliday ? 'is-holiday' : '',
+                                        isWeekend ? 'is-weekend' : '',
+                                        heatmapActive ? 'heatmap' : '',
+                                        isSelected ? 'is-selected' : '',
+                                        isToday ? 'is-today' : ''
+                                      ]
+                                        .join(' ')
+                                        .trim()}
+                                      style={
+                                        heatmapActive
+                                          ? ({ '--heat': intensity } as CSSProperties)
+                                          : undefined
+                                      }
+                                      onClick={() => {
+                                        if (!dayCell.inMonth) return
+                                        handleCalendarChange(dayCell.date)
+                                      }}
+                                      disabled={!dayCell.inMonth}
+                                    >
+                                      <span className="tray-day-number">{dateValue.date()}</span>
+                                    </button>
+                                  </span>
+                                </Tooltip>
+                              )
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )
+                })()}
+              </div>
+
+              <SimpleGrid cols={3} spacing="xs" className="tray-filters">
+                <Select
+                  label="Project"
+                  placeholder="Choose a project"
+                  data={projectOptions}
+                  value={projectName}
+                  onChange={value => {
+                    filtersTouchedRef.current = true
+                    setProjectName(value)
+                    setSuppressCustomerAutoSelect(false)
+                    setSuppressTaskAutoSelect(false)
+                  }}
+                  styles={traySelectStyles}
+                  searchable
+                  clearable
+                  nothingFoundMessage="No matching project"
+                  maxDropdownHeight={180}
+                  disabled={!logs.length}
+                  size="xs"
+                />
+                <Select
+                  label="Customer"
+                  placeholder="Choose a customer"
+                  data={customerOptions}
+                  value={customerName}
+                  onChange={value => {
+                    filtersTouchedRef.current = true
+                    setCustomerName(value)
+                    if (!value) {
+                      setSuppressCustomerAutoSelect(true)
+                      setSuppressTaskAutoSelect(true)
+                    } else {
+                      setSuppressCustomerAutoSelect(false)
+                      setSuppressTaskAutoSelect(false)
+                    }
+                  }}
+                  styles={traySelectStyles}
+                  searchable
+                  clearable
+                  nothingFoundMessage="No matching customer"
+                  maxDropdownHeight={180}
+                  disabled={lockCustomer}
+                  size="xs"
+                />
+                <Select
+                  label="Task"
+                  placeholder="Choose a task"
+                  data={taskOptions}
+                  value={taskName}
+                  onChange={value => {
+                    filtersTouchedRef.current = true
+                    setTaskName(value)
+                    if (!value) {
+                      setSuppressTaskAutoSelect(true)
+                    } else {
+                      setSuppressTaskAutoSelect(false)
+                    }
+                  }}
+                  styles={traySelectStyles}
+                  searchable
+                  clearable
+                  nothingFoundMessage="No matching task"
+                  maxDropdownHeight={180}
+                  disabled={lockTask}
+                  size="xs"
+                />
+              </SimpleGrid>
+
+              {!taskIdForLog && (
+                <Text size="xs" c="dimmed">
+                  Select project, customer, and task to unlock logging.
+                </Text>
+              )}
+
+              <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
+                <TimeInput
+                  label="From"
+                  value={fromTime}
+                  onChange={event => setFromTime(event.currentTarget.value)}
+                  size="xs"
+                />
+                <TimeInput
+                  label="To"
+                  value={toTime}
+                  onChange={event => setToTime(event.currentTarget.value)}
+                  size="xs"
+                />
+              </SimpleGrid>
+              <Text size="xs" c="dimmed" className="tray-duration">
+                {duration
+                  ? `Duration: ${duration.hoursHHMM} (${duration.hours}h)`
+                  : 'Enter a valid start and end time.'}
+              </Text>
+
+              <Textarea
+                label="Comment"
+                placeholder="Add a note (mandatory)"
+                value={comment}
+                onChange={event => setComment(event.currentTarget.value)}
+                autosize
+                minRows={1}
+                maxRows={2}
+                size="xs"
+                withAsterisk
+              />
+
+              {jiraConfigured && (
+                <Stack gap="xs" className="tray-jira-section">
+                  <Group justify="space-between" align="center">
+                    <Text size="xs" c="dimmed">
+                      Jira work item
+                    </Text>
+                    <Switch
+                      size="xs"
+                      checked={logToJira}
+                      onChange={event => {
+                        const next = event.currentTarget.checked
+                        setLogToJira(next)
+                        if (next && !jiraIssueKey && jiraIssueOptions.length) {
+                          setJiraIssueKey(jiraIssueOptions[0].value)
+                        }
+                      }}
+                      label="Log to Jira"
+                      disabled={!jiraConfigured || !mappedEpicKey || jiraLoadingIssues}
+                    />
+                  </Group>
+
+                  {customerName && mappedEpicKey && (
+                    <Select
+                      label="Jira work item"
+                      placeholder="Choose an issue"
+                      data={jiraIssueOptions}
+                      value={jiraIssueKey}
+                      onChange={value => {
+                        setJiraIssueKey(value)
+                        if (!value) setLogToJira(false)
+                      }}
+                      searchable
+                      clearable
+                      nothingFoundMessage="No work items found"
+                      disabled={jiraLoadingIssues}
+                      size="xs"
+                    />
+                  )}
+                </Stack>
+              )}
+
+              {logError && (
+                <Alert color="red" variant="light" radius="md">
+                  {logError}
+                </Alert>
+              )}
+
+              {logSuccess && (
+                <Alert color="teal" variant="light" radius="md">
+                  {logSuccess}
+                </Alert>
+              )}
+
+              <Button
+                radius="md"
+                className="cta-button tray-log-submit"
+                loading={logLoading}
+                disabled={
+                  !taskIdForLog ||
+                  !duration ||
+                  !logDate ||
+                  comment.trim().length < 3 ||
+                  (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                }
+                onClick={() => {
+                  if (taskIdForLog && duration) {
+                    submitLogWork(taskIdForLog, duration)
+                  }
+                }}
+              >
+                Log work
+              </Button>
+            </Stack>
+          )}
+        </Stack>
+      </Box>
+    )
+  }
+
   if (!appReady) {
     const epicLabelLookup = new Map(
       jiraEpics.map(epic => [epic.key, epic.summary ?? epic.key])
@@ -7225,6 +7799,16 @@ export default function App() {
                   <Group gap="xs">
                     <Loader size="xs" />
                     <Text size="sm">Sent DUO to phone for approval. Waiting…</Text>
+                  </Group>
+                </Alert>
+              )}
+              {!duoPending && duoHint && sessionError?.includes('Session expired') && (
+                <Alert className="duo-banner" color="cyan" variant="light" radius="md">
+                  <Group gap="xs">
+                    <Loader size="xs" />
+                    <Text size="sm">
+                      Sent DUO to phone for approval. Please approve, then login.
+                    </Text>
                   </Group>
                 </Alert>
               )}

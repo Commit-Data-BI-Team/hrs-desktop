@@ -295,6 +295,8 @@ type HrsApi = {
   openFloatingTimer: () => Promise<boolean>
   closeFloatingTimer: () => Promise<boolean>
   setFloatingCollapsed: (collapsed: boolean) => Promise<boolean>
+  openMainWindow: () => Promise<boolean>
+  onTrayOpened: (handler: () => void) => () => void
 }
 
 declare global {

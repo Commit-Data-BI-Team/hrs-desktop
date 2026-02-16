@@ -41,6 +41,8 @@ jobs:
       
       - name: 🍎 Build macOS (Apple Silicon only for speed)
         run: npm run dist:mac:arm64
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
       
       - name: ✅ Verify output
         run: |
@@ -72,7 +74,9 @@ jobs:
         run: npm run build
       
       - name: 🪟 Build Windows 64-bit
-        run: npx electron-builder --win x64 --publish never
+        run: npm run dist:win:x64
+        env:
+          GH_TOKEN: ${{ secrets.GH_TOKEN }}
       
       - name: ✅ Verify output
         run: |

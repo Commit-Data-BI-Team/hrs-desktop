@@ -175,6 +175,7 @@ type AppPreferences = {
   meetingsUsername: string
   meetingsPassword: string
   meetingsHeadless: boolean
+  trayMeetingsSettingsOpen: boolean
   meetingsCollapsed: boolean
   meetingsCache: Record<string, MeetingsCacheEntry>
   meetingClientMappings: Record<string, string>
@@ -264,6 +265,7 @@ type HrsApi = {
 	    meetingsUsername?: string
 	    meetingsPassword?: string
 	    meetingsHeadless?: boolean
+	    trayMeetingsSettingsOpen?: boolean
 	    meetingsCollapsed?: boolean
     meetingsCache?: Record<string, MeetingsCacheEntry>
     meetingClientMappings?: Record<string, string>
@@ -296,7 +298,11 @@ type HrsApi = {
   closeFloatingTimer: () => Promise<boolean>
   setFloatingCollapsed: (collapsed: boolean) => Promise<boolean>
   openMainWindow: () => Promise<boolean>
+  openReportsWindow: () => Promise<boolean>
+  openSettingsWindow: () => Promise<boolean>
+  openMeetingsWindow: () => Promise<boolean>
   onTrayOpened: (handler: () => void) => () => void
+  onTrayClosing: (handler: (reason: 'blur' | 'toggle' | 'open-main') => void) => () => void
 }
 
 declare global {

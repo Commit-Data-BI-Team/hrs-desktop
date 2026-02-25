@@ -27,6 +27,34 @@ type MeetingsOptions = {
 
 const REQUIRED_PACKAGES = ['selenium', 'requests', 'pytz']
 
+function shouldIgnoreProgressLine(line: string) {
+  const value = line.trim()
+  if (!value) return true
+  if (value === 'Stacktrace:') return true
+  if (/^\d+\s+chromedriver\b/i.test(value)) return true
+  if (value.includes('cxxbridge1$str$ptr')) return true
+  if (value.includes('libsystem_pthread.dylib')) return true
+  if (value.includes('thread_start +')) return true
+  if (value.includes('_pthread_start +')) return true
+  return false
+}
+
+function resolveMeetingsScriptPath() {
+  const candidates: string[] = []
+  if (app.isPackaged) {
+    candidates.push(
+      path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'meetings_fetch.py')
+    )
+    candidates.push(path.join(process.resourcesPath, 'scripts', 'meetings_fetch.py'))
+  }
+  candidates.push(path.join(app.getAppPath(), 'scripts', 'meetings_fetch.py'))
+  const existing = candidates.find(candidate => fs.existsSync(candidate))
+  if (!existing) {
+    throw new Error(`Meetings script not found. Tried: ${candidates.join(', ')}`)
+  }
+  return existing
+}
+
 function canRunPython(pythonBin: string) {
   const result = spawnSync(pythonBin, ['-V'], { encoding: 'utf8' })
   if (result.error) {
@@ -94,10 +122,7 @@ function ensurePythonEnv(pythonBin: string) {
 
 export function registerMeetingsIpc() {
   ipcMain.handle('meetings:run', async (event, options: MeetingsOptions) => {
-    const scriptPath = path.join(app.getAppPath(), 'scripts', 'meetings_fetch.py')
-    if (!fs.existsSync(scriptPath)) {
-      throw new Error(`Meetings script not found: ${scriptPath}`)
-    }
+    const scriptPath = resolveMeetingsScriptPath()
     const pythonBin = resolvePythonBin()
     const venvPython = ensurePythonEnv(pythonBin)
     const args = [scriptPath, '--browser', options.browser || 'safari']
@@ -129,7 +154,7 @@ export function registerMeetingsIpc() {
         stderrBuffer = lines.pop() ?? ''
         for (const line of lines) {
           const trimmed = line.trim()
-          if (trimmed) {
+          if (trimmed && !shouldIgnoreProgressLine(trimmed)) {
             event.sender.send('meetings:progress', trimmed)
           }
         }
@@ -139,7 +164,7 @@ export function registerMeetingsIpc() {
       })
       child.on('close', code => {
         const remaining = stderrBuffer.trim()
-        if (remaining) {
+        if (remaining && !shouldIgnoreProgressLine(remaining)) {
           event.sender.send('meetings:progress', remaining)
         }
         if (code !== 0) {

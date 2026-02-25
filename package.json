@@ -18,6 +18,8 @@
     "dist:mac:arm64": "npm run icon:tray && npm run build && electron-builder --mac --arm64",
     "dist:mac:x64": "npm run icon:tray && npm run build && electron-builder --mac --x64",
     "dist:mac:universal": "npm run icon:tray && npm run build && electron-builder --mac --universal",
+    "install:mac:dmg": "bash scripts/install-mac-app-from-dmg.sh",
+    "dist:mac:install": "npm run dist:mac && npm run install:mac:dmg",
     "dist:win": "npm run icon:tray && npm run build && electron-builder --win",
     "dist:win:x64": "npm run icon:tray && npm run build && electron-builder --win --x64",
     "dist:win:ia32": "npm run icon:tray && npm run build && electron-builder --win --ia32",
@@ -69,7 +71,11 @@
       "dist-renderer/**",
       "dist-electron/**",
       "build/**",
+      "scripts/**",
       "package.json"
+    ],
+    "asarUnpack": [
+      "scripts/**"
     ],
     "mac": {
       "target": [
@@ -85,6 +91,9 @@
       "identity": null,
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
+      "extendInfo": {
+        "LSUIElement": true
+      },
       "hardenedRuntime": true,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",

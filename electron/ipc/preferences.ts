@@ -63,6 +63,7 @@ export function registerPreferencesIpc() {
         meetingsUsername: string
         meetingsPassword: string
         meetingsHeadless: boolean
+        trayMeetingsSettingsOpen: boolean
         meetingsCollapsed: boolean
         meetingsCache: Record<
           string,

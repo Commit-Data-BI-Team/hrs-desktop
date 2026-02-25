@@ -1389,48 +1389,91 @@ body {
 
 .calendar-tooltip {
   display: grid;
-  gap: 6px;
-  min-width: 220px;
+  gap: 8px;
+  min-width: 260px;
 }
 
 .calendar-tooltip-shell {
-  background: rgba(248, 250, 252, 0.96);
-  color: #0c1a22;
-  border: 1px solid rgba(12, 26, 34, 0.12);
-  box-shadow: 0 10px 26px rgba(7, 15, 24, 0.28);
+  background: linear-gradient(160deg, rgba(13, 25, 34, 0.96), rgba(9, 18, 26, 0.98));
+  color: #eaf3f8;
+  border: 1px solid rgba(110, 186, 198, 0.28);
+  box-shadow: 0 14px 32px rgba(4, 10, 18, 0.45);
   padding: 10px 12px;
   border-radius: 12px;
+  max-width: 360px;
 }
 
 .calendar-tooltip-arrow {
-  border-color: rgba(248, 250, 252, 0.96);
+  border-color: rgba(12, 23, 32, 0.98);
 }
 
-.calendar-tooltip-row {
+.calendar-tooltip--rich {
+  gap: 10px;
+}
+
+.calendar-tooltip-header {
   display: grid;
   grid-template-columns: 1fr auto;
-  gap: 6px 12px;
+  gap: 6px;
+  align-items: center;
+  padding-bottom: 6px;
+  border-bottom: 1px solid rgba(110, 186, 198, 0.2);
+}
+
+.calendar-tooltip-title {
+  font-weight: 700;
+  font-size: 0.76rem;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: rgba(217, 235, 244, 0.75);
+}
+
+.calendar-tooltip-total {
+  font-weight: 800;
+  font-size: 0.9rem;
+  color: #7fe2ce;
+}
+
+.calendar-tooltip-groups {
+  display: grid;
+  gap: 8px;
+}
+
+.calendar-tooltip-group {
+  display: grid;
+  gap: 3px;
+}
+
+.calendar-tooltip-group-top {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
   align-items: center;
 }
 
-.calendar-tooltip-project {
+.calendar-tooltip-customer {
   font-weight: 700;
   font-size: 0.85rem;
-  color: inherit;
+  color: #f2f8fb;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .calendar-tooltip-task {
-  grid-column: 1 / 2;
-  font-size: 0.78rem;
-  color: rgba(12, 26, 34, 0.75);
+  font-size: 0.75rem;
+  color: rgba(218, 234, 242, 0.72);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .calendar-tooltip-hours {
-  grid-column: 2 / 3;
   font-weight: 700;
   font-size: 0.78rem;
-  color: inherit;
+  color: #9be8db;
   text-align: right;
+  white-space: nowrap;
 }
 
 .report-details {
@@ -2184,9 +2227,46 @@ html[data-platform='mac'] body.tray-mode {
 
 .tray-shell {
   height: 100vh;
-  padding: 6px 10px 0;
+  padding: 4px 10px 0;
   box-sizing: border-box;
   background: linear-gradient(180deg, rgba(18, 26, 32, 0.95), rgba(10, 16, 20, 0.98));
+  will-change: opacity, transform;
+}
+
+.tray-shell-enter {
+  animation: tray-shell-enter 170ms cubic-bezier(0.22, 0.61, 0.36, 1);
+  transform-origin: top center;
+}
+
+html[data-platform='windows'] .tray-shell-enter {
+  transform-origin: top right;
+}
+
+.tray-shell-exit {
+  animation: tray-shell-exit 140ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes tray-shell-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.992);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@keyframes tray-shell-exit {
+  from {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.994);
+  }
 }
 
 .tray-content {
@@ -2195,6 +2275,33 @@ html[data-platform='mac'] body.tray-mode {
   overscroll-behavior: contain;
   padding-right: 2px;
   padding-bottom: 0;
+}
+
+.tray-panel-body {
+  display: block;
+}
+
+.tray-panel-enter {
+  animation: tray-panel-enter 180ms ease-out;
+}
+
+@keyframes tray-panel-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tray-shell-enter,
+  .tray-shell-exit,
+  .tray-panel-enter {
+    animation: none;
+  }
 }
 
 .tray-header {
@@ -2222,25 +2329,291 @@ html[data-platform='mac'] body.tray-mode {
 }
 
 .tray-calendar-shell {
-  padding: 10px;
+  padding: 8px;
   border-radius: 16px;
   background: rgba(11, 18, 22, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.tray-nav-row {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 6px;
+  width: 100%;
+  align-items: center;
+  justify-items: center;
+}
+
+.tray-nav-icon-btn {
+  width: 38px;
+  height: 38px;
+  min-width: 38px;
+  min-height: 38px;
+  border-radius: 10px;
+  transition: transform 120ms ease, background-color 120ms ease, box-shadow 120ms ease;
+}
+
+.tray-nav-icon-btn svg {
+  width: 18px;
+  height: 18px;
+  display: block;
+}
+
+.tray-nav-icon-btn:hover {
+  transform: translateY(-1px);
+}
+
+.tray-nav-icon-btn[data-variant='light'] {
+  box-shadow: 0 0 0 1px rgba(100, 190, 255, 0.35) inset;
+}
+
+.tray-meetings-controls {
+  background: rgba(10, 16, 22, 0.72);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.tray-reports-panel {
+  gap: 8px;
+}
+
+.tray-day-editor-modal {
+  background: linear-gradient(180deg, rgba(7, 16, 25, 0.98), rgba(4, 12, 20, 0.97));
+  border: 1px solid rgba(110, 190, 255, 0.24);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+}
+
+.tray-day-editor-header {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 10px;
+  margin-bottom: 4px;
+}
+
+.tray-day-editor-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.tray-day-editor-body {
+  padding-top: 4px;
+}
+
+.tray-day-editor-list {
+  max-height: 58vh;
+  overflow: auto;
+  padding-right: 2px;
+}
+
+.tray-day-editor-item {
+  background: rgba(8, 18, 28, 0.72);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.tray-day-editor-main {
+  min-width: 0;
+}
+
+.tray-day-editor-comment {
+  white-space: pre-wrap;
+  color: rgba(228, 238, 255, 0.9);
+}
+
+.tray-day-editor-empty {
+  background: rgba(10, 18, 27, 0.7);
+  border-color: rgba(255, 255, 255, 0.08);
+}
+
+.tray-report-kpi {
+  background: rgba(10, 17, 22, 0.7);
+  border-color: rgba(255, 255, 255, 0.08);
+  padding: 10px;
+}
+
+.tray-report-list-card {
+  background: rgba(10, 17, 22, 0.66);
+  border-color: rgba(255, 255, 255, 0.08);
+  padding: 10px;
+}
+
+.tray-report-row {
+  border-radius: 8px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tray-project-row {
+  border-radius: 10px;
+  padding: 0;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tray-project-row.is-expanded {
+  border-color: rgba(120, 198, 210, 0.35);
+  background: rgba(20, 35, 46, 0.32);
+}
+
+.tray-project-toggle {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  padding: 8px;
+  cursor: pointer;
+}
+
+.tray-project-chevron {
+  min-width: 10px;
+}
+
+.tray-project-progress {
+  margin-top: 6px;
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.tray-project-progress-fill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, rgba(96, 196, 210, 0.95), rgba(238, 193, 108, 0.95));
+}
+
+.tray-project-details {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px;
+  display: grid;
+  gap: 6px;
+}
+
+.tray-project-task {
+  border-radius: 8px;
+  padding: 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tray-project-subtask {
+  border-radius: 6px;
+  padding: 4px 6px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tray-settings-panel {
+  gap: 8px;
+}
+
+.tray-settings-tabs {
+  margin-bottom: 2px;
+}
+
+.tray-settings-tab-btn {
+  min-height: 34px;
+  border-radius: 10px;
+  padding-inline: 8px;
+}
+
+.tray-settings-tab-btn .mantine-Button-label {
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.tray-settings-card {
+  background: rgba(10, 17, 22, 0.68);
+  border-color: rgba(255, 255, 255, 0.08);
+  padding: 10px;
+}
+
+.tray-clock-panel {
+  gap: 8px;
+}
+
+.tray-clock-card {
+  background: rgba(10, 17, 22, 0.68);
+  border-color: rgba(255, 255, 255, 0.08);
+  padding: 10px;
+}
+
+.tray-clock-history-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.tray-clock-history-row {
+  border-radius: 8px;
+  padding: 6px 8px;
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.tray-clock-history-main {
+  min-width: 0;
+  flex: 1;
+}
+
+.tray-mapping-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.tray-mapping-headers {
+  margin-top: 2px;
+}
+
+.tray-mapping-customer {
+  flex: 1;
+  min-width: 0;
+  justify-content: flex-start;
+  max-width: calc(100% - 180px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tray-mapping-epic {
+  width: 170px;
+  min-width: 170px;
+}
+
+.tray-meetings-list .mantine-Card-root {
+  background: rgba(11, 18, 22, 0.72);
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+.tray-meeting-card {
+  padding: 10px;
+  min-height: 86px;
+}
+
+.tray-meeting-title {
+  flex: 1;
+  min-width: 0;
+}
+
+.tray-meeting-customer {
+  max-width: 140px;
+}
+
+.tray-meeting-time {
+  white-space: nowrap;
+}
+
 .tray-calendar {
-  --tray-day-gap: 8px;
-  --tray-day-height: 52px;
+  --tray-day-gap: 6px;
+  --tray-day-height: 48px;
   --tray-day-radius: 10px;
   width: 100%;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 4px;
 }
 
 html[data-platform='windows'] .tray-calendar {
-  --tray-day-height: 58px;
-  --tray-day-gap: 8px;
+  --tray-day-height: 52px;
+  --tray-day-gap: 6px;
 }
 
 .tray-calendar-weekdays,
@@ -2251,7 +2624,7 @@ html[data-platform='windows'] .tray-calendar {
 }
 
 .tray-calendar-weekdays {
-  margin-bottom: 2px;
+  margin-bottom: 0;
 }
 
 .tray-calendar-grid {
@@ -2421,4 +2794,55 @@ html[data-platform='mac'] .tray-shell {
   border-radius: 18px;
   border: 1px solid rgba(255, 255, 255, 0.1);
   box-shadow: 0 20px 44px rgba(0, 0, 0, 0.45);
+}
+
+body.reports-mode .page-header,
+body.reports-mode .jira-card,
+body.reports-mode .radar-card,
+body.reports-mode .budget-card {
+  display: none;
+}
+
+body.reports-mode .workday-header,
+body.reports-mode .work-column.work-left {
+  display: none;
+}
+
+body.reports-mode .work-split {
+  display: block;
+}
+
+body.reports-mode .work-column.work-right {
+  width: 100%;
+  max-width: 100%;
+}
+
+body.reports-mode .work-panel {
+  padding-top: 18px;
+}
+
+.settings-shell .settings-container {
+  padding-top: 18px;
+  padding-bottom: 18px;
+}
+
+body.meetings-mode .page-header,
+body.meetings-mode .jira-card,
+body.meetings-mode .radar-card,
+body.meetings-mode .budget-card,
+body.meetings-mode .work-panel {
+  display: none;
+}
+
+body.meetings-mode .meetings-card {
+  margin-top: 8px;
+}
+
+.meetings-progress-log {
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(9, 15, 20, 0.65);
 }

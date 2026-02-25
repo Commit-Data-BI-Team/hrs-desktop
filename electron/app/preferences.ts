@@ -48,6 +48,7 @@ type AppPreferences = {
   meetingsUsername: string
   meetingsPassword: string
   meetingsHeadless: boolean
+  trayMeetingsSettingsOpen: boolean
   meetingsCollapsed: boolean
   meetingsCache: Record<
     string,
@@ -130,6 +131,7 @@ const defaultPreferences: AppPreferences = {
   meetingsUsername: '',
   meetingsPassword: '',
   meetingsHeadless: true,
+  trayMeetingsSettingsOpen: true,
   meetingsCollapsed: false,
   meetingsCache: {},
   meetingClientMappings: {},
@@ -180,6 +182,8 @@ export function getPreferences(): AppPreferences {
     meetingsUsername: stored?.meetingsUsername ?? defaultPreferences.meetingsUsername,
     meetingsPassword: stored?.meetingsPassword ?? defaultPreferences.meetingsPassword,
     meetingsHeadless: stored?.meetingsHeadless ?? defaultPreferences.meetingsHeadless,
+    trayMeetingsSettingsOpen:
+      stored?.trayMeetingsSettingsOpen ?? defaultPreferences.trayMeetingsSettingsOpen,
     meetingsCollapsed: stored?.meetingsCollapsed ?? defaultPreferences.meetingsCollapsed,
     meetingsCache: stored?.meetingsCache ?? defaultPreferences.meetingsCache,
     meetingClientMappings:

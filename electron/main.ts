@@ -15,9 +15,16 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url))
 let mainWindow: BrowserWindow | null = null
 let floatingWindow: BrowserWindow | null = null
 let trayWindow: BrowserWindow | null = null
+let reportsWindow: BrowserWindow | null = null
+let settingsWindow: BrowserWindow | null = null
+let meetingsWindow: BrowserWindow | null = null
 let tray: Tray | null = null
+let trayOpenOnReady = false
+let traySuppressBlurUntil = 0
+let trayHideTimer: NodeJS.Timeout | null = null
 let isQuitting = false
 let openMainRequested = false
+const processBootAt = Date.now()
 const startInTray = true
 const iconPath = path.join(app.getAppPath(), 'build', 'icon.icns')
 const trayIconCandidates = {
@@ -44,6 +51,9 @@ const floatingSizes = {
   expanded: { width: 360, height: 320 }
 } as const
 const trayWindowSize = { width: 430, height: 660 }
+const reportsWindowSize = { width: 1220, height: 860 }
+const settingsWindowSize = { width: 700, height: 780 }
+const meetingsWindowSize = { width: 1220, height: 860 }
 
 function getMainLogPaths(): string[] {
   const paths = new Set<string>()
@@ -138,6 +148,20 @@ function applyDockIcon() {
   }
 }
 
+function applyTrayOnlyMode() {
+  if (process.platform !== 'darwin') return
+  try {
+    app.setActivationPolicy('accessory')
+  } catch (error) {
+    logWarn('[main] failed to set accessory activation policy', error)
+  }
+  try {
+    app.dock.hide()
+  } catch (error) {
+    logWarn('[main] failed to hide dock', error)
+  }
+}
+
 function getTrayIcon() {
   const fallback = nativeImage.createEmpty()
   const isWin = process.platform === 'win32'
@@ -188,13 +212,10 @@ function hideMainWindowForFloating() {
 
 function restoreMainWindowFromFloating() {
   if (!mainWindow) return
-  mainWindow.setSkipTaskbar(false)
+  mainWindow.setSkipTaskbar(true)
   mainWindow.show()
   if (mainWindow.isMinimized()) {
     mainWindow.restore()
-  }
-  if (process.platform === 'darwin') {
-    app.dock.show()
   }
 }
 
@@ -208,17 +229,17 @@ function hideMainWindowToTray() {
 }
 
 function showMainWindow() {
-  if (!mainWindow) return
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createMainWindow(false)
+    return
+  }
   openMainRequested = true
-  mainWindow.setSkipTaskbar(false)
+  mainWindow.setSkipTaskbar(true)
   mainWindow.show()
   if (mainWindow.isMinimized()) {
     mainWindow.restore()
   }
   mainWindow.focus()
-  if (process.platform === 'darwin') {
-    app.dock.show()
-  }
 }
 
 function getFloatingOptions() {
@@ -250,14 +271,27 @@ function getFloatingOptions() {
   } as const
 }
 
-function loadRendererWindow(window: BrowserWindow, mode: 'main' | 'floating' | 'tray') {
+function loadRendererWindow(
+  window: BrowserWindow,
+  mode: 'main' | 'floating' | 'tray' | 'reports' | 'settings' | 'meetings'
+) {
   const useFile =
     app.isPackaged || process.env.E2E_USE_FILE === '1' || process.env.HRS_E2E === '1'
   const devServerUrl = !useFile
     ? process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173/'
     : null
   const query =
-    mode === 'floating' ? { floating: '1' } : mode === 'tray' ? { tray: '1' } : null
+    mode === 'floating'
+      ? { floating: '1' }
+      : mode === 'tray'
+        ? { tray: '1' }
+        : mode === 'reports'
+          ? { reports: '1' }
+          : mode === 'settings'
+            ? { settings: '1' }
+            : mode === 'meetings'
+              ? { meetings: '1' }
+            : null
   if (devServerUrl) {
     const baseUrl = devServerUrl.endsWith('/') ? devServerUrl.slice(0, -1) : devServerUrl
     const url = query ? `${baseUrl}?${new URLSearchParams(query).toString()}` : baseUrl
@@ -275,6 +309,7 @@ function createMainWindow(startHidden = false) {
     width: 1200,
     height: 800,
     show: !startHidden,
+    skipTaskbar: true,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -382,6 +417,7 @@ function createTrayWindow() {
     frame: false,
     transparent: false,
     show: false,
+    backgroundColor: '#0e151b',
     hasShadow: true,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
@@ -398,13 +434,117 @@ function createTrayWindow() {
     }
   })
   attachRendererLogging(trayWindow, 'tray')
+  trayWindow.once('ready-to-show', () => {
+    if (!trayOpenOnReady) return
+    trayOpenOnReady = false
+    showTrayWindow()
+  })
   trayWindow.on('blur', () => {
-    trayWindow?.hide()
+    const blurAt = Date.now()
+    if (blurAt < traySuppressBlurUntil) {
+      const waitMs = Math.max(0, traySuppressBlurUntil - blurAt) + 16
+      setTimeout(() => {
+        if (!trayWindow || !trayWindow.isVisible()) return
+        if (!trayWindow.isFocused()) {
+          beginHideTrayWindow('blur')
+        }
+      }, waitMs)
+      return
+    }
+    beginHideTrayWindow('blur')
   })
   trayWindow.on('closed', () => {
+    if (trayHideTimer) {
+      clearTimeout(trayHideTimer)
+      trayHideTimer = null
+    }
     trayWindow = null
   })
   loadRendererWindow(trayWindow, 'tray')
+}
+
+function createDetachedWindow(
+  mode: 'reports' | 'settings' | 'meetings',
+  width: number,
+  height: number,
+  title: string
+) {
+  const window = new BrowserWindow({
+    width,
+    height,
+    minWidth: Math.min(width, 640),
+    minHeight: Math.min(height, 520),
+    show: false,
+    skipTaskbar: true,
+    autoHideMenuBar: process.platform === 'win32',
+    title,
+    icon: fs.existsSync(iconPath) ? iconPath : undefined,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.mjs'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      nodeIntegrationInWorker: false,
+      nodeIntegrationInSubFrames: false,
+      sandbox: true,
+      webSecurity: true,
+      allowRunningInsecureContent: false,
+      enableRemoteModule: false,
+      navigateOnDragDrop: false
+    }
+  })
+  attachRendererLogging(window, mode)
+  window.once('ready-to-show', () => {
+    window.show()
+  })
+  window.on('closed', () => {
+    if (mode === 'reports') reportsWindow = null
+    if (mode === 'settings') settingsWindow = null
+    if (mode === 'meetings') meetingsWindow = null
+  })
+  loadRendererWindow(window, mode)
+  return window
+}
+
+function openReportsWindow() {
+  if (!reportsWindow || reportsWindow.isDestroyed()) {
+    reportsWindow = createDetachedWindow(
+      'reports',
+      reportsWindowSize.width,
+      reportsWindowSize.height,
+      'HRS Reports'
+    )
+  }
+  reportsWindow.show()
+  if (reportsWindow.isMinimized()) reportsWindow.restore()
+  reportsWindow.focus()
+}
+
+function openSettingsWindow() {
+  if (!settingsWindow || settingsWindow.isDestroyed()) {
+    settingsWindow = createDetachedWindow(
+      'settings',
+      settingsWindowSize.width,
+      settingsWindowSize.height,
+      'HRS Settings'
+    )
+  }
+  settingsWindow.show()
+  if (settingsWindow.isMinimized()) settingsWindow.restore()
+  settingsWindow.focus()
+}
+
+function openMeetingsWindow() {
+  if (!meetingsWindow || meetingsWindow.isDestroyed()) {
+    meetingsWindow = createDetachedWindow(
+      'meetings',
+      meetingsWindowSize.width,
+      meetingsWindowSize.height,
+      'HRS Meetings'
+    )
+  }
+  meetingsWindow.show()
+  if (meetingsWindow.isMinimized()) meetingsWindow.restore()
+  meetingsWindow.focus()
 }
 
 function getTrayWindowPosition() {
@@ -432,13 +572,13 @@ function getTrayWindowPosition() {
   return { x, y }
 }
 
-function toggleTrayWindow() {
-  if (!trayWindow) createTrayWindow()
+function showTrayWindow() {
   if (!trayWindow) return
-  if (trayWindow.isVisible()) {
-    trayWindow.hide()
-    return
+  if (trayHideTimer) {
+    clearTimeout(trayHideTimer)
+    trayHideTimer = null
   }
+  traySuppressBlurUntil = Date.now() + 220
   const position = getTrayWindowPosition()
   if (position) {
     trayWindow.setPosition(position.x, position.y, false)
@@ -448,17 +588,39 @@ function toggleTrayWindow() {
   trayWindow.webContents.send('app:trayOpened')
 }
 
+function beginHideTrayWindow(reason: 'blur' | 'toggle' | 'open-main' = 'blur') {
+  if (!trayWindow || !trayWindow.isVisible()) return
+  if (trayHideTimer) {
+    clearTimeout(trayHideTimer)
+    trayHideTimer = null
+  }
+  trayWindow.webContents.send('app:trayClosing', reason)
+  trayHideTimer = setTimeout(() => {
+    if (!trayWindow || !trayWindow.isVisible()) return
+    if (reason === 'blur' && trayWindow.isFocused()) {
+      trayWindow.webContents.send('app:trayOpened')
+      return
+    }
+    trayWindow.hide()
+  }, 140)
+}
+
+function toggleTrayWindow() {
+  if (!trayWindow) {
+    trayOpenOnReady = true
+    createTrayWindow()
+    return
+  }
+  if (!trayWindow) return
+  if (trayWindow.isVisible()) {
+    beginHideTrayWindow('toggle')
+    return
+  }
+  showTrayWindow()
+}
+
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
-    {
-      label: 'Open App',
-      click: () => showMainWindow()
-    },
-    {
-      label: 'Open Quick Log',
-      click: () => toggleTrayWindow()
-    },
-    { type: 'separator' },
     {
       label: 'Quit',
       click: () => {
@@ -495,25 +657,42 @@ function createTray(): boolean {
 }
 
 app.whenReady().then(() => {
-  logInfo('[main] app ready')
+  logInfo('[main] app ready', `boot=${Date.now() - processBootAt}ms`)
   logInfo('[main] logging to', getMainLogPaths())
   app.on('before-quit', () => {
     isQuitting = true
     logInfo('[main] before-quit')
   })
+  if (startInTray) {
+    applyTrayOnlyMode()
+  } else {
+    applyDockIcon()
+  }
+  const trayReady = createTray()
+  logInfo('[main] tray init done', `tray=${trayReady}`, `elapsed=${Date.now() - processBootAt}ms`)
   registerHrsIpc(openLoginWindow)
   registerJiraIpc()
   registerPreferencesIpc()
   registerExportIpc()
   registerNotificationIpc()
   registerMeetingsIpc()
-  applyDockIcon()
-  const trayReady = createTray()
   ipcMain.handle('app:openMainWindow', () => {
     showMainWindow()
     if (trayWindow?.isVisible()) {
-      trayWindow.hide()
+      beginHideTrayWindow('open-main')
     }
+    return true
+  })
+  ipcMain.handle('app:openReportsWindow', () => {
+    openReportsWindow()
+    return true
+  })
+  ipcMain.handle('app:openSettingsWindow', () => {
+    openSettingsWindow()
+    return true
+  })
+  ipcMain.handle('app:openMeetingsWindow', () => {
+    openMeetingsWindow()
     return true
   })
   ipcMain.handle('app:openFloatingTimer', () => {
@@ -531,7 +710,11 @@ app.whenReady().then(() => {
     floatingWindow.setSize(size.width, size.height, false)
     return true
   })
-  createMainWindow(startInTray && trayReady)
+  if (startInTray && trayReady) {
+    logInfo('[main] starting in tray-only mode (main window lazy)')
+  } else {
+    createMainWindow(false)
+  }
 })
 
 app.on('window-all-closed', () => {

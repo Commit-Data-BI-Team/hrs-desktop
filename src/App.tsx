@@ -34,7 +34,9 @@ import {
   IconUser,
   IconClock,
   IconCalendar,
-  IconSparkles
+  IconHistory,
+  IconClipboardText,
+  IconChartBar
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -229,6 +231,7 @@ type AppPreferences = {
   meetingsUsername: string
   meetingsPassword: string
   meetingsHeadless: boolean
+  trayMeetingsSettingsOpen: boolean
   meetingsCollapsed: boolean
   meetingsCache: Record<string, { updatedAt: string; meetings: MeetingItem[] }>
   meetingClientMappings: Record<string, string>
@@ -1321,7 +1324,9 @@ export default function App() {
   const [meetingsPassword, setMeetingsPassword] = useState('')
   const [meetingsUpdatedAt, setMeetingsUpdatedAt] = useState<string | null>(null)
   const [meetingsProgress, setMeetingsProgress] = useState<string | null>(null)
+  const [meetingsProgressLog, setMeetingsProgressLog] = useState<string[]>([])
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
+  const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [meetingsCredentialsOpen, setMeetingsCredentialsOpen] = useState(false)
   const [meetingsCache, setMeetingsCache] = useState<
     Record<string, { updatedAt: string; meetings: MeetingItem[] }>
@@ -1364,6 +1369,15 @@ export default function App() {
   const [reminderMiddayHour, setReminderMiddayHour] = useState(13)
   const [reminderEndHour, setReminderEndHour] = useState(18)
   const [reminderIdleMinutes, setReminderIdleMinutes] = useState(30)
+  const [trayEnterAnimating, setTrayEnterAnimating] = useState(false)
+  const [trayClosingAnimating, setTrayClosingAnimating] = useState(false)
+  const [trayPanel, setTrayPanel] = useState<
+    'log' | 'clockify' | 'meetings' | 'reports' | 'settings'
+  >('log')
+  const [trayReportExpandedEpic, setTrayReportExpandedEpic] = useState<string | null>(null)
+  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'jira' | 'mapping'>('access')
+  const [trayDayEditorOpen, setTrayDayEditorOpen] = useState(false)
+  const [trayDayEditorDateKey, setTrayDayEditorDateKey] = useState<string | null>(null)
   const [reviewMode, setReviewMode] = useState(false)
   const [filtersOpen, setFiltersOpen] = useState(true)
   const [reportsOpen, setReportsOpen] = useState(true)
@@ -1400,6 +1414,10 @@ export default function App() {
     if (!window?.hrs?.onMeetingsProgress) return
     const unsubscribe = window.hrs.onMeetingsProgress(message => {
       setMeetingsProgress(message)
+      setMeetingsProgressLog(prev => {
+        const next = [...prev, message]
+        return next.length > 80 ? next.slice(next.length - 80) : next
+      })
     })
     return () => {
       unsubscribe?.()
@@ -1464,6 +1482,7 @@ export default function App() {
   const autoLoginAttemptedRef = useRef(false)
   const autoLoginLastAttemptAtRef = useRef(0)
   const autoLoginInFlightRef = useRef(false)
+  const trayEnterTimeoutRef = useRef<number | null>(null)
   const hoursSparklineRef = useRef<HTMLDivElement | null>(null)
   const reportListRef = useRef<HTMLDivElement | null>(null)
   const logWorkRef = useRef<HTMLDivElement | null>(null)
@@ -1504,6 +1523,29 @@ export default function App() {
     return new URLSearchParams(window.location.search).get('tray') === '1'
   }, [])
 
+  const isReportsWindow = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('reports') === '1'
+  }, [])
+
+  const isSettingsWindow = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('settings') === '1'
+  }, [])
+
+  const isMeetingsWindow = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('meetings') === '1'
+  }, [])
+
+  const isMainWindow =
+    !isFloating && !isTray && !isReportsWindow && !isSettingsWindow && !isMeetingsWindow
+  const shouldLoadLogData = isMainWindow || isTray || isReportsWindow
+  const shouldLoadJiraEpics = isMainWindow || isReportsWindow
+  const shouldLoadTrayReportJira = isTray && trayPanel === 'reports'
+  const shouldLoadJiraBudgetData = shouldLoadJiraEpics || shouldLoadTrayReportJira
+  const isAuxWindow = isSettingsWindow || isMeetingsWindow
+
   const platform = useMemo(() => {
     if (typeof navigator === 'undefined') return 'other'
     const ua = navigator.userAgent
@@ -1527,13 +1569,49 @@ export default function App() {
     } else {
       document.body.classList.remove('tray-mode')
     }
+    if (isReportsWindow) {
+      document.body.classList.add('reports-mode')
+    } else {
+      document.body.classList.remove('reports-mode')
+    }
+    if (isSettingsWindow) {
+      document.body.classList.add('settings-mode')
+    } else {
+      document.body.classList.remove('settings-mode')
+    }
+    if (isMeetingsWindow) {
+      document.body.classList.add('meetings-mode')
+    } else {
+      document.body.classList.remove('meetings-mode')
+    }
     document.documentElement.setAttribute('data-platform', platform)
-  }, [isTray, platform])
+  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, platform])
 
   useEffect(() => {
     if (!isFloating) return
     if (!logDate) setLogDate(new Date())
   }, [isFloating, logDate])
+
+  useEffect(() => {
+    if (!isMeetingsWindow) return
+    setMeetingsCollapsed(false)
+    setMeetingsCredentialsOpen(true)
+  }, [isMeetingsWindow])
+
+  useEffect(() => {
+    if (!isMeetingsWindow || !preferencesLoaded) return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    const cached = meetingsCache[monthKey]
+    if (cached) {
+      setMeetings(cached.meetings ?? [])
+      setMeetingsMonth(monthKey)
+      setMeetingsUpdatedAt(cached.updatedAt ?? null)
+      return
+    }
+    setMeetings([])
+    setMeetingsMonth(monthKey)
+    setMeetingsUpdatedAt(null)
+  }, [isMeetingsWindow, preferencesLoaded, reportMonth, meetingsCache])
 
   useEffect(() => {
     if (!isFloating) return
@@ -1542,19 +1620,27 @@ export default function App() {
 
   const appReady = useMemo(() => {
     if (isFloating) return true
+    if (isAuxWindow) {
+      return preferencesLoaded && jiraStatusLoaded
+    }
     if (!bootComplete || !preferencesLoaded || !jiraStatusLoaded) return false
     if (!loggedIn) return true
-    if (jiraConfigured && !jiraPrefetchDone) return false
-    if (!logsLoaded || !reportsLoaded) return false
-    if (logs.length && (activeClientTrendLoading || !activeClientTrendLoaded)) return false
+    if (shouldLoadJiraEpics && jiraConfigured && !jiraPrefetchDone) return false
+    if (shouldLoadLogData && (!logsLoaded || !reportsLoaded)) return false
+    if (isMainWindow && logs.length && (activeClientTrendLoading || !activeClientTrendLoaded)) {
+      return false
+    }
     return true
   }, [
     isFloating,
-    checkingSession,
+    isAuxWindow,
     bootComplete,
     preferencesLoaded,
     jiraStatusLoaded,
     loggedIn,
+    shouldLoadJiraEpics,
+    shouldLoadLogData,
+    isMainWindow,
     jiraConfigured,
     jiraPrefetchDone,
     logsLoaded,
@@ -1575,6 +1661,45 @@ export default function App() {
   async function openFloatingTimer() {
     try {
       await window.hrs.openFloatingTimer()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setBridgeError(message)
+    }
+  }
+
+  async function openReportsWindow() {
+    try {
+      if (window.hrs?.openReportsWindow) {
+        await window.hrs.openReportsWindow()
+        return
+      }
+      await window.hrs.openMainWindow()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setBridgeError(message)
+    }
+  }
+
+  async function openSettingsWindow() {
+    try {
+      if (window.hrs?.openSettingsWindow) {
+        await window.hrs.openSettingsWindow()
+        return
+      }
+      await window.hrs.openMainWindow()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setBridgeError(message)
+    }
+  }
+
+  async function openMeetingsWindow() {
+    try {
+      if (window.hrs?.openMeetingsWindow) {
+        await window.hrs.openMeetingsWindow()
+        return
+      }
+      await window.hrs.openMainWindow()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setBridgeError(message)
@@ -1679,6 +1804,25 @@ export default function App() {
       }
     }
   }
+
+  async function retryTrayLogin() {
+    autoLoginAttemptedRef.current = false
+    autoLoginLastAttemptAtRef.current = 0
+    sessionRetryErrorRef.current = null
+    setSessionError(null)
+    await checkSession()
+  }
+
+  function switchTrayPanel(nextPanel: 'log' | 'clockify' | 'meetings' | 'reports' | 'settings') {
+    if (nextPanel === trayPanel) return
+    setTrayPanel(nextPanel)
+  }
+
+  useEffect(() => {
+    if (trayPanel !== 'reports') {
+      setTrayReportExpandedEpic(null)
+    }
+  }, [trayPanel])
 
   async function loadLogs() {
     setLoading(true)
@@ -1905,6 +2049,7 @@ export default function App() {
       setMeetingsUsername(prefs.meetingsUsername ?? '')
       setMeetingsPassword(prefs.meetingsPassword ?? '')
       setMeetingsHeadless(prefs.meetingsHeadless ?? true)
+      setTrayMeetingsSettingsOpen(prefs.trayMeetingsSettingsOpen ?? true)
       setMeetingsCollapsed(prefs.meetingsCollapsed ?? false)
       const normalizedMeetingsCache = Object.fromEntries(
         Object.entries(prefs.meetingsCache ?? {}).map(([key, entry]) => [
@@ -2016,10 +2161,13 @@ export default function App() {
     setMeetingsLoading(true)
     setMeetingsError(null)
     if (!background) {
+      setMeetingsProgressLog([])
+    }
+    if (!background) {
       setMeetingsProgress('Starting meetings fetch…')
     }
     try {
-      const monthKey = dayjs().format('YYYY-MM')
+      const monthKey = dayjs(reportMonth).format('YYYY-MM')
       const cached = meetingsCache[monthKey]
       const cacheFresh =
         cached && dayjs(cached.updatedAt).isAfter(dayjs().subtract(1, 'hour'))
@@ -2429,14 +2577,24 @@ export default function App() {
   // }, [preferencesLoaded, meetingsUsername, meetingsPassword, meetingsBrowser, meetingsHeadless])
 
   useEffect(() => {
-    if (isFloating) return
+    if (isFloating || !shouldLoadJiraEpics) {
+      setJiraPrefetchDone(true)
+      return
+    }
     if (!loggedIn || !jiraStatusLoaded || !preferencesLoaded) return
     if (!jiraConfigured) {
       setJiraPrefetchDone(true)
       return
     }
     void prefetchJiraDetails()
-  }, [isFloating, loggedIn, jiraStatusLoaded, preferencesLoaded, jiraConfigured])
+  }, [
+    isFloating,
+    shouldLoadJiraEpics,
+    loggedIn,
+    jiraStatusLoaded,
+    preferencesLoaded,
+    jiraConfigured
+  ])
 
   useEffect(() => {
     if (jiraConfigured) return
@@ -2717,7 +2875,15 @@ export default function App() {
       const hasWorklogsData = item.worklogs !== undefined
       const subtasks = item.subtasks ?? []
       if (!subtasks.length) return hasWorklogsData
-      return subtasks.every(subtask => subtask.worklogs !== undefined)
+      return subtasks.every(subtask => {
+        const hasWorklogArray = subtask.worklogs !== undefined
+        const hasSubtaskMeta =
+          Boolean(subtask.statusName) ||
+          Boolean(subtask.assigneeName) ||
+          (subtask.estimateSeconds ?? 0) > 0 ||
+          (subtask.timespent ?? 0) > 0
+        return hasWorklogArray && hasSubtaskMeta
+      })
     })
     
     if (cachedDetails && hasCompleteData) {
@@ -2738,7 +2904,7 @@ export default function App() {
       try {
         // Use backend cache for speed - it has correct subtask timespent from worklogs
         const details = await withTimeout(
-          window.hrs.getJiraWorkItemDetails(epicKey, false),
+          window.hrs.getJiraWorkItemDetails(epicKey, true),
           JIRA_DETAIL_TIMEOUT_MS,
           'Loading Jira task details'
         ) as {
@@ -2788,7 +2954,10 @@ export default function App() {
   ) {
     const totals = computeJiraTotals(cachedDetails.items)
     const ratio = totals.estimateSeconds ? totals.spentSeconds / totals.estimateSeconds : 0
-    const contributors = buildContributorSummary(cachedDetails.items)
+    const worklogContributors = buildContributorSummary(cachedDetails.items)
+    const contributors = worklogContributors.length
+      ? worklogContributors
+      : buildPositionFromAssignments(cachedDetails.items)
     setJiraBudgetRows(prev =>
       prev.map(row =>
         row.epicKey === epicKey
@@ -4394,6 +4563,22 @@ export default function App() {
     }
   }
 
+  function applyClockHistory(
+    item: ReportItem & { customer: string; project: string }
+  ) {
+    const meta = taskMetaById.get(item.taskId)
+    filtersTouchedRef.current = true
+    setSuppressCustomerAutoSelect(false)
+    setSuppressTaskAutoSelect(false)
+    setProjectName(meta?.projectName ?? item.project ?? null)
+    setCustomerName(meta?.customerName ?? item.customer ?? null)
+    setTaskName(meta?.taskName ?? item.taskName ?? null)
+    if (item.comment?.trim()) {
+      setComment(item.comment.trim())
+    }
+    setLogSuccess(`Loaded from history: ${meta?.taskName ?? item.taskName}`)
+  }
+
   function openReview() {
     setReviewChecks({
       task: false,
@@ -4419,6 +4604,22 @@ export default function App() {
         beginMonthTransition(nextDate)
       }
     }
+  }
+
+  function openTrayDayEditor(date: Date) {
+    const dateKey = dayjs(date).format('YYYY-MM-DD')
+    handleCalendarChange(date)
+    setTrayDayEditorDateKey(dateKey)
+    setTrayDayEditorOpen(true)
+    setEditError(null)
+  }
+
+  function closeTrayDayEditor() {
+    setTrayDayEditorOpen(false)
+    if (editingEntry && editingEntry.dateKey === trayDayEditorDateKey) {
+      setEditingEntry(null)
+    }
+    setEditError(null)
   }
 
   function beginMonthTransition(nextMonth: Date) {
@@ -4502,6 +4703,74 @@ export default function App() {
     )
   }, [monthlyReport])
 
+  const renderCalendarTooltip = (reports?: WorkReportEntry[]) => {
+    if (!reports?.length) return 'No reports'
+
+    const groupedByCustomer = new Map<
+      string,
+      { totalMinutes: number; tasks: string[]; reportsCount: number }
+    >()
+    let totalMinutes = 0
+
+    for (const report of reports) {
+      const minutes = parseHoursHHMMToMinutes(report.hours_HHMM)
+      totalMinutes += minutes
+      const customer =
+        taskMetaById.get(report.taskId)?.customerName?.trim() ||
+        report.projectInstance ||
+        report.taskName ||
+        'Unknown'
+      const current = groupedByCustomer.get(customer) ?? {
+        totalMinutes: 0,
+        tasks: [],
+        reportsCount: 0
+      }
+      current.totalMinutes += minutes
+      current.reportsCount += 1
+      if (report.taskName) {
+        current.tasks.push(report.taskName)
+      }
+      groupedByCustomer.set(customer, current)
+    }
+
+    const groups = Array.from(groupedByCustomer.entries())
+      .map(([customer, data]) => ({
+        customer,
+        totalMinutes: data.totalMinutes,
+        reportsCount: data.reportsCount,
+        tasks: Array.from(new Set(data.tasks))
+      }))
+      .sort((a, b) => b.totalMinutes - a.totalMinutes)
+
+    return (
+      <div className="calendar-tooltip calendar-tooltip--rich">
+        <div className="calendar-tooltip-header">
+          <span className="calendar-tooltip-title">Total hours</span>
+          <span className="calendar-tooltip-total">{minutesToHHMM(totalMinutes)}</span>
+        </div>
+        <div className="calendar-tooltip-groups">
+          {groups.map(group => {
+            const taskPreview = group.tasks.slice(0, 2).join(' · ')
+            const extraTasks = Math.max(0, group.tasks.length - 2)
+            return (
+              <div key={group.customer} className="calendar-tooltip-group">
+                <div className="calendar-tooltip-group-top">
+                  <span className="calendar-tooltip-customer">{group.customer}</span>
+                  <span className="calendar-tooltip-hours">{minutesToHHMM(group.totalMinutes)}</span>
+                </div>
+                <span className="calendar-tooltip-task">
+                  {group.reportsCount} report{group.reportsCount > 1 ? 's' : ''}
+                  {taskPreview ? ` · ${taskPreview}` : ''}
+                  {extraTasks > 0 ? ` +${extraTasks}` : ''}
+                </span>
+              </div>
+            )
+          })}
+        </div>
+      </div>
+    )
+  }
+
   const uniqueCustomers = useMemo(() => {
     const set = new Set<string>()
     for (const log of logs) {
@@ -4551,6 +4820,11 @@ export default function App() {
     [logs]
   )
 
+  const hrsCustomerOptions = useMemo(
+    () => buildOptions(logs, log => log.customerName),
+    [logs]
+  )
+
   const jiraProjectCustomerOptions = useMemo(() => {
     const scoped = logs.filter(
       log => !jiraMappingProject || log.projectName === jiraMappingProject
@@ -4576,6 +4850,13 @@ export default function App() {
     }
     return customers
   }, [displayedJiraCustomers, jiraMappingProject, jiraMappingCustomer, logs])
+
+  const trayReportedCustomers = useMemo(() => reportedCustomers, [reportedCustomers])
+
+  const trayReportedMappedCount = useMemo(
+    () => trayReportedCustomers.filter(customer => Boolean(jiraMappings[customer])).length,
+    [trayReportedCustomers, jiraMappings]
+  )
 
   useEffect(() => {
     if (!jiraConnectOpen) return
@@ -4977,12 +5258,12 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (!loggedIn) return
+    if (!loggedIn || !shouldLoadLogData) return
     loadReportsForMonth(reportMonth)
-  }, [loggedIn, reportMonth])
+  }, [loggedIn, shouldLoadLogData, reportMonth])
 
   useEffect(() => {
-    if (!loggedIn) return
+    if (!loggedIn || !shouldLoadLogData) return
     if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
     const intervalId = window.setInterval(() => {
       void loadReportsForMonth(reportMonth)
@@ -4995,7 +5276,7 @@ export default function App() {
       window.clearInterval(intervalId)
       window.removeEventListener('focus', onFocus)
     }
-  }, [loggedIn, reportMonth])
+  }, [loggedIn, shouldLoadLogData, reportMonth])
 
   useEffect(() => {
     if (!isTray || !loggedIn) return
@@ -5011,12 +5292,81 @@ export default function App() {
   }, [isTray, loggedIn, reportMonth])
 
   useEffect(() => {
-    if (!isTray || !loggedIn || !window.hrs?.onTrayOpened) return
-    return window.hrs.onTrayOpened(() => {
+    if (!isTray || !window.hrs?.onTrayOpened) return
+    const disposeOpen = window.hrs.onTrayOpened(() => {
+      if (trayEnterTimeoutRef.current) {
+        window.clearTimeout(trayEnterTimeoutRef.current)
+      }
+      setTrayClosingAnimating(false)
+      setTrayEnterAnimating(false)
+      window.requestAnimationFrame(() => {
+        setTrayEnterAnimating(true)
+      })
+      trayEnterTimeoutRef.current = window.setTimeout(() => {
+        setTrayEnterAnimating(false)
+      }, 220)
+      if (!loggedIn) return
       if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
       void loadReportsForMonth(reportMonth)
     })
+    const disposeClosing = window.hrs?.onTrayClosing?.(() => {
+      if (trayEnterTimeoutRef.current) {
+        window.clearTimeout(trayEnterTimeoutRef.current)
+      }
+      setTrayEnterAnimating(false)
+      setTrayClosingAnimating(true)
+    })
+    return () => {
+      disposeOpen?.()
+      disposeClosing?.()
+    }
   }, [isTray, loggedIn, reportMonth])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn || trayPanel !== 'meetings') return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    const cached = meetingsCache[monthKey]
+    if (cached) {
+      setMeetings(cached.meetings ?? [])
+      setMeetingsMonth(monthKey)
+      setMeetingsUpdatedAt(cached.updatedAt ?? null)
+      return
+    }
+    void fetchMeetings(true)
+  }, [isTray, loggedIn, trayPanel, reportMonth, meetingsCache])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn || trayPanel !== 'reports') return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    if (reportsCacheRef.current.has(monthKey)) return
+    void loadReportsForMonth(reportMonth)
+  }, [isTray, loggedIn, trayPanel, reportMonth])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn) return
+    if (trayPanel !== 'settings' || traySettingsTab !== 'mapping') return
+    if (!jiraConfigured) return
+    if (jiraEpics.length || jiraLoading) return
+    if (jiraEpicsFailedAt && Date.now() - jiraEpicsFailedAt < JIRA_EPICS_RETRY_MS) return
+    void loadJiraEpics()
+  }, [
+    isTray,
+    loggedIn,
+    trayPanel,
+    traySettingsTab,
+    jiraConfigured,
+    jiraEpics.length,
+    jiraLoading,
+    jiraEpicsFailedAt
+  ])
+
+  useEffect(() => {
+    return () => {
+      if (trayEnterTimeoutRef.current) {
+        window.clearTimeout(trayEnterTimeoutRef.current)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     if (!loggedIn) return
@@ -5031,7 +5381,7 @@ export default function App() {
   }, [loggedIn])
 
   useEffect(() => {
-    if (!loggedIn || !monthlyReport) return
+    if (!loggedIn || !shouldLoadLogData || !monthlyReport) return
     const base = dayjs(reportMonth).startOf('month')
     const targets = Array.from({ length: 6 }, (_, index) =>
       base.subtract(index, 'month').toDate()
@@ -5051,7 +5401,7 @@ export default function App() {
           reportsPrefetchRef.current.delete(key)
         })
     }
-  }, [loggedIn, reportMonth, monthlyReport])
+  }, [loggedIn, shouldLoadLogData, reportMonth, monthlyReport])
 
   useEffect(() => {
     const key = dayjs().format('YYYY-MM')
@@ -5104,22 +5454,24 @@ export default function App() {
   }, [monthlyReport, reportMonth])
 
   useEffect(() => {
-    if (!loggedIn) return
+    if (!loggedIn || !shouldLoadLogData) return
     loadLogs()
-  }, [loggedIn])
+  }, [loggedIn, shouldLoadLogData])
 
   useEffect(() => {
-    if (!loggedIn || !logs.length) return
+    if (!loggedIn || !isMainWindow || !logs.length) return
     void loadActiveClientTrend()
-  }, [loggedIn, logs])
+  }, [loggedIn, isMainWindow, logs])
 
   useEffect(() => {
+    if (!shouldLoadJiraBudgetData) return
     if (!preferencesLoaded) return
     if (!jiraConfigured) return
     if (jiraEpics.length || jiraLoading) return
     if (jiraEpicsFailedAt && Date.now() - jiraEpicsFailedAt < JIRA_EPICS_RETRY_MS) return
     void loadJiraEpics()
   }, [
+    shouldLoadJiraBudgetData,
     preferencesLoaded,
     jiraConfigured,
     jiraEpics.length,
@@ -5128,7 +5480,7 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (!jiraConfigured) {
+    if (!shouldLoadJiraBudgetData || !jiraConfigured) {
       setJiraTimeConfig(null)
       return
     }
@@ -5145,10 +5497,10 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [jiraConfigured])
+  }, [shouldLoadJiraBudgetData, jiraConfigured])
 
   useEffect(() => {
-    if (!jiraConfigured || !mappedEpicKey) {
+    if (!shouldLoadJiraEpics || !jiraConfigured || !mappedEpicKey) {
       setJiraIssues([])
       setJiraIssueKey(null)
       setJiraIssueLoadError(null)
@@ -5164,7 +5516,7 @@ export default function App() {
     }
     setJiraLoadingIssues(false)
     setJiraIssueLoadError(null)
-  }, [jiraConfigured, mappedEpicKey, logToJira])
+  }, [shouldLoadJiraEpics, jiraConfigured, mappedEpicKey, logToJira])
 
   useEffect(() => {
     if (!logToJira) return
@@ -5184,7 +5536,7 @@ export default function App() {
   }, [logToJira, mappedEpicKey, jiraIssues.length, jiraBudgetRows])
 
   useEffect(() => {
-    if (!jiraConfigured) {
+    if (!shouldLoadJiraBudgetData || !jiraConfigured) {
       setJiraBudgetRows([])
       setTimeBudgetError(null)
       setTimeBudgetLoading(false)
@@ -5229,10 +5581,17 @@ export default function App() {
       .sort((a, b) => a.customer.localeCompare(b.customer))
     setJiraBudgetRows(rows)
     setTimeBudgetLoading(false)
-  }, [jiraConfigured, jiraPrefetchDone, jiraMappings, jiraManualBudgets, displayedJiraCustomers])
+  }, [
+    shouldLoadJiraBudgetData,
+    jiraConfigured,
+    jiraPrefetchDone,
+    jiraMappings,
+    jiraManualBudgets,
+    displayedJiraCustomers
+  ])
 
   useEffect(() => {
-    if (!jiraConfigured || !jiraBudgetRows.length) return
+    if (!shouldLoadJiraBudgetData || !jiraConfigured || !jiraBudgetRows.length) return
     let cancelled = false
     const now = Date.now()
     const pending = jiraBudgetRows
@@ -5269,9 +5628,10 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [jiraConfigured, jiraBudgetRows])
+  }, [shouldLoadJiraBudgetData, jiraConfigured, jiraBudgetRows])
 
   useEffect(() => {
+    if (!shouldLoadJiraBudgetData) return
     if (!jiraBudgetRows.length) return
     const cachedKeys: string[] = []
     for (const row of jiraBudgetRows) {
@@ -5287,10 +5647,10 @@ export default function App() {
         applyDetailsToRow(epicKey, cached)
       }
     }
-  }, [jiraBudgetRows])
+  }, [shouldLoadJiraBudgetData, jiraBudgetRows])
 
   useEffect(() => {
-    if (!jiraPrefetchDone || !jiraBudgetRows.length) return
+    if (!shouldLoadJiraEpics || !jiraPrefetchDone || !jiraBudgetRows.length) return
     for (const row of jiraBudgetRows) {
       if (row.detailsLoaded || row.detailsLoading) continue
       const cached = jiraBudgetDetailsCacheRef.current.get(row.epicKey)
@@ -5300,7 +5660,7 @@ export default function App() {
         void loadBudgetTasks(row.epicKey)
       }
     }
-  }, [jiraPrefetchDone, jiraBudgetRows])
+  }, [shouldLoadJiraEpics, jiraPrefetchDone, jiraBudgetRows])
 
   // Background fetch disabled - full data loads when user expands row
   // (Re-enable if needed for automatic loading)
@@ -5312,13 +5672,13 @@ export default function App() {
   */
 
   useEffect(() => {
-    if (!jiraConfigured || !jiraIssueKey) {
+    if (!shouldLoadJiraEpics || !jiraConfigured || !jiraIssueKey) {
       setJiraWorklogs([])
       setJiraWorklogWarning(null)
       return
     }
     void loadJiraWorklogHistory(jiraIssueKey)
-  }, [jiraConfigured, jiraIssueKey, logDate, comment])
+  }, [shouldLoadJiraEpics, jiraConfigured, jiraIssueKey, logDate, comment])
 
   useEffect(() => {
     if (!preferencesLoaded) return
@@ -5355,6 +5715,7 @@ export default function App() {
       meetingsUsername,
       meetingsPassword,
       meetingsHeadless,
+      trayMeetingsSettingsOpen,
       meetingsCollapsed,
       meetingsCache,
       meetingClientMappings,
@@ -5393,6 +5754,7 @@ export default function App() {
     meetingsUsername,
     meetingsPassword,
     meetingsHeadless,
+    trayMeetingsSettingsOpen,
     meetingsCollapsed,
     meetingsCache,
     meetingClientMappings,
@@ -5401,6 +5763,7 @@ export default function App() {
   ])
 
   useEffect(() => {
+    if (!shouldLoadJiraEpics) return
     if (!jiraBudgetRows.length) return
     const now = dayjs()
     const currentMonthKey = now.format('YYYY-MM')
@@ -5469,7 +5832,7 @@ export default function App() {
 
       return next ?? prev
     })
-  }, [jiraBudgetRows])
+  }, [shouldLoadJiraEpics, jiraBudgetRows])
 
   useEffect(() => {
     if (!preferencesLoaded) return
@@ -5658,8 +6021,23 @@ export default function App() {
     return map
   }, [logs])
 
+  const clockHistoryItems = useMemo(() => {
+    return [...allReportItems]
+      .sort((a, b) => {
+        const aTime = dayjs(`${a.dateKey}T${a.from ?? '00:00'}`).valueOf()
+        const bTime = dayjs(`${b.dateKey}T${b.from ?? '00:00'}`).valueOf()
+        return bTime - aTime
+      })
+      .slice(0, 8)
+      .map(item => ({
+        ...item,
+        customer: taskMetaById.get(item.taskId)?.customerName ?? 'Unknown',
+        project: taskMetaById.get(item.taskId)?.projectName ?? item.projectInstance ?? item.taskName
+      }))
+  }, [allReportItems, taskMetaById])
+
   useEffect(() => {
-    if (!loggedIn) return
+    if (!loggedIn || !isMainWindow) return
     const computeWeekDelta = async () => {
       const now = dayjs()
       const weekStart = now.startOf('week')
@@ -5712,7 +6090,7 @@ export default function App() {
 
     }
     void computeWeekDelta()
-  }, [loggedIn, monthlyReport, reportMonth])
+  }, [loggedIn, isMainWindow, monthlyReport, reportMonth])
 
   const duration = useMemo<Duration | null>(() => {
     return buildDurationFromTimes(fromTime, toTime)
@@ -6233,6 +6611,19 @@ export default function App() {
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
   }, [taskIdForLog, duration, reviewMode])
+
+  const trayDayEditorReports = useMemo(() => {
+    if (!trayDayEditorDateKey) return [] as Array<WorkReportEntry & { dayIndex: number }>
+    const dayInfo = reportsByDate.get(trayDayEditorDateKey)
+    if (!dayInfo) return [] as Array<WorkReportEntry & { dayIndex: number }>
+    return dayInfo.day.reports.map((report, dayIndex) => ({ ...report, dayIndex }))
+  }, [trayDayEditorDateKey, reportsByDate])
+
+  const trayDayEditorTotalMinutes = useMemo(() => {
+    return trayDayEditorReports.reduce((total, report) => {
+      return total + parseHoursHHMMToMinutes(report.hours_HHMM)
+    }, 0)
+  }, [trayDayEditorReports])
 
   const reportItems = selectedReportKey
     ? allReportItems.filter(item => item.dateKey === selectedReportKey)
@@ -7079,6 +7470,177 @@ export default function App() {
     }
   }
 
+  const meetingMappingModal = (
+    <Modal
+      opened={meetingMappingOpen}
+      onClose={() => {
+        setMeetingMappingOpen(false)
+        setMeetingMappingMeeting(null)
+      }}
+      title="Map meeting to client"
+      centered
+      radius="md"
+    >
+      <Stack gap="md">
+        {meetingMappingMeeting && (
+          <Stack gap={4}>
+            <Text size="sm" fw={600}>
+              {meetingMappingMeeting.subject || 'Meeting'}
+            </Text>
+            <Text size="xs" c="dimmed">
+              {meetingMappingMeeting.startTime} · {meetingMappingMeeting.endTime}
+            </Text>
+            {meetingMappingMeeting.participants && (
+              <Text size="xs" c="dimmed">
+                Attendees: {meetingMappingMeeting.participants}
+              </Text>
+            )}
+          </Stack>
+        )}
+
+        <Select
+          label="Match by"
+          placeholder="Pick an email, domain, or name"
+          data={meetingMappingOptions}
+          value={meetingMappingKey}
+          onChange={value => setMeetingMappingKey(value)}
+          searchable
+          clearable
+          nothingFoundMessage="No attendees found"
+        />
+
+        <TextInput
+          label="Custom match (optional)"
+          placeholder="email:person@client.com or domain:client.com"
+          value={meetingMappingCustomKey}
+          onChange={event => setMeetingMappingCustomKey(event.currentTarget.value)}
+        />
+
+        <Select
+          label="Project"
+          placeholder="Choose a project"
+          data={meetingMappingProjectOptionsForClient}
+          value={meetingMappingProject}
+          onChange={value => setMeetingMappingProject(value)}
+          searchable
+          clearable
+          nothingFoundMessage="No projects found"
+        />
+
+        <Select
+          label={meetingMappingProject ? 'Client entry' : 'Client'}
+          placeholder="Select a client"
+          data={meetingMappingCustomerOptions}
+          value={meetingMappingClient}
+          onChange={value => setMeetingMappingClient(value)}
+          searchable
+          clearable
+          nothingFoundMessage="No clients found"
+        />
+
+        {meetingMappingProject && meetingMappingCustomerOptions.length === 1 && (
+          <Text size="xs" c="dimmed">
+            Only one client found for this project.
+          </Text>
+        )}
+
+        <Select
+          label="Task"
+          placeholder="Select a task"
+          data={meetingLogTaskOptions}
+          value={meetingLogTaskId}
+          onChange={value => setMeetingLogTaskId(value)}
+          searchable
+          clearable
+          nothingFoundMessage="No tasks found"
+          disabled={!meetingMappingProject || !meetingMappingClient}
+        />
+
+        {meetingMappingProject &&
+          meetingMappingClient &&
+          !meetingLogTaskOptions.length && (
+            <Text size="xs" c="dimmed">
+              No tasks found for this client.
+            </Text>
+          )}
+
+        <Stack gap="xs">
+          <Group justify="space-between" align="center">
+            <Text size="sm" fw={600}>
+              Log to Jira (optional)
+            </Text>
+            <Switch
+              checked={meetingLogToJira}
+              onChange={event => setMeetingLogToJira(event.currentTarget.checked)}
+              disabled={!meetingMappingClient || !jiraConfigured}
+            />
+          </Group>
+
+          {!jiraConfigured && (
+            <Text size="xs" c="dimmed">
+              Connect Jira to enable meeting logging.
+            </Text>
+          )}
+
+          {meetingLogToJira && meetingMappingClient && !meetingMappedEpicKey && jiraConfigured && (
+            <Text size="xs" c="dimmed">
+              Map this client to a Jira epic first.
+            </Text>
+          )}
+
+          {meetingLogToJira && meetingMappedEpicKey && (
+            <Text size="xs" c="dimmed">
+              Jira target: {meetingMappedEpicKey}
+              {meetingMappedEpic ? ` · ${meetingMappedEpic.summary}` : ''}
+            </Text>
+          )}
+
+          {meetingLogToJira && meetingMappedEpicKey && (
+            <Select
+              label="Jira work item (optional)"
+              placeholder="Choose a task or subtask"
+              data={meetingLogIssueOptions}
+              value={meetingLogIssueKey}
+              onChange={value => setMeetingLogIssueKey(value)}
+              searchable
+              clearable
+              nothingFoundMessage="No work items found"
+              disabled={meetingLogLoading}
+            />
+          )}
+
+          {meetingLogLoading && (
+            <Group gap="xs">
+              <Loader size="xs" />
+              <Text size="xs" c="dimmed">
+                Loading Jira work items…
+              </Text>
+            </Group>
+          )}
+
+          {meetingLogError && (
+            <Alert color="red" variant="light" radius="md">
+              {meetingLogError}
+            </Alert>
+          )}
+        </Stack>
+
+        {meetingMappingError && (
+          <Alert color="red" variant="light" radius="md">
+            {meetingMappingError}
+          </Alert>
+        )}
+
+        <Group justify="space-between" align="center">
+          <Button variant="subtle" onClick={() => setMeetingMappingOpen(false)}>
+            Cancel
+          </Button>
+          <Button onClick={saveMeetingMapping}>Save &amp; log</Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   if (isFloating) {
     return (
       <Box className="floating-shell">
@@ -7303,7 +7865,11 @@ export default function App() {
 
   if (isTray) {
     return (
-      <Box className="tray-shell">
+      <Box
+        className={`tray-shell${trayEnterAnimating ? ' tray-shell-enter' : ''}${
+          trayClosingAnimating ? ' tray-shell-exit' : ''
+        }`}
+      >
         <Stack gap="sm" className="tray-content">
           {!window.hrs && (
             <Alert color="red" variant="light" radius="md">
@@ -7349,6 +7915,48 @@ export default function App() {
                   {sessionError}
                 </Alert>
               )}
+              <Text size="xs" c="dimmed">
+                If you already approved DUO, press login below.
+              </Text>
+              <Button
+                size="xs"
+                variant="light"
+                loading={checkingSession || duoPending}
+                onClick={() => {
+                  void retryTrayLogin()
+                }}
+              >
+                Login now
+              </Button>
+              <Group grow>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    switchTrayPanel('settings')
+                  }}
+                >
+                  Settings
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    switchTrayPanel('reports')
+                  }}
+                >
+                  Reports
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    switchTrayPanel('meetings')
+                  }}
+                >
+                  Meetings
+                </Button>
+              </Group>
             </Stack>
           )}
 
@@ -7365,323 +7973,1388 @@ export default function App() {
                   Next
                 </Button>
               </Group>
+              <div className="tray-nav-row">
+                <Tooltip label="Quick Log" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant={trayPanel === 'log' ? 'light' : 'subtle'}
+                    onClick={() => switchTrayPanel('log')}
+                    aria-label="Quick Log"
+                    title="Quick Log"
+                  >
+                    <IconClipboardText size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Clockify" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant={trayPanel === 'clockify' ? 'light' : 'subtle'}
+                    onClick={() => switchTrayPanel('clockify')}
+                    aria-label="Clockify"
+                    title="Clockify"
+                  >
+                    <IconClock size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Meetings" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant={trayPanel === 'meetings' ? 'light' : 'subtle'}
+                    onClick={() => switchTrayPanel('meetings')}
+                    aria-label="Meetings"
+                    title="Meetings"
+                  >
+                    <IconCalendar size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Reports" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant={trayPanel === 'reports' ? 'light' : 'subtle'}
+                    onClick={() => {
+                      switchTrayPanel('reports')
+                    }}
+                    aria-label="Reports"
+                    title="Reports"
+                  >
+                    <IconChartBar size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Settings" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant={trayPanel === 'settings' ? 'light' : 'subtle'}
+                    onClick={() => {
+                      switchTrayPanel('settings')
+                    }}
+                    aria-label="Settings"
+                    title="Settings"
+                  >
+                    <IconUser size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
+              </div>
 
-              <div className="tray-calendar-shell">
-                {(() => {
-                  const monthStart = dayjs(reportMonth).startOf('month')
-                  const monthEnd = monthStart.endOf('month')
-                  const gridStart = monthStart.startOf('week')
-                  const gridEnd = monthEnd.endOf('week')
-                  const selectedDayKey = logDate ? dayjs(logDate).format('YYYY-MM-DD') : null
-                  const todayDayKey = dayjs().format('YYYY-MM-DD')
-                  const cells: Array<{ key: string; date: Date; inMonth: boolean }> = []
-                  let cursor = gridStart
-                  while (cursor.isBefore(gridEnd, 'day') || cursor.isSame(gridEnd, 'day')) {
-                    cells.push({
-                      key: cursor.format('YYYY-MM-DD'),
-                      date: cursor.toDate(),
-                      inMonth: cursor.isSame(monthStart, 'month')
-                    })
-                    cursor = cursor.add(1, 'day')
-                  }
-                  const weeks: Array<Array<{ key: string; date: Date; inMonth: boolean }>> = []
-                  for (let index = 0; index < cells.length; index += 7) {
-                    weeks.push(cells.slice(index, index + 7))
-                  }
-                  return (
-                    <div className="tray-calendar" role="grid" aria-label="Quick log calendar">
-                      <div className="tray-calendar-weekdays" role="row">
-                        {['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].map(label => (
-                          <span key={label} className="tray-calendar-weekday" role="columnheader">
-                            {label}
-                          </span>
-                        ))}
-                      </div>
-                      <div className="tray-calendar-grid">
-                        {weeks.map((week, weekIndex) => (
-                          <div className="tray-calendar-row" role="row" key={`week-${weekIndex}`}>
-                            {week.map(dayCell => {
-                              const info = reportsByDate.get(dayCell.key)
-                              const dateValue = dayjs(dayCell.date)
-                              const hasReports = Boolean(info?.day.reports.length)
-                              const isHoliday = Boolean(info?.day.isHoliday)
-                              const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
-                              const isFuture = dateValue.isAfter(dayjs(), 'day')
-                              const isMissing =
-                                dayCell.inMonth &&
-                                !hasReports &&
-                                !isWeekend &&
-                                !isHoliday &&
-                                !isFuture
-                              const isSelected = selectedDayKey === dayCell.key
-                              const isToday = todayDayKey === dayCell.key
-                              const heatmapActive =
-                                heatmapEnabled &&
-                                dayCell.inMonth &&
-                                hasReports &&
-                                info &&
-                                maxDayMinutes &&
-                                !isWeekend
-                              const intensity = heatmapActive
-                                ? Math.min(info.totalMinutes / maxDayMinutes, 1)
-                                : 0
-                              const tooltipLabel = info?.day.reports.length ? (
-                                <div className="calendar-tooltip">
-                                  {info.day.reports.map((report, index) => {
-                                    const meta = taskMetaById.get(report.taskId)
-                                    const projectLabel =
-                                      meta?.projectName || report.projectInstance || report.taskName
+              <div className="tray-panel-body">
+                {trayPanel === 'log' ? (
+                  <Stack gap="xs">
+                    <div className="tray-calendar-shell">
+                      {(() => {
+                        const monthStart = dayjs(reportMonth).startOf('month')
+                        const monthEnd = monthStart.endOf('month')
+                        const gridStart = monthStart.startOf('week')
+                        const gridEnd = monthEnd.endOf('week')
+                        const selectedDayKey = logDate ? dayjs(logDate).format('YYYY-MM-DD') : null
+                        const todayDayKey = dayjs().format('YYYY-MM-DD')
+                        const cells: Array<{ key: string; date: Date; inMonth: boolean }> = []
+                        let cursor = gridStart
+                        while (cursor.isBefore(gridEnd, 'day') || cursor.isSame(gridEnd, 'day')) {
+                          cells.push({
+                            key: cursor.format('YYYY-MM-DD'),
+                            date: cursor.toDate(),
+                            inMonth: cursor.isSame(monthStart, 'month')
+                          })
+                          cursor = cursor.add(1, 'day')
+                        }
+                        const weeks: Array<Array<{ key: string; date: Date; inMonth: boolean }>> = []
+                        for (let index = 0; index < cells.length; index += 7) {
+                          weeks.push(cells.slice(index, index + 7))
+                        }
+                        return (
+                          <div className="tray-calendar" role="grid" aria-label="Quick log calendar">
+                            <div className="tray-calendar-weekdays" role="row">
+                              {['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].map(label => (
+                                <span key={label} className="tray-calendar-weekday" role="columnheader">
+                                  {label}
+                                </span>
+                              ))}
+                            </div>
+                            <div className="tray-calendar-grid">
+                              {weeks.map((week, weekIndex) => (
+                                <div className="tray-calendar-row" role="row" key={`week-${weekIndex}`}>
+                                  {week.map(dayCell => {
+                                    const info = reportsByDate.get(dayCell.key)
+                                    const dateValue = dayjs(dayCell.date)
+                                    const hasReports = Boolean(info?.day.reports.length)
+                                    const isHoliday = Boolean(info?.day.isHoliday)
+                                    const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
+                                    const isFuture = dateValue.isAfter(dayjs(), 'day')
+                                    const isMissing =
+                                      dayCell.inMonth &&
+                                      !hasReports &&
+                                      !isWeekend &&
+                                      !isHoliday &&
+                                      !isFuture
+                                    const isSelected = selectedDayKey === dayCell.key
+                                    const isToday = todayDayKey === dayCell.key
+                                    const heatmapActive =
+                                      heatmapEnabled &&
+                                      dayCell.inMonth &&
+                                      hasReports &&
+                                      info &&
+                                      maxDayMinutes &&
+                                      !isWeekend
+                                    const intensity = heatmapActive
+                                      ? Math.min(info.totalMinutes / maxDayMinutes, 1)
+                                      : 0
+                                    const tooltipLabel = renderCalendarTooltip(info?.day.reports)
                                     return (
-                                      <div
-                                        key={`${report.taskId}-${index}`}
-                                        className="calendar-tooltip-row"
+                                      <Tooltip
+                                        key={dayCell.key}
+                                        disabled={!dayCell.inMonth}
+                                        label={tooltipLabel}
+                                        position="top"
+                                        withArrow
+                                        classNames={{
+                                          tooltip: 'calendar-tooltip-shell',
+                                          arrow: 'calendar-tooltip-arrow'
+                                        }}
                                       >
-                                        <span className="calendar-tooltip-project">{projectLabel}</span>
-                                        <span className="calendar-tooltip-task">{report.taskName}</span>
-                                        <span className="calendar-tooltip-hours">
-                                          {report.hours_HHMM}
+                                        <span className="tray-day-tooltip-target" role="gridcell">
+                                          <button
+                                            type="button"
+                                            className={[
+                                              'tray-day-button',
+                                              dayCell.inMonth ? '' : 'is-outside',
+                                              hasReports ? 'has-reports' : '',
+                                              isMissing ? 'is-missing' : '',
+                                              isHoliday ? 'is-holiday' : '',
+                                              isWeekend ? 'is-weekend' : '',
+                                              heatmapActive ? 'heatmap' : '',
+                                              isSelected ? 'is-selected' : '',
+                                              isToday ? 'is-today' : ''
+                                            ]
+                                              .join(' ')
+                                              .trim()}
+                                            style={
+                                              heatmapActive
+                                                ? ({ '--heat': intensity } as CSSProperties)
+                                                : undefined
+                                            }
+                                            onClick={() => {
+                                              if (!dayCell.inMonth) return
+                                              openTrayDayEditor(dayCell.date)
+                                            }}
+                                            disabled={!dayCell.inMonth}
+                                          >
+                                            <span className="tray-day-number">{dateValue.date()}</span>
+                                          </button>
                                         </span>
-                                      </div>
+                                      </Tooltip>
                                     )
                                   })}
                                 </div>
-                              ) : (
-                                'No reports'
-                              )
-                              return (
-                                <Tooltip
-                                  key={dayCell.key}
-                                  disabled={!dayCell.inMonth}
-                                  label={tooltipLabel}
-                                  position="top"
-                                  withArrow
-                                  classNames={{
-                                    tooltip: 'calendar-tooltip-shell',
-                                    arrow: 'calendar-tooltip-arrow'
-                                  }}
-                                >
-                                  <span className="tray-day-tooltip-target" role="gridcell">
-                                    <button
-                                      type="button"
-                                      className={[
-                                        'tray-day-button',
-                                        dayCell.inMonth ? '' : 'is-outside',
-                                        hasReports ? 'has-reports' : '',
-                                        isMissing ? 'is-missing' : '',
-                                        isHoliday ? 'is-holiday' : '',
-                                        isWeekend ? 'is-weekend' : '',
-                                        heatmapActive ? 'heatmap' : '',
-                                        isSelected ? 'is-selected' : '',
-                                        isToday ? 'is-today' : ''
-                                      ]
-                                        .join(' ')
-                                        .trim()}
-                                      style={
-                                        heatmapActive
-                                          ? ({ '--heat': intensity } as CSSProperties)
-                                          : undefined
-                                      }
-                                      onClick={() => {
-                                        if (!dayCell.inMonth) return
-                                        handleCalendarChange(dayCell.date)
-                                      }}
-                                      disabled={!dayCell.inMonth}
-                                    >
-                                      <span className="tray-day-number">{dateValue.date()}</span>
-                                    </button>
-                                  </span>
-                                </Tooltip>
-                              )
-                            })}
+                              ))}
+                            </div>
                           </div>
-                        ))}
-                      </div>
+                        )
+                      })()}
                     </div>
-                  )
-                })()}
-              </div>
 
-              <SimpleGrid cols={3} spacing="xs" className="tray-filters">
-                <Select
-                  label="Project"
-                  placeholder="Choose a project"
-                  data={projectOptions}
-                  value={projectName}
-                  onChange={value => {
-                    filtersTouchedRef.current = true
-                    setProjectName(value)
-                    setSuppressCustomerAutoSelect(false)
-                    setSuppressTaskAutoSelect(false)
-                  }}
-                  styles={traySelectStyles}
-                  searchable
-                  clearable
-                  nothingFoundMessage="No matching project"
-                  maxDropdownHeight={180}
-                  disabled={!logs.length}
-                  size="xs"
-                />
-                <Select
-                  label="Customer"
-                  placeholder="Choose a customer"
-                  data={customerOptions}
-                  value={customerName}
-                  onChange={value => {
-                    filtersTouchedRef.current = true
-                    setCustomerName(value)
-                    if (!value) {
-                      setSuppressCustomerAutoSelect(true)
-                      setSuppressTaskAutoSelect(true)
-                    } else {
-                      setSuppressCustomerAutoSelect(false)
-                      setSuppressTaskAutoSelect(false)
-                    }
-                  }}
-                  styles={traySelectStyles}
-                  searchable
-                  clearable
-                  nothingFoundMessage="No matching customer"
-                  maxDropdownHeight={180}
-                  disabled={lockCustomer}
-                  size="xs"
-                />
-                <Select
-                  label="Task"
-                  placeholder="Choose a task"
-                  data={taskOptions}
-                  value={taskName}
-                  onChange={value => {
-                    filtersTouchedRef.current = true
-                    setTaskName(value)
-                    if (!value) {
-                      setSuppressTaskAutoSelect(true)
-                    } else {
-                      setSuppressTaskAutoSelect(false)
-                    }
-                  }}
-                  styles={traySelectStyles}
-                  searchable
-                  clearable
-                  nothingFoundMessage="No matching task"
-                  maxDropdownHeight={180}
-                  disabled={lockTask}
-                  size="xs"
-                />
-              </SimpleGrid>
+                    <SimpleGrid cols={3} spacing="xs" className="tray-filters">
+                      <Select
+                        label="Project"
+                        placeholder="Choose a project"
+                        data={projectOptions}
+                        value={projectName}
+                        onChange={value => {
+                          filtersTouchedRef.current = true
+                          setProjectName(value)
+                          setSuppressCustomerAutoSelect(false)
+                          setSuppressTaskAutoSelect(false)
+                        }}
+                        styles={traySelectStyles}
+                        searchable
+                        clearable
+                        nothingFoundMessage="No matching project"
+                        maxDropdownHeight={180}
+                        disabled={!logs.length}
+                        size="xs"
+                      />
+                      <Select
+                        label="Customer"
+                        placeholder="Choose a customer"
+                        data={customerOptions}
+                        value={customerName}
+                        onChange={value => {
+                          filtersTouchedRef.current = true
+                          setCustomerName(value)
+                          if (!value) {
+                            setSuppressCustomerAutoSelect(true)
+                            setSuppressTaskAutoSelect(true)
+                          } else {
+                            setSuppressCustomerAutoSelect(false)
+                            setSuppressTaskAutoSelect(false)
+                          }
+                        }}
+                        styles={traySelectStyles}
+                        searchable
+                        clearable
+                        nothingFoundMessage="No matching customer"
+                        maxDropdownHeight={180}
+                        disabled={lockCustomer}
+                        size="xs"
+                      />
+                      <Select
+                        label="Task"
+                        placeholder="Choose a task"
+                        data={taskOptions}
+                        value={taskName}
+                        onChange={value => {
+                          filtersTouchedRef.current = true
+                          setTaskName(value)
+                          if (!value) {
+                            setSuppressTaskAutoSelect(true)
+                          } else {
+                            setSuppressTaskAutoSelect(false)
+                          }
+                        }}
+                        styles={traySelectStyles}
+                        searchable
+                        clearable
+                        nothingFoundMessage="No matching task"
+                        maxDropdownHeight={180}
+                        disabled={lockTask}
+                        size="xs"
+                      />
+                    </SimpleGrid>
 
-              {!taskIdForLog && (
-                <Text size="xs" c="dimmed">
-                  Select project, customer, and task to unlock logging.
-                </Text>
-              )}
+                    {!taskIdForLog && (
+                      <Text size="xs" c="dimmed">
+                        Select project, customer, and task to unlock logging.
+                      </Text>
+                    )}
 
-              <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
-                <TimeInput
-                  label="From"
-                  value={fromTime}
-                  onChange={event => setFromTime(event.currentTarget.value)}
-                  size="xs"
-                />
-                <TimeInput
-                  label="To"
-                  value={toTime}
-                  onChange={event => setToTime(event.currentTarget.value)}
-                  size="xs"
-                />
-              </SimpleGrid>
-              <Text size="xs" c="dimmed" className="tray-duration">
-                {duration
-                  ? `Duration: ${duration.hoursHHMM} (${duration.hours}h)`
-                  : 'Enter a valid start and end time.'}
-              </Text>
-
-              <Textarea
-                label="Comment"
-                placeholder="Add a note (mandatory)"
-                value={comment}
-                onChange={event => setComment(event.currentTarget.value)}
-                autosize
-                minRows={1}
-                maxRows={2}
-                size="xs"
-                withAsterisk
-              />
-
-              {jiraConfigured && (
-                <Stack gap="xs" className="tray-jira-section">
-                  <Group justify="space-between" align="center">
-                    <Text size="xs" c="dimmed">
-                      Jira work item
+                    <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
+                      <TimeInput
+                        label="From"
+                        value={fromTime}
+                        onChange={event => setFromTime(event.currentTarget.value)}
+                        size="xs"
+                      />
+                      <TimeInput
+                        label="To"
+                        value={toTime}
+                        onChange={event => setToTime(event.currentTarget.value)}
+                        size="xs"
+                      />
+                    </SimpleGrid>
+                    <Text size="xs" c="dimmed" className="tray-duration">
+                      {duration
+                        ? `Duration: ${duration.hoursHHMM} (${duration.hours}h)`
+                        : 'Enter a valid start and end time.'}
                     </Text>
-                    <Switch
+
+                    <Textarea
+                      label="Comment"
+                      placeholder="Add a note (mandatory)"
+                      value={comment}
+                      onChange={event => setComment(event.currentTarget.value)}
+                      autosize
+                      minRows={1}
+                      maxRows={2}
                       size="xs"
-                      checked={logToJira}
-                      onChange={event => {
-                        const next = event.currentTarget.checked
-                        setLogToJira(next)
-                        if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                          setJiraIssueKey(jiraIssueOptions[0].value)
+                      withAsterisk
+                    />
+
+                    {jiraConfigured && (
+                      <Stack gap="xs" className="tray-jira-section">
+                        <Group justify="space-between" align="center">
+                          <Text size="xs" c="dimmed">
+                            Jira work item
+                          </Text>
+                          <Switch
+                            size="xs"
+                            checked={logToJira}
+                            onChange={event => {
+                              const next = event.currentTarget.checked
+                              setLogToJira(next)
+                              if (next && !jiraIssueKey && jiraIssueOptions.length) {
+                                setJiraIssueKey(jiraIssueOptions[0].value)
+                              }
+                            }}
+                            label="Log to Jira"
+                            disabled={!jiraConfigured || !mappedEpicKey || jiraLoadingIssues}
+                          />
+                        </Group>
+
+                        {customerName && mappedEpicKey && (
+                          <Select
+                            label="Jira work item"
+                            placeholder="Choose an issue"
+                            data={jiraIssueOptions}
+                            value={jiraIssueKey}
+                            onChange={value => {
+                              setJiraIssueKey(value)
+                              if (!value) setLogToJira(false)
+                            }}
+                            searchable
+                            clearable
+                            nothingFoundMessage="No work items found"
+                            disabled={jiraLoadingIssues}
+                            size="xs"
+                          />
+                        )}
+                      </Stack>
+                    )}
+
+                    {logError && (
+                      <Alert color="red" variant="light" radius="md">
+                        {logError}
+                      </Alert>
+                    )}
+
+                    {logSuccess && (
+                      <Alert color="teal" variant="light" radius="md">
+                        {logSuccess}
+                      </Alert>
+                    )}
+
+                    <Button
+                      radius="md"
+                      className="cta-button tray-log-submit"
+                      loading={logLoading}
+                      disabled={
+                        !taskIdForLog ||
+                        !duration ||
+                        !logDate ||
+                        comment.trim().length < 3 ||
+                        (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                      }
+                      onClick={() => {
+                        if (taskIdForLog && duration) {
+                          submitLogWork(taskIdForLog, duration)
                         }
                       }}
-                      label="Log to Jira"
-                      disabled={!jiraConfigured || !mappedEpicKey || jiraLoadingIssues}
-                    />
-                  </Group>
+                    >
+                      Log work
+                    </Button>
+                  </Stack>
+                ) : trayPanel === 'clockify' ? (
+                  <Stack gap="xs" className="tray-clock-panel">
+                    <Card radius="md" withBorder className="tray-clock-card">
+                      <Stack gap="sm">
+                        <Group justify="space-between" align="center">
+                          <Text fw={700} size="sm">
+                            Clockify mode
+                          </Text>
+                          <Badge size="xs" color={timerRunning ? 'teal' : 'gray'} variant="light">
+                            {timerRunning ? `Running · ${formatElapsed(timerElapsed)}` : 'Idle'}
+                          </Badge>
+                        </Group>
+                        <Text size="xs" c="dimmed">
+                          Keep this app in tray and use floating timer for one-click start/stop logging.
+                        </Text>
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={() => {
+                            void openFloatingTimer()
+                          }}
+                        >
+                          Open floating timer
+                        </Button>
+                      </Stack>
+                    </Card>
 
-                  {customerName && mappedEpicKey && (
-                    <Select
-                      label="Jira work item"
-                      placeholder="Choose an issue"
-                      data={jiraIssueOptions}
-                      value={jiraIssueKey}
-                      onChange={value => {
-                        setJiraIssueKey(value)
-                        if (!value) setLogToJira(false)
-                      }}
-                      searchable
-                      clearable
-                      nothingFoundMessage="No work items found"
-                      disabled={jiraLoadingIssues}
-                      size="xs"
-                    />
-                  )}
-                </Stack>
-              )}
+                    <Card radius="md" withBorder className="tray-clock-card">
+                      <Stack gap="xs">
+                        <Group justify="space-between" align="center">
+                          <Group gap={6} align="center">
+                            <ThemeIcon size="sm" variant="light" color="blue">
+                              <IconHistory size={12} />
+                            </ThemeIcon>
+                            <Text fw={700} size="sm">
+                              Use history
+                            </Text>
+                          </Group>
+                          <Badge size="xs" variant="light">
+                            {clockHistoryItems.length}
+                          </Badge>
+                        </Group>
+                        <Text size="xs" c="dimmed">
+                          Pick a recent log to prefill task + customer before opening floating timer.
+                        </Text>
 
-              {logError && (
-                <Alert color="red" variant="light" radius="md">
-                  {logError}
-                </Alert>
-              )}
+                        {clockHistoryItems.length ? (
+                          <Stack gap={6} className="tray-clock-history-list">
+                            {clockHistoryItems.map((item, index) => (
+                              <Group
+                                key={`${item.taskId}-${item.dateKey}-${index}`}
+                                justify="space-between"
+                                align="center"
+                                wrap="nowrap"
+                                className="tray-clock-history-row"
+                              >
+                                <div className="tray-clock-history-main">
+                                  <Text size="xs" fw={700} lineClamp={1}>
+                                    {item.taskName}
+                                  </Text>
+                                  <Text size="xs" c="dimmed" lineClamp={1}>
+                                    {item.customer} · {dayjs(item.dateKey).format('DD-MM')} · {item.hours_HHMM}
+                                  </Text>
+                                </div>
+                                <Button
+                                  size="xs"
+                                  variant="subtle"
+                                  onClick={() => applyClockHistory(item)}
+                                >
+                                  Use
+                                </Button>
+                              </Group>
+                            ))}
+                          </Stack>
+                        ) : (
+                          <Text size="xs" c="dimmed">
+                            No recent logs found yet.
+                          </Text>
+                        )}
+                      </Stack>
+                    </Card>
+                  </Stack>
+                ) : trayPanel === 'meetings' ? (
+                  <Stack gap="xs" className="tray-meetings-panel">
+                    <Card radius="md" withBorder className="tray-meetings-controls">
+                      <Stack gap="xs">
+                        <Group justify="space-between" align="center">
+                          <Text size="xs" fw={600}>
+                            Integration settings
+                          </Text>
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            onClick={() => setTrayMeetingsSettingsOpen(prev => !prev)}
+                          >
+                            {trayMeetingsSettingsOpen ? 'Hide' : 'Show'}
+                          </Button>
+                        </Group>
+                        <Collapse in={trayMeetingsSettingsOpen} transitionDuration={160}>
+                          <Stack gap="xs">
+                            <SimpleGrid cols={2} spacing="xs">
+                              <Select
+                                label="Browser"
+                                value={meetingsBrowser}
+                                onChange={value =>
+                                  setMeetingsBrowser((value as 'safari' | 'chrome') || 'chrome')
+                                }
+                                data={[
+                                  { value: 'safari', label: 'Safari' },
+                                  { value: 'chrome', label: 'Chrome' }
+                                ]}
+                                size="xs"
+                              />
+                              <Switch
+                                mt={20}
+                                size="xs"
+                                checked={meetingsHeadless}
+                                onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
+                                label="Background"
+                                disabled={meetingsBrowser !== 'chrome'}
+                              />
+                            </SimpleGrid>
+                            <SimpleGrid cols={2} spacing="xs">
+                              <TextInput
+                                label="Domain user"
+                                placeholder="you@company.com"
+                                value={meetingsUsername}
+                                onChange={event => setMeetingsUsername(event.currentTarget.value)}
+                                size="xs"
+                              />
+                              <PasswordInput
+                                label="Domain password"
+                                placeholder="••••••••"
+                                value={meetingsPassword}
+                                onChange={event => setMeetingsPassword(event.currentTarget.value)}
+                                size="xs"
+                              />
+                            </SimpleGrid>
+                          </Stack>
+                        </Collapse>
+                      </Stack>
+                    </Card>
 
-              {logSuccess && (
-                <Alert color="teal" variant="light" radius="md">
-                  {logSuccess}
-                </Alert>
-              )}
+                    <Group justify="space-between" align="center">
+                      <Button
+                        size="xs"
+                        variant="light"
+                        onClick={() => {
+                          void fetchMeetings()
+                        }}
+                        loading={meetingsLoading}
+                      >
+                        Refresh meetings
+                      </Button>
+                      <Badge variant="light" color="gray">
+                        {meetingsSummary.totalMeetings} meetings
+                      </Badge>
+                    </Group>
 
-              <Button
-                radius="md"
-                className="cta-button tray-log-submit"
-                loading={logLoading}
-                disabled={
-                  !taskIdForLog ||
-                  !duration ||
-                  !logDate ||
-                  comment.trim().length < 3 ||
-                  (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                    {meetingsProgress && (
+                      <Text size="xs" c="dimmed">
+                        {meetingsProgress}
+                      </Text>
+                    )}
+
+                    {meetingsError && (
+                      <Alert color="red" variant="light" radius="md">
+                        {meetingsError}
+                      </Alert>
+                    )}
+
+                    {meetingsUpdatedAt && (
+                      <Text size="xs" c="dimmed">
+                        Last updated {dayjs(meetingsUpdatedAt).format('DD-MM-YYYY HH:mm')}
+                      </Text>
+                    )}
+
+                    {meetingsSorted.length ? (
+                      <Stack gap="xs" className="tray-meetings-list">
+                        {meetingsSorted.map((meeting, index) => {
+                          const meetingKey = getMeetingKey(meeting)
+                          const isLogged = Boolean(
+                            meetingLoggedKeys[meetingKey] || meetingLoggedKeysFromHrs[meetingKey]
+                          )
+                          const mappedCustomer = resolveMeetingClient(meeting) ?? 'Unmapped'
+                          const start = dayjs(meeting.startTime.replace(' ', 'T'))
+                          const end = dayjs(meeting.endTime.replace(' ', 'T'))
+                          const startLabel = start.isValid()
+                            ? start.format('DD-MM HH:mm')
+                            : meeting.startTime
+                          const endLabel = end.isValid() ? end.format('DD-MM HH:mm') : meeting.endTime
+                          return (
+                            <Card
+                              key={`${meetingKey}-${index}`}
+                              radius="md"
+                              withBorder
+                              className="tray-meeting-card"
+                            >
+                              <Group justify="space-between" align="center" wrap="nowrap">
+                                <Text size="sm" fw={600} lineClamp={1} className="tray-meeting-title">
+                                  {meeting.subject || 'Meeting'}
+                                </Text>
+                                <Badge
+                                  size="xs"
+                                  color={mappedCustomer === 'Unmapped' ? 'gray' : 'teal'}
+                                  className="tray-meeting-customer"
+                                >
+                                  {mappedCustomer}
+                                </Badge>
+                              </Group>
+                              <Group justify="space-between" align="center" wrap="nowrap" mt={6}>
+                                <Text size="xs" c="dimmed" className="tray-meeting-time">
+                                  {startLabel} → {endLabel}
+                                </Text>
+                                <Button
+                                  size="xs"
+                                  variant={isLogged ? 'filled' : 'light'}
+                                  onClick={() => handleLogMeeting(meeting)}
+                                  disabled={isLogged}
+                                >
+                                  {isLogged ? 'Logged' : 'Log'}
+                                </Button>
+                              </Group>
+                            </Card>
+                          )
+                        })}
+                      </Stack>
+                    ) : (
+                      <Text size="sm" c="dimmed">
+                        {meetingsLoading ? 'Fetching meetings…' : 'No meetings found for this month.'}
+                      </Text>
+                    )}
+                  </Stack>
+                ) : trayPanel === 'reports' ? (
+                  <Stack gap="xs" className="tray-reports-panel">
+                    <SimpleGrid cols={3} spacing="xs">
+                      <Card className="tray-report-kpi" radius="md" withBorder>
+                        <Text size="xs" c="dimmed">
+                          Hours
+                        </Text>
+                        <Text fw={700} size="lg">
+                          {currentHoursMtd !== null
+                            ? currentHoursMtd.toFixed(1)
+                            : totalHoursReported.toFixed(1)}
+                        </Text>
+                      </Card>
+                      <Card className="tray-report-kpi" radius="md" withBorder>
+                        <Text size="xs" c="dimmed">
+                          Logged days
+                        </Text>
+                        <Text fw={700} size="lg">
+                          {monthlyReport
+                            ? monthlyReport.days.filter(day => day.reports.length > 0).length
+                            : 0}
+                        </Text>
+                      </Card>
+                      <Card className="tray-report-kpi" radius="md" withBorder>
+                        <Text size="xs" c="dimmed">
+                          Missing
+                        </Text>
+                        <Text fw={700} size="lg">
+                          {monthlyReport
+                            ? monthlyReport.days.filter(day => {
+                                const date = dayjs(day.date)
+                                const isWeekend = weekendDays.includes(date.day() as DayOfWeek)
+                                const isFuture = date.isAfter(dayjs(), 'day')
+                                return (
+                                  !day.reports.length && !day.isHoliday && !isWeekend && !isFuture
+                                )
+                              }).length
+                            : 0}
+                        </Text>
+                      </Card>
+                    </SimpleGrid>
+
+                    <Card radius="md" withBorder className="tray-report-list-card">
+                      <Group justify="space-between" align="center">
+                        <Text fw={700} size="sm">
+                          Top clients
+                        </Text>
+                        <Badge size="xs" variant="light">
+                          {topClients.length}
+                        </Badge>
+                      </Group>
+                      <Stack gap={6} mt={8}>
+                        {topClients.slice(0, 4).map(item => (
+                          <Group key={item.client} justify="space-between" wrap="nowrap">
+                            <Text size="xs" lineClamp={1}>
+                              {item.client}
+                            </Text>
+                            <Badge size="xs" variant="light" color="teal">
+                              {item.hours}h
+                            </Badge>
+                          </Group>
+                        ))}
+                        {!topClients.length && (
+                          <Text size="xs" c="dimmed">
+                            No reports yet.
+                          </Text>
+                        )}
+                      </Stack>
+                    </Card>
+
+                    <Card radius="md" withBorder className="tray-report-list-card">
+                      <Group justify="space-between" align="center">
+                        <Text fw={700} size="sm">
+                          Mapped projects
+                        </Text>
+                        <Group gap="xs">
+                          <Badge size="xs" variant="light">
+                            {jiraBudgetRows.length}
+                          </Badge>
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            onClick={() => {
+                              void loadReportsForMonth(reportMonth)
+                              if (jiraConfigured) {
+                                void loadJiraEpics()
+                              }
+                            }}
+                          >
+                            Refresh
+                          </Button>
+                        </Group>
+                      </Group>
+                      <Stack gap={8} mt={8}>
+                        {!jiraConfigured && (
+                          <Text size="xs" c="dimmed">
+                            Connect Jira in Settings to see mapped project status.
+                          </Text>
+                        )}
+
+                        {jiraConfigured && jiraLoading && !jiraBudgetRows.length && (
+                          <Group gap="xs">
+                            <Loader size="xs" />
+                            <Text size="xs" c="dimmed">
+                              Loading mapped projects...
+                            </Text>
+                          </Group>
+                        )}
+
+                        {jiraConfigured &&
+                          !jiraLoading &&
+                          (jiraBudgetRows.length ? (
+                            (() => {
+                              const rows = [...jiraBudgetRows].sort(
+                                (a, b) => b.spentSeconds - a.spentSeconds
+                              )
+                              const maxSpent = Math.max(
+                                ...rows.map(row => row.spentSeconds || 0),
+                                1
+                              )
+                              const workDaysThisMonth = getWorkDaysInMonthUntilToday()
+                              const expectedHoursThisMonth = workDaysThisMonth * HOURS_PER_WORK_DAY
+                              return rows.map(row => {
+                                const epicAlias = jiraEpicAliases[row.epicKey]
+                                const displayName = epicAlias?.trim() || row.customer
+                                const ratio = row.estimateSeconds
+                                  ? row.spentSeconds / row.estimateSeconds
+                                  : 0
+                                const progressPercent = row.estimateSeconds
+                                  ? Math.max(0, Math.min(ratio * 100, 100))
+                                  : Math.max(
+                                      8,
+                                      Math.min((row.spentSeconds / maxSpent) * 100, 100)
+                                    )
+                                const contributors = row.detailsLoaded
+                                  ? row.contributors
+                                  : buildPositionFromAssignments(row.items)
+                                const topPeople = contributors.slice(0, 3).map(entry => {
+                                  const hours = entry.seconds / 3600
+                                  const percent =
+                                    expectedHoursThisMonth > 0
+                                      ? Math.round((hours / expectedHoursThisMonth) * 100)
+                                      : 0
+                                  return {
+                                    name: entry.name,
+                                    percent
+                                  }
+                                })
+                                const isExpanded = trayReportExpandedEpic === row.epicKey
+                                return (
+                                  <div
+                                    key={row.epicKey}
+                                    className={`tray-project-row${isExpanded ? ' is-expanded' : ''}`}
+                                  >
+                                    <button
+                                      type="button"
+                                      className="tray-project-toggle"
+                                      onClick={() => {
+                                        const next = isExpanded ? null : row.epicKey
+                                        setTrayReportExpandedEpic(next)
+                                        if (next && !row.detailsLoaded && !row.detailsLoading) {
+                                          void loadBudgetTasks(row.epicKey)
+                                        }
+                                      }}
+                                    >
+                                      <Group justify="space-between" align="center" wrap="nowrap">
+                                        <Text size="xs" fw={700} lineClamp={1}>
+                                          {displayName}
+                                        </Text>
+                                        <Group gap={6} wrap="nowrap">
+                                          <Badge
+                                            size="xs"
+                                            variant="light"
+                                            color={
+                                              row.estimateSeconds
+                                                ? ratio >= 1
+                                                  ? 'red'
+                                                  : ratio >= 0.8
+                                                    ? 'yellow'
+                                                    : 'teal'
+                                                : 'gray'
+                                            }
+                                          >
+                                            {row.estimateSeconds
+                                              ? `${Math.round(ratio * 100)}%`
+                                              : 'No estimate'}
+                                          </Badge>
+                                          <Text size="xs" c="dimmed" className="tray-project-chevron">
+                                            {isExpanded ? '▾' : '▸'}
+                                          </Text>
+                                        </Group>
+                                      </Group>
+                                      <Text size="xs" c="dimmed" lineClamp={1}>
+                                        {row.epicKey} · {formatJiraHours(row.spentSeconds)}
+                                        {row.estimateSeconds
+                                          ? ` / ${formatJiraHours(row.estimateSeconds)}`
+                                          : ''}
+                                      </Text>
+                                      <div className="tray-project-progress">
+                                        <span
+                                          className="tray-project-progress-fill"
+                                          style={{ width: `${progressPercent}%` }}
+                                        />
+                                      </div>
+                                      {topPeople.length > 0 ? (
+                                        <Group gap={6} mt={6} wrap="wrap">
+                                          {topPeople.map(person => (
+                                            <Badge key={person.name} size="xs" variant="light">
+                                              {person.name} {person.percent}%
+                                            </Badge>
+                                          ))}
+                                        </Group>
+                                      ) : (
+                                        <Text size="xs" c="dimmed">
+                                          No people data yet.
+                                        </Text>
+                                      )}
+                                    </button>
+
+                                    {isExpanded && (
+                                      <div className="tray-project-details">
+                                        {row.detailsLoading && (
+                                          <Group gap="xs">
+                                            <Loader size="xs" />
+                                            <Text size="xs" c="dimmed">
+                                              Loading tasks and subtasks...
+                                            </Text>
+                                          </Group>
+                                        )}
+                                        {!row.detailsLoading && row.detailsError && (
+                                          <Text size="xs" c="red">
+                                            {row.detailsError}
+                                          </Text>
+                                        )}
+                                        {!row.detailsLoading && !row.detailsError && row.detailsLoaded && (
+                                          row.items.length ? (
+                                            <Stack gap={6}>
+                                              {(jiraBudgetSortByProgress
+                                                ? sortByProgress(row.items)
+                                                : row.items
+                                              ).map(item => {
+                                                const totals = getWorkItemTotals(item)
+                                                const estimate = totals.estimateSeconds
+                                                const spent = totals.spentSeconds
+                                                const itemRatio = estimate ? spent / estimate : 0
+                                                return (
+                                                  <div key={item.key} className="tray-project-task">
+                                                    <Group justify="space-between" align="center" wrap="nowrap">
+                                                      <Text size="xs" fw={600} lineClamp={1}>
+                                                        {item.key} · {item.summary}
+                                                      </Text>
+                                                      <Badge size="xs" variant="light">
+                                                        {estimate ? `${Math.round(itemRatio * 100)}%` : '—'}
+                                                      </Badge>
+                                                    </Group>
+                                                    <Text size="xs" c="dimmed" lineClamp={1}>
+                                                      {formatJiraHours(spent)}
+                                                      {estimate ? ` / ${formatJiraHours(estimate)}` : ' · No estimate'}
+                                                    </Text>
+                                                    {(item.subtasks?.length ?? 0) > 0 && (
+                                                      <Stack gap={4} mt={4}>
+                                                        {item.subtasks?.map(subtask => (
+                                                          <Group
+                                                            key={subtask.key}
+                                                            justify="space-between"
+                                                            align="center"
+                                                            wrap="nowrap"
+                                                            className="tray-project-subtask"
+                                                          >
+                                                            <Text size="xs" c="dimmed" lineClamp={1}>
+                                                              {subtask.key} · {subtask.summary}
+                                                            </Text>
+                                                            <Badge size="xs" variant="light" color="gray">
+                                                              {formatJiraHours(subtask.timespent ?? 0)}
+                                                            </Badge>
+                                                          </Group>
+                                                        ))}
+                                                      </Stack>
+                                                    )}
+                                                  </div>
+                                                )
+                                              })}
+                                            </Stack>
+                                          ) : (
+                                            <Text size="xs" c="dimmed">
+                                              No tasks found for this mapped project.
+                                            </Text>
+                                          )
+                                        )}
+                                        {!row.detailsLoading && !row.detailsError && !row.detailsLoaded && (
+                                          <Text size="xs" c="dimmed">
+                                            Click again to load task details.
+                                          </Text>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                )
+                              })
+                            })()
+                          ) : (
+                            <Text size="xs" c="dimmed">
+                              No mapped projects found. Map customers in Settings → Mapping.
+                            </Text>
+                          ))}
+                      </Stack>
+                    </Card>
+                  </Stack>
+                ) : (
+                  <Stack gap="xs" className="tray-settings-panel">
+                    <Group grow className="tray-settings-tabs" wrap="nowrap">
+                      <Button
+                        size="xs"
+                        className="tray-settings-tab-btn"
+                        variant={traySettingsTab === 'access' ? 'light' : 'subtle'}
+                        onClick={() => setTraySettingsTab('access')}
+                      >
+                        Access
+                      </Button>
+                      <Button
+                        size="xs"
+                        className="tray-settings-tab-btn"
+                        variant={traySettingsTab === 'jira' ? 'light' : 'subtle'}
+                        onClick={() => setTraySettingsTab('jira')}
+                      >
+                        Jira
+                      </Button>
+                      <Button
+                        size="xs"
+                        className="tray-settings-tab-btn"
+                        variant={traySettingsTab === 'mapping' ? 'light' : 'subtle'}
+                        onClick={() => setTraySettingsTab('mapping')}
+                      >
+                        Mapping
+                      </Button>
+                    </Group>
+
+                    {traySettingsTab === 'access' && (
+                      <Card radius="md" withBorder className="tray-settings-card">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center">
+                            <Text fw={700} size="sm">
+                              HRS access
+                            </Text>
+                            <Switch
+                              size="xs"
+                              checked={autoLoginEnabled}
+                              onChange={event => setAutoLoginEnabled(event.currentTarget.checked)}
+                              label="Auto"
+                            />
+                          </Group>
+                          <SimpleGrid cols={2} spacing="xs">
+                            <TextInput
+                              label="Username"
+                              value={credentialsUsername}
+                              onChange={event => setCredentialsUsername(event.currentTarget.value)}
+                              size="xs"
+                            />
+                            <PasswordInput
+                              label="Password"
+                              value={credentialsPassword}
+                              onChange={event => setCredentialsPassword(event.currentTarget.value)}
+                              size="xs"
+                              placeholder={hasStoredPassword ? 'Update password' : 'Enter password'}
+                            />
+                          </SimpleGrid>
+                          <Group justify="space-between" align="center">
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              color="red"
+                              onClick={() => {
+                                void clearHrsCredentials()
+                              }}
+                            >
+                              Clear
+                            </Button>
+                            <Group gap="xs">
+                              {!loggedIn && (
+                                <Button
+                                  size="xs"
+                                  variant="subtle"
+                                  loading={checkingSession || duoPending}
+                                  onClick={() => {
+                                    void retryTrayLogin()
+                                  }}
+                                >
+                                  Login
+                                </Button>
+                              )}
+                              <Button
+                                size="xs"
+                                onClick={() => {
+                                  void saveHrsCredentials()
+                                }}
+                                disabled={!credentialsUsername || !credentialsPassword}
+                              >
+                                Save
+                              </Button>
+                            </Group>
+                          </Group>
+                        </Stack>
+                      </Card>
+                    )}
+
+                    {traySettingsTab === 'jira' && (
+                      <Card radius="md" withBorder className="tray-settings-card">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center">
+                            <Text fw={700} size="sm">
+                              Jira connection
+                            </Text>
+                            <Badge size="xs" color={jiraConfigured ? 'teal' : 'gray'} variant="light">
+                              {jiraConfigured ? 'Connected' : 'Disconnected'}
+                            </Badge>
+                          </Group>
+                          <SimpleGrid cols={2} spacing="xs">
+                            <TextInput
+                              label="Jira email"
+                              value={jiraEmail}
+                              onChange={event => setJiraEmail(event.currentTarget.value)}
+                              placeholder="you@company.com"
+                              size="xs"
+                            />
+                            <PasswordInput
+                              label="Jira token"
+                              value={jiraToken}
+                              onChange={event => setJiraToken(event.currentTarget.value)}
+                              placeholder="API token"
+                              size="xs"
+                            />
+                          </SimpleGrid>
+                          <Group justify="space-between" align="center">
+                            <Button
+                              size="xs"
+                              variant="subtle"
+                              color="red"
+                              onClick={() => {
+                                void clearJiraCredentials()
+                              }}
+                              loading={jiraSaving}
+                            >
+                              Disconnect
+                            </Button>
+                            <Button
+                              size="xs"
+                              onClick={() => {
+                                void saveJiraCredentials()
+                              }}
+                              loading={jiraSaving}
+                              disabled={!jiraEmail.trim() || !jiraToken.trim()}
+                            >
+                              Save Jira
+                            </Button>
+                          </Group>
+                          {jiraError && (
+                            <Alert color="red" variant="light" radius="md">
+                              {jiraError}
+                            </Alert>
+                          )}
+                        </Stack>
+                      </Card>
+                    )}
+
+                    {traySettingsTab === 'mapping' && (
+                      <Card radius="md" withBorder className="tray-settings-card">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center">
+                            <Text fw={700} size="sm">
+                              Jira mappings
+                            </Text>
+                            <Badge size="xs" variant="light" color="teal">
+                              {trayReportedMappedCount}/{trayReportedCustomers.length} mapped
+                            </Badge>
+                          </Group>
+
+                          <Text size="xs" c="dimmed">
+                            Step 1: map customers that reported hours this month.
+                          </Text>
+
+                          {!jiraConfigured && (
+                            <Alert color="yellow" variant="light" radius="md">
+                              Connect Jira in the Jira tab first.
+                            </Alert>
+                          )}
+
+                          {jiraConfigured && !jiraLoading && !jiraEpicOptions.length && (
+                            <Alert color="yellow" variant="light" radius="md">
+                              <Group justify="space-between" align="center">
+                                <Text size="xs">Could not load Jira epics yet.</Text>
+                                <Button
+                                  size="xs"
+                                  variant="light"
+                                  onClick={retryJiraFetch}
+                                  loading={jiraLoading}
+                                >
+                                  Retry epics
+                                </Button>
+                              </Group>
+                            </Alert>
+                          )}
+
+                          <Group className="tray-mapping-headers" justify="space-between" align="center" wrap="nowrap">
+                            <Text size="xs" c="dimmed">
+                              Customer
+                            </Text>
+                            <Text size="xs" c="dimmed">
+                              Epic
+                            </Text>
+                          </Group>
+
+                          {jiraLoading ? (
+                            <Group gap="xs">
+                              <Loader size="xs" />
+                              <Text size="xs" c="dimmed">
+                                Loading Jira epics...
+                              </Text>
+                            </Group>
+                          ) : trayReportedCustomers.length ? (
+                            <Stack gap="xs" className="tray-mapping-list">
+                              {trayReportedCustomers.slice(0, 20).map(customer => (
+                                <Group key={customer} justify="space-between" align="center" wrap="nowrap">
+                                  <Badge
+                                    size="sm"
+                                    variant="light"
+                                    color={jiraMappings[customer] ? 'teal' : 'gray'}
+                                    className="tray-mapping-customer"
+                                  >
+                                    {customer}
+                                  </Badge>
+                                  <Select
+                                    className="tray-mapping-epic"
+                                    placeholder="Select epic"
+                                    data={jiraEpicOptions}
+                                    value={jiraMappings[customer] ?? null}
+                                    onChange={value => updateJiraMapping(customer, value ?? null)}
+                                    searchable
+                                    clearable
+                                    nothingFoundMessage="No epics found"
+                                    disabled={!jiraConfigured || !jiraEpicOptions.length}
+                                    size="xs"
+                                  />
+                                </Group>
+                              ))}
+                            </Stack>
+                          ) : (
+                            <Text size="xs" c="dimmed">
+                              No reported customers this month yet.
+                            </Text>
+                          )}
+
+                          <Text size="xs" c="dimmed">
+                            Step 2: manual mapping (select HRS customer)
+                          </Text>
+                          <Group gap="xs" align="flex-end" wrap="wrap">
+                            <Select
+                              label="HRS customer"
+                              placeholder="Select customer"
+                              data={hrsCustomerOptions}
+                              value={manualBudgetCustomer || null}
+                              onChange={value => {
+                                setManualBudgetCustomer(value ?? '')
+                                if (manualBudgetError) setManualBudgetError(null)
+                              }}
+                              searchable
+                              clearable
+                              nothingFoundMessage="No customers found"
+                              size="xs"
+                            />
+                            <Select
+                              label="Epic"
+                              placeholder="Select epic"
+                              data={jiraEpicOptions}
+                              value={manualBudgetEpicKey}
+                              onChange={value => {
+                                setManualBudgetEpicKey(value)
+                                if (manualBudgetError) setManualBudgetError(null)
+                              }}
+                              searchable
+                              clearable
+                              disabled={!jiraConfigured || !jiraEpicOptions.length}
+                              size="xs"
+                            />
+                            <Button size="xs" onClick={addManualBudget}>
+                              Add
+                            </Button>
+                          </Group>
+                          {manualBudgetError && (
+                            <Text size="xs" c="red">
+                              {manualBudgetError}
+                            </Text>
+                          )}
+                          {Object.keys(jiraManualBudgets).length > 0 && (
+                            <Stack gap={4}>
+                              {Object.entries(jiraManualBudgets).slice(0, 6).map(([customer, epicKey]) => (
+                                <Group key={customer} justify="space-between" align="center" wrap="nowrap">
+                                  <Text size="xs" c="dimmed" lineClamp={1}>
+                                    {customer} · {epicKey}
+                                  </Text>
+                                  <Button
+                                    size="xs"
+                                    variant="subtle"
+                                    color="red"
+                                    onClick={() => removeManualBudget(customer)}
+                                  >
+                                    Remove
+                                  </Button>
+                                </Group>
+                              ))}
+                            </Stack>
+                          )}
+                        </Stack>
+                      </Card>
+                    )}
+                  </Stack>
+                )}
+              </div>
+
+              <Modal
+                opened={trayDayEditorOpen}
+                onClose={closeTrayDayEditor}
+                centered
+                size="lg"
+                title={
+                  trayDayEditorDateKey
+                    ? `Reports · ${dayjs(trayDayEditorDateKey).format('DD MMMM YYYY')}`
+                    : 'Reports'
                 }
-                onClick={() => {
-                  if (taskIdForLog && duration) {
-                    submitLogWork(taskIdForLog, duration)
-                  }
+                classNames={{
+                  content: 'tray-day-editor-modal',
+                  header: 'tray-day-editor-header',
+                  title: 'tray-day-editor-title',
+                  body: 'tray-day-editor-body'
                 }}
               >
-                Log work
-              </Button>
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Badge size="sm" variant="light" color="blue">
+                      {trayDayEditorReports.length} reports
+                    </Badge>
+                    <Badge size="sm" variant="light" color="teal">
+                      {formatMinutesToHHMM(trayDayEditorTotalMinutes)} total
+                    </Badge>
+                  </Group>
+
+                  {editError && (
+                    <Alert color="red" variant="light" radius="md">
+                      {editError}
+                    </Alert>
+                  )}
+
+                  {trayDayEditorReports.length ? (
+                    <Stack gap="xs" className="tray-day-editor-list">
+                      {trayDayEditorReports.map(report => {
+                        const dateKey = trayDayEditorDateKey || ''
+                        const meta = taskMetaById.get(report.taskId)
+                        const projectLabel = meta?.projectName || report.projectInstance || 'Project'
+                        const customerLabel = meta?.customerName || 'Customer'
+                        const isEditing =
+                          editingEntry?.dateKey === dateKey && editingEntry?.index === report.dayIndex
+                        const timeRange =
+                          reportTimeRangesByIndex.get(dateKey)?.get(report.dayIndex) ??
+                          buildReportEntryKeys(report, dateKey)
+                            .map(key => reportTimeRanges.get(key))
+                            .find(Boolean) ??
+                          null
+                        return (
+                          <Card
+                            key={`${dateKey}-${report.taskId}-${report.dayIndex}`}
+                            radius="md"
+                            withBorder
+                            className="tray-day-editor-item"
+                          >
+                            <Stack gap={8}>
+                              <Group justify="space-between" align="flex-start" wrap="nowrap">
+                                <Stack gap={2} className="tray-day-editor-main">
+                                  <Text size="sm" fw={700} lineClamp={1}>
+                                    {projectLabel}
+                                  </Text>
+                                  <Text size="xs" c="dimmed" lineClamp={1}>
+                                    {customerLabel} · {report.taskName}
+                                  </Text>
+                                </Stack>
+                                <Badge variant="light" color="teal">
+                                  {report.hours_HHMM}
+                                </Badge>
+                              </Group>
+
+                              {timeRange && (
+                                <Text size="xs" c="dimmed">
+                                  {timeRange.from} - {timeRange.to}
+                                </Text>
+                              )}
+
+                              {isEditing ? (
+                                <Stack gap={8}>
+                                  <Group grow>
+                                    <TextInput
+                                      label="Hours"
+                                      placeholder="HH:MM"
+                                      value={editHours}
+                                      onChange={event => setEditHours(event.currentTarget.value)}
+                                      size="xs"
+                                    />
+                                  </Group>
+                                  <Textarea
+                                    label="Comment"
+                                    value={editComment}
+                                    onChange={event => setEditComment(event.currentTarget.value)}
+                                    autosize
+                                    minRows={2}
+                                    size="xs"
+                                  />
+                                  <Group justify="flex-end" gap="xs">
+                                    <Button
+                                      size="xs"
+                                      variant="subtle"
+                                      onClick={cancelEditReport}
+                                      disabled={editLoading}
+                                    >
+                                      Cancel
+                                    </Button>
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      loading={editLoading}
+                                      onClick={() => {
+                                        void saveEditReport(dateKey, report.dayIndex)
+                                      }}
+                                    >
+                                      Save
+                                    </Button>
+                                  </Group>
+                                </Stack>
+                              ) : (
+                                <>
+                                  <Text size="xs" className="tray-day-editor-comment">
+                                    {report.comment?.trim() || 'No comment'}
+                                  </Text>
+                                  <Group justify="flex-end" gap="xs">
+                                    <Button
+                                      size="xs"
+                                      variant="light"
+                                      onClick={() => {
+                                        startEditReport(dateKey, report.dayIndex, report)
+                                      }}
+                                    >
+                                      Edit
+                                    </Button>
+                                    <Button
+                                      size="xs"
+                                      variant="outline"
+                                      color="red"
+                                      loading={deleteLoading}
+                                      onClick={() => {
+                                        if (!window.confirm('Delete this report?')) return
+                                        void deleteReportEntry(dateKey, report.dayIndex)
+                                      }}
+                                    >
+                                      Delete
+                                    </Button>
+                                  </Group>
+                                </>
+                              )}
+                            </Stack>
+                          </Card>
+                        )
+                      })}
+                    </Stack>
+                  ) : (
+                    <Card radius="md" withBorder className="tray-day-editor-empty">
+                      <Text size="sm" c="dimmed">
+                        No reports for this day.
+                      </Text>
+                    </Card>
+                  )}
+                </Stack>
+              </Modal>
             </Stack>
           )}
         </Stack>
+        {meetingMappingModal}
       </Box>
     )
   }
@@ -7758,6 +9431,467 @@ export default function App() {
             </Stack>
           </Card>
         </Container>
+      </Box>
+    )
+  }
+
+  if (isSettingsWindow) {
+    return (
+      <Box className="app-shell settings-shell">
+        <Container size="sm" className="settings-container">
+          <Card className="glass-card" radius="lg" p="xl">
+            <Stack gap="md">
+              <Group justify="space-between" align="center">
+                <Text className="section-title">HRS Settings</Text>
+                <Group gap="xs">
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    void openReportsWindow()
+                  }}
+                >
+                  Reports
+                </Button>
+                <Button
+                  size="xs"
+                  variant="subtle"
+                  onClick={() => {
+                    void openMeetingsWindow()
+                  }}
+                >
+                  Meetings
+                </Button>
+                </Group>
+              </Group>
+
+              {!loggedIn && (
+                <Alert color="yellow" variant="light" radius="md">
+                  You are not authenticated. Approve DUO and press login.
+                </Alert>
+              )}
+              {sessionError && (
+                <Alert color="red" variant="light" radius="md">
+                  {sessionError}
+                </Alert>
+              )}
+              {bridgeError && (
+                <Alert color="red" variant="light" radius="md">
+                  {bridgeError}
+                </Alert>
+              )}
+
+              <Card radius="md" withBorder>
+                <Stack gap="sm">
+                  <Text fw={700}>HRS credentials</Text>
+                  <Switch
+                    size="sm"
+                    checked={autoLoginEnabled}
+                    onChange={event => setAutoLoginEnabled(event.currentTarget.checked)}
+                    label="Auto-login"
+                  />
+                  <TextInput
+                    label="Username"
+                    value={credentialsUsername}
+                    onChange={event => setCredentialsUsername(event.currentTarget.value)}
+                  />
+                  <PasswordInput
+                    label="Password"
+                    value={credentialsPassword}
+                    onChange={event => setCredentialsPassword(event.currentTarget.value)}
+                    placeholder={hasStoredPassword ? 'Update password' : 'Enter password'}
+                  />
+                  <Group justify="space-between" align="center">
+                    <Button
+                      variant="subtle"
+                      color="red"
+                      onClick={() => {
+                        void clearHrsCredentials()
+                      }}
+                    >
+                      Clear saved credentials
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        void saveHrsCredentials()
+                      }}
+                      disabled={!credentialsUsername || !credentialsPassword}
+                    >
+                      Save credentials
+                    </Button>
+                  </Group>
+                  {storedUsername && hasStoredPassword && (
+                    <Text size="xs" c="dimmed">
+                      Saved credentials for {storedUsername}.
+                    </Text>
+                  )}
+                  {!loggedIn && (
+                    <Button
+                      radius="md"
+                      className="cta-button"
+                      loading={checkingSession}
+                      disabled={checkingSession}
+                      onClick={() => {
+                        void retryTrayLogin()
+                      }}
+                    >
+                      Login now
+                    </Button>
+                  )}
+                </Stack>
+              </Card>
+
+              <Card radius="md" withBorder>
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Text fw={700}>Jira settings</Text>
+                    <Badge color={jiraConfigured ? 'teal' : 'gray'} variant="light">
+                      {jiraConfigured ? 'Connected' : 'Disconnected'}
+                    </Badge>
+                  </Group>
+                  {jiraStatus?.email && (
+                    <Text size="xs" c="dimmed">
+                      {jiraStatus.email} · {jiraStatus.baseUrl}
+                    </Text>
+                  )}
+                  {jiraError && (
+                    <Alert color="red" variant="light" radius="md">
+                      {jiraError}
+                    </Alert>
+                  )}
+                  <TextInput
+                    label="Jira email"
+                    value={jiraEmail}
+                    onChange={event => setJiraEmail(event.currentTarget.value)}
+                    placeholder="you@company.com"
+                  />
+                  <PasswordInput
+                    label="Jira API token"
+                    value={jiraToken}
+                    onChange={event => setJiraToken(event.currentTarget.value)}
+                    placeholder="Paste API token"
+                  />
+                  <Group justify="space-between" align="center">
+                    <Button
+                      variant="subtle"
+                      color="red"
+                      onClick={() => {
+                        void clearJiraCredentials()
+                      }}
+                      loading={jiraSaving}
+                    >
+                      Disconnect Jira
+                    </Button>
+                    <Button
+                      onClick={() => {
+                        void saveJiraCredentials()
+                      }}
+                      loading={jiraSaving}
+                      disabled={!jiraEmail.trim() || !jiraToken.trim()}
+                    >
+                      Save Jira credentials
+                    </Button>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    Customer-to-epic mappings are managed in Reports.
+                  </Text>
+                </Stack>
+              </Card>
+
+              <Card radius="md" withBorder>
+                <Stack gap="sm">
+                  <Text fw={700}>Meetings</Text>
+                  <Text size="xs" c="dimmed">
+                    Configure and fetch Microsoft Graph meetings in the dedicated Meetings window.
+                  </Text>
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onClick={() => {
+                      void openMeetingsWindow()
+                    }}
+                  >
+                    Open Meetings Window
+                  </Button>
+                </Stack>
+              </Card>
+
+              <Card radius="md" withBorder>
+                <Stack gap="sm">
+                  <Text fw={700}>Behavior</Text>
+                  <Switch
+                    size="sm"
+                    checked={heatmapEnabled}
+                    onChange={event => setHeatmapEnabled(event.currentTarget.checked)}
+                    label="Calendar heatmap"
+                  />
+                  <Switch
+                    size="sm"
+                    checked={reviewMode}
+                    onChange={event => setReviewMode(event.currentTarget.checked)}
+                    label="Review before submit"
+                  />
+                  <Switch
+                    size="sm"
+                    checked={reminderEnabled}
+                    onChange={event => setReminderEnabled(event.currentTarget.checked)}
+                    label="Idle reminders"
+                  />
+                  <SimpleGrid cols={2} spacing="sm">
+                    <NumberInput
+                      label="Start hour"
+                      min={0}
+                      max={23}
+                      value={reminderStartHour}
+                      onChange={value => setReminderStartHour(Number(value) || 9)}
+                      disabled={!reminderEnabled}
+                    />
+                    <NumberInput
+                      label="Midday hour"
+                      min={0}
+                      max={23}
+                      value={reminderMiddayHour}
+                      onChange={value => setReminderMiddayHour(Number(value) || 13)}
+                      disabled={!reminderEnabled}
+                    />
+                    <NumberInput
+                      label="End hour"
+                      min={0}
+                      max={23}
+                      value={reminderEndHour}
+                      onChange={value => setReminderEndHour(Number(value) || 18)}
+                      disabled={!reminderEnabled}
+                    />
+                    <NumberInput
+                      label="Idle minutes"
+                      min={5}
+                      max={180}
+                      value={reminderIdleMinutes}
+                      onChange={value => setReminderIdleMinutes(Number(value) || 30)}
+                      disabled={!reminderEnabled}
+                    />
+                  </SimpleGrid>
+                </Stack>
+              </Card>
+            </Stack>
+          </Card>
+        </Container>
+      </Box>
+    )
+  }
+
+  if (isMeetingsWindow) {
+    return (
+      <Box className="app-shell settings-shell">
+        <Container size="lg" className="settings-container">
+          <Card className="glass-card" radius="lg" p="xl">
+            <Stack gap="md">
+              <Group justify="space-between" align="center">
+                <Text className="section-title">Meetings Integration</Text>
+                <Group gap="xs">
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() => {
+                      void openSettingsWindow()
+                    }}
+                  >
+                    Settings
+                  </Button>
+                  <Button
+                    size="xs"
+                    variant="subtle"
+                    onClick={() => {
+                      void openReportsWindow()
+                    }}
+                  >
+                    Reports
+                  </Button>
+                </Group>
+              </Group>
+
+              {!loggedIn && (
+                <Alert color="yellow" variant="light" radius="md">
+                  HRS is not authenticated. Approve DUO, then press login if needed.
+                </Alert>
+              )}
+              {sessionError && (
+                <Alert color="red" variant="light" radius="md">
+                  {sessionError}
+                </Alert>
+              )}
+              {bridgeError && (
+                <Alert color="red" variant="light" radius="md">
+                  {bridgeError}
+                </Alert>
+              )}
+
+              <Group justify="space-between" align="center">
+                <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(-1)}>
+                  Prev
+                </Button>
+                <Text fw={700}>{dayjs(reportMonth).format('MMMM YYYY')}</Text>
+                <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(1)}>
+                  Next
+                </Button>
+              </Group>
+
+              <SimpleGrid cols={2} spacing="sm">
+                <Select
+                  label="Browser"
+                  value={meetingsBrowser}
+                  onChange={value => setMeetingsBrowser((value as 'safari' | 'chrome') || 'chrome')}
+                  data={[
+                    { value: 'safari', label: 'Safari' },
+                    { value: 'chrome', label: 'Chrome' }
+                  ]}
+                  size="sm"
+                />
+                <Switch
+                  mt={24}
+                  size="sm"
+                  checked={meetingsHeadless}
+                  onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
+                  label="Background mode"
+                  disabled={meetingsBrowser !== 'chrome'}
+                />
+              </SimpleGrid>
+
+              <SimpleGrid cols={2} spacing="sm">
+                <TextInput
+                  label="Domain user"
+                  placeholder="you@company.com"
+                  value={meetingsUsername}
+                  onChange={event => setMeetingsUsername(event.currentTarget.value)}
+                />
+                <PasswordInput
+                  label="Domain password"
+                  placeholder="••••••••"
+                  value={meetingsPassword}
+                  onChange={event => setMeetingsPassword(event.currentTarget.value)}
+                />
+              </SimpleGrid>
+
+              <Group justify="space-between" align="center">
+                <Group gap="xs">
+                  <Button
+                    size="sm"
+                    variant="light"
+                    onClick={() => {
+                      void fetchMeetings()
+                    }}
+                    loading={meetingsLoading}
+                  >
+                    Fetch meetings now
+                  </Button>
+                  {!loggedIn && (
+                    <Button
+                      size="sm"
+                      variant="subtle"
+                      loading={checkingSession || duoPending}
+                      onClick={() => {
+                        void retryTrayLogin()
+                      }}
+                    >
+                      Login now
+                    </Button>
+                  )}
+                </Group>
+                <Badge variant="light" color="gray">
+                  {meetingsSummary.totalMeetings} meetings
+                </Badge>
+              </Group>
+
+              {meetingsProgress && (
+                <Text size="xs" c="dimmed">
+                  Current: {meetingsProgress}
+                </Text>
+              )}
+
+              <Card radius="md" withBorder>
+                <Stack gap={6}>
+                  <Text size="xs" c="dimmed">
+                    Fetch progress
+                  </Text>
+                  <div className="meetings-progress-log">
+                    {meetingsProgressLog.length ? (
+                      meetingsProgressLog.map((line, index) => (
+                        <Text key={`${index}-${line}`} size="xs" ff="monospace">
+                          {line}
+                        </Text>
+                      ))
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        No fetch logs yet.
+                      </Text>
+                    )}
+                  </div>
+                </Stack>
+              </Card>
+
+              {meetingsError && (
+                <Alert color="red" variant="light" radius="md">
+                  {meetingsError}
+                </Alert>
+              )}
+
+              {meetingsUpdatedAt && (
+                <Text size="xs" c="dimmed">
+                  Last updated {dayjs(meetingsUpdatedAt).format('DD-MM-YYYY HH:mm')}
+                  {meetingsMonth ? ` · ${meetingsMonth}` : ''}
+                </Text>
+              )}
+
+              {meetings.length ? (
+                <Table striped highlightOnHover withTableBorder>
+                  <Table.Thead>
+                    <Table.Tr>
+                      <Table.Th>Meeting</Table.Th>
+                      <Table.Th>Customer</Table.Th>
+                      <Table.Th className="meetings-date-col">Start</Table.Th>
+                      <Table.Th className="meetings-date-col">End</Table.Th>
+                      <Table.Th>Participants</Table.Th>
+                      <Table.Th className="meetings-action-col">Log</Table.Th>
+                    </Table.Tr>
+                  </Table.Thead>
+                  <Table.Tbody>
+                    {meetingsSorted.map((meeting, index) => {
+                      const meetingKey = getMeetingKey(meeting)
+                      const isLogged = Boolean(
+                        meetingLoggedKeys[meetingKey] || meetingLoggedKeysFromHrs[meetingKey]
+                      )
+                      const mappedCustomer = resolveMeetingClient(meeting) ?? 'Unmapped'
+                      return (
+                        <Table.Tr key={`${meeting.subject}-${index}`}>
+                          <Table.Td>{meeting.subject}</Table.Td>
+                          <Table.Td>{mappedCustomer}</Table.Td>
+                          <Table.Td className="meetings-date-col">{meeting.startTime}</Table.Td>
+                          <Table.Td className="meetings-date-col">{meeting.endTime}</Table.Td>
+                          <Table.Td>{meeting.participants || '—'}</Table.Td>
+                          <Table.Td className="meetings-action-col">
+                            <Button
+                              size="xs"
+                              variant={isLogged ? 'filled' : 'light'}
+                              onClick={() => handleLogMeeting(meeting)}
+                              disabled={isLogged}
+                            >
+                              {isLogged ? 'Logged' : 'Log meeting'}
+                            </Button>
+                          </Table.Td>
+                        </Table.Tr>
+                      )
+                    })}
+                  </Table.Tbody>
+                </Table>
+              ) : (
+                <Text size="sm" c="dimmed">
+                  {meetingsLoading ? 'Fetching meetings…' : 'No meetings found for this month.'}
+                </Text>
+              )}
+            </Stack>
+          </Card>
+        </Container>
+        {meetingMappingModal}
       </Box>
     )
   }
@@ -10010,27 +12144,7 @@ export default function App() {
                             const intensity = heatmapActive
                               ? Math.min(info.totalMinutes / maxDayMinutes, 1)
                               : 0
-                            const tooltipLabel = info?.day.reports.length ? (
-                              <div className="calendar-tooltip">
-                                {info.day.reports.map((report, index) => {
-                                  const meta = taskMetaById.get(report.taskId)
-                                  const projectLabel =
-                                    meta?.projectName || report.projectInstance || report.taskName
-                                  return (
-                                    <div
-                                      key={`${report.taskId}-${index}`}
-                                      className="calendar-tooltip-row"
-                                    >
-                                      <span className="calendar-tooltip-project">{projectLabel}</span>
-                                      <span className="calendar-tooltip-task">{report.taskName}</span>
-                                      <span className="calendar-tooltip-hours">{report.hours_HHMM}</span>
-                                    </div>
-                                  )
-                                })}
-                              </div>
-                            ) : (
-                              'No reports'
-                            )
+                            const tooltipLabel = renderCalendarTooltip(info?.day.reports)
                             return (
                               <Tooltip
                                 label={tooltipLabel}
@@ -10463,6 +12577,7 @@ export default function App() {
                           <Table.Thead>
                             <Table.Tr>
                               <Table.Th>Meeting</Table.Th>
+                              <Table.Th>Customer</Table.Th>
                               <Table.Th className="meetings-date-col">Start</Table.Th>
                               <Table.Th className="meetings-date-col">End</Table.Th>
                               <Table.Th>Participants</Table.Th>
@@ -10481,6 +12596,7 @@ export default function App() {
                                 className={isLogged ? 'meeting-row-logged' : undefined}
                               >
                                 <Table.Td>{meeting.subject}</Table.Td>
+                                <Table.Td>{resolveMeetingClient(meeting) ?? 'Unmapped'}</Table.Td>
                                 <Table.Td className="meetings-date-col">
                                   {meeting.startTime}
                                 </Table.Td>
@@ -10582,174 +12698,7 @@ export default function App() {
         </Stack>
       </Modal>
 
-      <Modal
-        opened={meetingMappingOpen}
-        onClose={() => {
-          setMeetingMappingOpen(false)
-          setMeetingMappingMeeting(null)
-        }}
-        title="Map meeting to client"
-        centered
-        radius="md"
-      >
-        <Stack gap="md">
-          {meetingMappingMeeting && (
-            <Stack gap={4}>
-              <Text size="sm" fw={600}>
-                {meetingMappingMeeting.subject || 'Meeting'}
-              </Text>
-              <Text size="xs" c="dimmed">
-                {meetingMappingMeeting.startTime} · {meetingMappingMeeting.endTime}
-              </Text>
-              {meetingMappingMeeting.participants && (
-                <Text size="xs" c="dimmed">
-                  Attendees: {meetingMappingMeeting.participants}
-                </Text>
-              )}
-            </Stack>
-          )}
-
-          <Select
-            label="Match by"
-            placeholder="Pick an email, domain, or name"
-            data={meetingMappingOptions}
-            value={meetingMappingKey}
-            onChange={value => setMeetingMappingKey(value)}
-            searchable
-            clearable
-            nothingFoundMessage="No attendees found"
-          />
-
-          <TextInput
-            label="Custom match (optional)"
-            placeholder="email:person@client.com or domain:client.com"
-            value={meetingMappingCustomKey}
-            onChange={event => setMeetingMappingCustomKey(event.currentTarget.value)}
-          />
-
-          <Select
-            label="Project"
-            placeholder="Choose a project"
-            data={meetingMappingProjectOptionsForClient}
-            value={meetingMappingProject}
-            onChange={value => setMeetingMappingProject(value)}
-            searchable
-            clearable
-            nothingFoundMessage="No projects found"
-          />
-
-          <Select
-            label={meetingMappingProject ? 'Client entry' : 'Client'}
-            placeholder="Select a client"
-            data={meetingMappingCustomerOptions}
-            value={meetingMappingClient}
-            onChange={value => setMeetingMappingClient(value)}
-            searchable
-            clearable
-            nothingFoundMessage="No clients found"
-          />
-
-          {meetingMappingProject && meetingMappingCustomerOptions.length === 1 && (
-            <Text size="xs" c="dimmed">
-              Only one client found for this project.
-            </Text>
-          )}
-
-          <Select
-            label="Task"
-            placeholder="Select a task"
-            data={meetingLogTaskOptions}
-            value={meetingLogTaskId}
-            onChange={value => setMeetingLogTaskId(value)}
-            searchable
-            clearable
-            nothingFoundMessage="No tasks found"
-            disabled={!meetingMappingProject || !meetingMappingClient}
-          />
-
-          {meetingMappingProject &&
-            meetingMappingClient &&
-            !meetingLogTaskOptions.length && (
-              <Text size="xs" c="dimmed">
-                No tasks found for this client.
-              </Text>
-            )}
-
-          <Stack gap="xs">
-            <Group justify="space-between" align="center">
-              <Text size="sm" fw={600}>
-                Log to Jira (optional)
-              </Text>
-              <Switch
-                checked={meetingLogToJira}
-                onChange={event => setMeetingLogToJira(event.currentTarget.checked)}
-                disabled={!meetingMappingClient || !jiraConfigured}
-              />
-            </Group>
-
-            {!jiraConfigured && (
-              <Text size="xs" c="dimmed">
-                Connect Jira to enable meeting logging.
-              </Text>
-            )}
-
-            {meetingLogToJira && meetingMappingClient && !meetingMappedEpicKey && jiraConfigured && (
-              <Text size="xs" c="dimmed">
-                Map this client to a Jira epic first.
-              </Text>
-            )}
-
-            {meetingLogToJira && meetingMappedEpicKey && (
-              <Text size="xs" c="dimmed">
-                Jira target: {meetingMappedEpicKey}
-                {meetingMappedEpic ? ` · ${meetingMappedEpic.summary}` : ''}
-              </Text>
-            )}
-
-            {meetingLogToJira && meetingMappedEpicKey && (
-              <Select
-                label="Jira work item (optional)"
-                placeholder="Choose a task or subtask"
-                data={meetingLogIssueOptions}
-                value={meetingLogIssueKey}
-                onChange={value => setMeetingLogIssueKey(value)}
-                searchable
-                clearable
-                nothingFoundMessage="No work items found"
-                disabled={meetingLogLoading}
-              />
-            )}
-
-            {meetingLogLoading && (
-              <Group gap="xs">
-                <Loader size="xs" />
-                <Text size="xs" c="dimmed">
-                  Loading Jira work items…
-                </Text>
-              </Group>
-            )}
-
-            {meetingLogError && (
-              <Alert color="red" variant="light" radius="md">
-                {meetingLogError}
-              </Alert>
-            )}
-          </Stack>
-
-          {meetingMappingError && (
-            <Alert color="red" variant="light" radius="md">
-              {meetingMappingError}
-            </Alert>
-          )}
-
-          <Group justify="space-between" align="center">
-            <Button variant="subtle" onClick={() => setMeetingMappingOpen(false)}>
-              Cancel
-            </Button>
-            <Button onClick={saveMeetingMapping}>Save &amp; log</Button>
-          </Group>
-        </Stack>
-      </Modal>
+      {meetingMappingModal}
 
       <Modal
         opened={historyModalOpen}

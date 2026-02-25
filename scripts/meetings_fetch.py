@@ -557,9 +557,8 @@ def main() -> int:
                             log("Clicked sign-in button after password.")
                         else:
                             log("Clicked continue button after account selection.")
-                    except TimeoutException as exc:
-                        if password_used:
-                            log(f"Sign In button after password not found. {exc}")
+                    except TimeoutException:
+                        pass
                     except StaleElementReferenceException:
                         try:
                             sign_in_button_after_password = WebDriverWait(driver, 6).until(
@@ -567,7 +566,7 @@ def main() -> int:
                             )
                             sign_in_button_after_password.click()
                         except Exception as exc:
-                            log(f"Failed to click Sign In button. {exc}")
+                            log("Failed to click Sign In button. Continuing.")
 
                 if sign_in_clicked:
                     try:

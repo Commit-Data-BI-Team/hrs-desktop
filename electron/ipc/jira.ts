@@ -467,7 +467,15 @@ export function registerJiraIpc() {
         if (item.worklogs === undefined) return false
         const subtasks = item.subtasks ?? []
         // All subtasks must also have worklogs property
-        return subtasks.every(sub => sub.worklogs !== undefined)
+        return subtasks.every(sub => {
+          if (sub.worklogs === undefined) return false
+          const hasSubtaskMeta =
+            Boolean(sub.statusName) ||
+            Boolean(sub.assigneeName) ||
+            (sub.estimateSeconds ?? 0) > 0 ||
+            (sub.timespent ?? 0) > 0
+          return hasSubtaskMeta
+        })
       })
     }
 
@@ -662,9 +670,24 @@ async function fetchWorkItemDetails(
     }
   }
   
-  // OPTIMIZATION: Skip fetching full subtask details - Jira API is too slow
-  // Use the basic subtask info from parent issue search instead
-  const subtaskLookup = new Map<string, JiraSearchIssue>()
+  // Fetch subtask details for reliable subtask hours/assignee/status in UI.
+  // We keep this batched and lightweight (fields only, no comments/changelog).
+  let subtaskLookup = new Map<string, JiraSearchIssue>()
+  if (subtaskKeySet.size) {
+    try {
+      const subtaskDetails = await fetchIssuesByKeys(Array.from(subtaskKeySet), [
+        'summary',
+        'status',
+        'timespent',
+        'timeoriginalestimate',
+        'timetracking',
+        'assignee'
+      ])
+      subtaskLookup = new Map(subtaskDetails.map(issue => [issue.key, issue]))
+    } catch {
+      // Fallback to subtask refs + worklogs below.
+    }
+  }
 
     const worklogKeys = Array.from(
       new Set([

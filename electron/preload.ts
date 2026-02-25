@@ -31,8 +31,8 @@ contextBridge.exposeInMainWorld('hrs', {
   getJiraTimeTrackingConfig: () => ipcRenderer.invoke('jira:getTimeTrackingConfig'),
   getJiraEpicDebug: (epicKey: string) =>
     ipcRenderer.invoke('jira:getEpicDebug', epicKey),
-  getJiraWorkItemDetails: (epicKey: string) =>
-    ipcRenderer.invoke('jira:getWorkItemDetails', epicKey),
+  getJiraWorkItemDetails: (epicKey: string, forceRefresh?: boolean) =>
+    ipcRenderer.invoke('jira:getWorkItemDetails', epicKey, forceRefresh),
   getJiraIssueWorklogs: (issueKey: string) =>
     ipcRenderer.invoke('jira:getIssueWorklogs', issueKey),
   addJiraWorklog: (payload: {
@@ -161,11 +161,24 @@ contextBridge.exposeInMainWorld('hrs', {
   setFloatingCollapsed: (collapsed: boolean) =>
     ipcRenderer.invoke('app:setFloatingCollapsed', collapsed),
   openMainWindow: () => ipcRenderer.invoke('app:openMainWindow'),
+  openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
+  openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
+  openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
   onTrayOpened: (handler: () => void) => {
     const listener = () => handler()
     ipcRenderer.on('app:trayOpened', listener)
     return () => {
       ipcRenderer.removeListener('app:trayOpened', listener)
+    }
+  },
+  onTrayClosing: (handler: (reason: 'blur' | 'toggle' | 'open-main') => void) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      reason: 'blur' | 'toggle' | 'open-main'
+    ) => handler(reason)
+    ipcRenderer.on('app:trayClosing', listener)
+    return () => {
+      ipcRenderer.removeListener('app:trayClosing', listener)
     }
   }
 })

@@ -998,6 +998,25 @@ body {
   box-shadow: inset 0 0 0 1px rgba(220, 68, 78, 0.45);
 }
 
+.calendar-day.is-under-target::after {
+  content: '';
+  position: absolute;
+  inset: 2px;
+  border-radius: 8px;
+  border: 1px solid rgba(236, 184, 102, 0.55);
+  pointer-events: none;
+}
+
+.calendar-day.is-under-target .calendar-dot {
+  background: rgba(244, 191, 104, 0.98);
+  box-shadow: 0 0 0 3px rgba(244, 191, 104, 0.18);
+}
+
+.calendar-day.is-under-target .calendar-hours {
+  background: rgba(238, 186, 102, 0.24);
+  color: rgba(255, 227, 173, 0.95);
+}
+
 .calendar-meta {
   display: inline-flex;
   align-items: center;
@@ -1476,6 +1495,21 @@ body {
   white-space: nowrap;
 }
 
+.calendar-tooltip-target-line {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+  align-items: center;
+  padding-top: 6px;
+  border-top: 1px solid rgba(236, 184, 102, 0.22);
+}
+
+.calendar-tooltip-target-missing {
+  font-size: 0.76rem;
+  font-weight: 700;
+  color: rgba(252, 206, 132, 0.96);
+}
+
 .report-details {
   flex: 1;
 }
@@ -1860,6 +1894,30 @@ body {
 .jira-card .mantine-Badge-root {
   background: rgba(31, 122, 140, 0.2);
   color: var(--accent);
+}
+
+.jira-token-guide {
+  background: rgba(10, 18, 26, 0.74);
+  border-color: rgba(108, 190, 255, 0.2);
+}
+
+.jira-token-url {
+  display: block;
+  padding: 6px 8px;
+  border-radius: 8px;
+  background: rgba(31, 122, 140, 0.12);
+  border: 1px solid rgba(108, 190, 255, 0.2);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+  overflow-wrap: anywhere;
+}
+
+.jira-token-steps {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 0.78rem;
+  color: rgba(224, 236, 248, 0.88);
+  display: grid;
+  gap: 4px;
 }
 
 @keyframes jiraPulse {
@@ -2322,6 +2380,12 @@ html[data-platform='windows'] .tray-shell-enter {
   margin-top: 0;
 }
 
+.tray-month-nav-spacer {
+  width: 56px;
+  height: 28px;
+  flex: 0 0 56px;
+}
+
 .tray-month-label {
   font-size: 0.85rem;
   font-weight: 600;
@@ -2380,6 +2444,11 @@ html[data-platform='windows'] .tray-shell-enter {
   background: linear-gradient(180deg, rgba(7, 16, 25, 0.98), rgba(4, 12, 20, 0.97));
   border: 1px solid rgba(110, 190, 255, 0.24);
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  width: min(760px, calc(100vw - 20px));
+  max-height: calc(100vh - 20px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
 }
 
 .tray-day-editor-header {
@@ -2396,26 +2465,55 @@ html[data-platform='windows'] .tray-shell-enter {
 
 .tray-day-editor-body {
   padding-top: 4px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  -webkit-overflow-scrolling: touch;
 }
 
 .tray-day-editor-list {
-  max-height: 58vh;
-  overflow: auto;
-  padding-right: 2px;
+  max-height: none;
+  overflow: visible;
+  padding-right: 0;
+  padding-bottom: 10px;
 }
 
 .tray-day-editor-item {
+  padding: 12px;
   background: rgba(8, 18, 28, 0.72);
   border-color: rgba(255, 255, 255, 0.1);
 }
 
+.tray-day-editor-top {
+  gap: 10px;
+}
+
 .tray-day-editor-main {
   min-width: 0;
+  flex: 1;
+}
+
+.tray-day-editor-project,
+.tray-day-editor-meta {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.tray-day-editor-hours {
+  flex-shrink: 0;
 }
 
 .tray-day-editor-comment {
   white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 1.4;
   color: rgba(228, 238, 255, 0.9);
+}
+
+.tray-day-editor-actions {
+  margin-top: 2px;
 }
 
 .tray-day-editor-empty {
@@ -2479,7 +2577,14 @@ html[data-platform='windows'] .tray-shell-enter {
   display: block;
   height: 100%;
   border-radius: 999px;
-  background: linear-gradient(90deg, rgba(96, 196, 210, 0.95), rgba(238, 193, 108, 0.95));
+  background: linear-gradient(
+    90deg,
+    rgba(96, 196, 210, 0.95) 0%,
+    rgba(120, 212, 170, 0.95) 48%,
+    rgba(238, 193, 108, 0.95) 78%,
+    rgba(236, 140, 96, 0.95) 90%,
+    rgba(232, 88, 96, 0.95) 100%
+  );
 }
 
 .tray-project-details {
@@ -2563,14 +2668,13 @@ html[data-platform='windows'] .tray-shell-enter {
   margin-top: 2px;
 }
 
-.tray-mapping-customer {
-  flex: 1;
+.tray-mapping-customer-stack {
   min-width: 0;
-  justify-content: flex-start;
-  max-width: calc(100% - 180px);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  flex: 1;
+}
+
+.tray-mapping-customer-stack .mantine-Input-root {
+  width: 100%;
 }
 
 .tray-mapping-epic {
@@ -2578,9 +2682,25 @@ html[data-platform='windows'] .tray-shell-enter {
   min-width: 170px;
 }
 
+.jira-customer-stack {
+  min-width: 220px;
+  flex: 1;
+}
+
+.tray-alias-reset {
+  align-self: flex-start;
+  padding-inline: 0;
+  height: 18px;
+}
+
 .tray-meetings-list .mantine-Card-root {
   background: rgba(11, 18, 22, 0.72);
   border-color: rgba(255, 255, 255, 0.1);
+}
+
+.meetings-background-switch {
+  align-self: end;
+  margin-bottom: 2px;
 }
 
 .tray-meeting-card {
@@ -2709,6 +2829,31 @@ html[data-platform='windows'] .tray-calendar {
 .tray-day-button.is-missing {
   background: rgba(220, 68, 78, 0.3);
   border-color: rgba(220, 68, 78, 0.58);
+}
+
+.tray-day-button.is-under-target {
+  position: relative;
+}
+
+.tray-day-button.is-under-target::after {
+  content: '';
+  position: absolute;
+  inset: 1px;
+  border-radius: calc(var(--tray-day-radius) - 1px);
+  border: 1px solid rgba(240, 188, 104, 0.58);
+  pointer-events: none;
+}
+
+.tray-day-button.is-under-target::before {
+  content: '';
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  width: 5px;
+  height: 5px;
+  border-radius: 999px;
+  background: rgba(244, 191, 104, 0.98);
+  box-shadow: 0 0 0 2px rgba(244, 191, 104, 0.2);
 }
 
 .tray-day-button.is-selected {

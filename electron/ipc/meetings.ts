@@ -2,6 +2,11 @@ import { app, ipcMain } from 'electron'
 import { spawn, spawnSync } from 'node:child_process'
 import path from 'node:path'
 import fs from 'node:fs'
+import {
+  validateEnum,
+  validateExactObject,
+  validateOptionalString
+} from '../utils/validation'
 
 type MeetingsResult = {
   month: string
@@ -122,20 +127,45 @@ function ensurePythonEnv(pythonBin: string) {
 
 export function registerMeetingsIpc() {
   ipcMain.handle('meetings:run', async (event, options: MeetingsOptions) => {
+    const safe = validateExactObject<{
+      browser?: unknown
+      headless?: unknown
+      month?: unknown
+      username?: unknown
+      password?: unknown
+    }>(options ?? {}, ['browser', 'headless', 'month', 'username', 'password'], 'meetings options')
+    const browser = validateEnum(safe.browser, ['safari', 'chrome'] as const)
+    const headless = typeof safe.headless === 'boolean' ? safe.headless : false
+    const month =
+      validateOptionalString(safe.month, { min: 7, max: 7, allowNull: true }) ?? null
+    if (month && !/^\d{4}-\d{2}$/.test(month)) {
+      throw new Error('Invalid month format (expected YYYY-MM)')
+    }
+    const username = validateOptionalString(safe.username, {
+      min: 0,
+      max: 200,
+      allowNull: true
+    })
+    const password = validateOptionalString(safe.password, {
+      min: 0,
+      max: 300,
+      allowNull: true
+    })
+
     const scriptPath = resolveMeetingsScriptPath()
     const pythonBin = resolvePythonBin()
     const venvPython = ensurePythonEnv(pythonBin)
-    const args = [scriptPath, '--browser', options.browser || 'safari']
-    if (options.headless) {
+    const args = [scriptPath, '--browser', browser]
+    if (headless) {
       args.push('--headless')
     }
-    if (options.month) {
-      args.push('--month', options.month)
+    if (month) {
+      args.push('--month', month)
     }
     const env = {
       ...process.env,
-      MS_USERNAME: options.username || process.env.MS_USERNAME || '',
-      MS_PASSWORD: options.password || process.env.MS_PASSWORD || '',
+      MS_USERNAME: username || process.env.MS_USERNAME || '',
+      MS_PASSWORD: password || process.env.MS_PASSWORD || '',
       MEETINGS_CHROME_PROFILE: path.join(app.getPath('userData'), 'meetings-chrome-profile')
     }
     return new Promise<MeetingsResult>((resolve, reject) => {

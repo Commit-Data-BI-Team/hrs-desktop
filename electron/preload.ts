@@ -76,6 +76,7 @@ contextBridge.exposeInMainWorld('hrs', {
     jiraBudgetSortByProgress?: boolean
     jiraBudgetTitle?: string
     jiraEpicAliases?: Record<string, string>
+    jiraCustomerAliases?: Record<string, string>
     jiraProjectStartDates?: Record<string, string>
     jiraProjectPeoplePercent?: Record<string, Record<string, number>>
     jiraProjectPositionSnapshots?: Record<

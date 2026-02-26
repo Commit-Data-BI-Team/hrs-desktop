@@ -36,7 +36,8 @@ import {
   IconCalendar,
   IconHistory,
   IconClipboardText,
-  IconChartBar
+  IconChartBar,
+  IconSettings
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -225,6 +226,7 @@ type AppPreferences = {
   jiraManualBudgets: Record<string, string>
   jiraBudgetInHours: boolean
   jiraBudgetSortByProgress: boolean
+  jiraCustomerAliases: Record<string, string>
   jiraProjectStartDates: Record<string, string>
   jiraProjectPeoplePercent: Record<string, Record<string, number>>
   meetingsBrowser: 'safari' | 'chrome'
@@ -303,6 +305,14 @@ function minutesToHHMM(minutes: number): string {
   const hours = Math.floor(minutes / 60)
   const mins = minutes % 60
   return `${String(hours).padStart(2, '0')}:${String(mins).padStart(2, '0')}`
+}
+
+function safeGetLocalStorageFlag(key: string): boolean {
+  try {
+    return localStorage.getItem(key) === '1'
+  } catch {
+    return false
+  }
 }
 
 function buildDurationFromTimes(from: string, to: string): Duration | null {
@@ -1090,10 +1100,11 @@ const AUTO_LOGIN_RETRY_COOLDOWN_MS = 60000
 const CURRENT_MONTH_REFRESH_INTERVAL_MS = 60000
 const JIRA_PREFETCH_TIMEOUT_MS = 120000
 const JIRA_LIGHT_PREFETCH_TIMEOUT_MS = 45000
-const JIRA_DETAIL_TIMEOUT_MS = 180000
+const JIRA_DETAIL_TIMEOUT_MS = 60000
 const JIRA_PREFETCH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000
 const JIRA_PREFETCH_MAX_RETRIES = 1
 const JIRA_PREFETCH_CONCURRENCY = 15
+const ATLASSIAN_TOKEN_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens'
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
   let timeoutId: number | undefined
@@ -1139,6 +1150,14 @@ export default function App() {
       // Ignore storage errors to keep UI responsive.
     }
   }, [oledEnabled])
+
+  const [jiraTokenGuideCopied, setJiraTokenGuideCopied] = useState(false)
+
+  useEffect(() => {
+    if (!jiraTokenGuideCopied) return
+    const timeoutId = window.setTimeout(() => setJiraTokenGuideCopied(false), 1600)
+    return () => window.clearTimeout(timeoutId)
+  }, [jiraTokenGuideCopied])
 
   const [loggedIn, setLoggedIn] = useState(false)
   const [logs, setLogs] = useState<WorkLog[]>([])
@@ -1264,6 +1283,7 @@ export default function App() {
   const [jiraBudgetSortByProgress, setJiraBudgetSortByProgress] = useState(false)
   const [jiraBudgetTitle, setJiraBudgetTitle] = useState('Jira project budgets')
   const [jiraEpicAliases, setJiraEpicAliases] = useState<Record<string, string>>({})
+  const [jiraCustomerAliases, setJiraCustomerAliases] = useState<Record<string, string>>({})
   const [jiraEpicRenameKey, setJiraEpicRenameKey] = useState<string | null>(null)
   const [jiraEpicRenameValue, setJiraEpicRenameValue] = useState('')
   const [jiraProjectStartDates, setJiraProjectStartDates] = useState<Record<string, string>>({})
@@ -1375,7 +1395,7 @@ export default function App() {
     'log' | 'clockify' | 'meetings' | 'reports' | 'settings'
   >('log')
   const [trayReportExpandedEpic, setTrayReportExpandedEpic] = useState<string | null>(null)
-  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'jira' | 'mapping'>('access')
+  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'mapping'>('access')
   const [trayDayEditorOpen, setTrayDayEditorOpen] = useState(false)
   const [trayDayEditorDateKey, setTrayDayEditorDateKey] = useState<string | null>(null)
   const [reviewMode, setReviewMode] = useState(false)
@@ -1388,11 +1408,11 @@ export default function App() {
   const [exportFiltered, setExportFiltered] = useState(false)
   const [kpiCollapsed, setKpiCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false
-    return localStorage.getItem('hrs-kpi-collapsed') === '1'
+    return safeGetLocalStorageFlag('hrs-kpi-collapsed')
   })
   const [jiraBudgetCollapsed, setJiraBudgetCollapsed] = useState(() => {
     if (typeof window === 'undefined') return false
-    return localStorage.getItem('hrs-jira-budget-collapsed') === '1'
+    return safeGetLocalStorageFlag('hrs-jira-budget-collapsed')
   })
   useEffect(() => {
     try {
@@ -1542,7 +1562,7 @@ export default function App() {
     !isFloating && !isTray && !isReportsWindow && !isSettingsWindow && !isMeetingsWindow
   const shouldLoadLogData = isMainWindow || isTray || isReportsWindow
   const shouldLoadJiraEpics = isMainWindow || isReportsWindow
-  const shouldLoadTrayReportJira = isTray && trayPanel === 'reports'
+  const shouldLoadTrayReportJira = isTray && loggedIn
   const shouldLoadJiraBudgetData = shouldLoadJiraEpics || shouldLoadTrayReportJira
   const isAuxWindow = isSettingsWindow || isMeetingsWindow
 
@@ -2042,6 +2062,7 @@ export default function App() {
       setJiraBudgetSortByProgress(prefs.jiraBudgetSortByProgress ?? false)
       setJiraBudgetTitle(prefs.jiraBudgetTitle ?? 'Jira project budgets')
       setJiraEpicAliases(prefs.jiraEpicAliases ?? {})
+      setJiraCustomerAliases(prefs.jiraCustomerAliases ?? {})
       setJiraProjectStartDates(prefs.jiraProjectStartDates ?? {})
       setJiraProjectPeoplePercent(prefs.jiraProjectPeoplePercent ?? {})
       setJiraProjectPositionSnapshots(prefs.jiraProjectPositionSnapshots ?? {})
@@ -2673,6 +2694,15 @@ export default function App() {
     }
   }
 
+  async function copyJiraTokenGuideUrl() {
+    try {
+      await navigator.clipboard.writeText(ATLASSIAN_TOKEN_URL)
+      setJiraTokenGuideCopied(true)
+    } catch {
+      setJiraError('Unable to copy URL. Copy it manually from the guide below.')
+    }
+  }
+
   async function updateJiraMapping(customer: string, epicKey: string | null) {
     try {
       const mappings = await window.hrs.setJiraMapping(customer, epicKey)
@@ -2868,32 +2898,16 @@ export default function App() {
     if (jiraBudgetDetailsInFlightRef.current.get(epicKey)) {
       return
     }
-    
+
     const cachedDetails = jiraBudgetDetailsCacheRef.current.get(epicKey)
-    // Check if cached data has complete worklog info
-    const hasCompleteData = cachedDetails?.items.every(item => {
-      const hasWorklogsData = item.worklogs !== undefined
-      const subtasks = item.subtasks ?? []
-      if (!subtasks.length) return hasWorklogsData
-      return subtasks.every(subtask => {
-        const hasWorklogArray = subtask.worklogs !== undefined
-        const hasSubtaskMeta =
-          Boolean(subtask.statusName) ||
-          Boolean(subtask.assigneeName) ||
-          (subtask.estimateSeconds ?? 0) > 0 ||
-          (subtask.timespent ?? 0) > 0
-        return hasWorklogArray && hasSubtaskMeta
-      })
-    })
-    
-    if (cachedDetails && hasCompleteData) {
+    // Serve cached details instantly (prefetched rows are enough for tray expansion).
+    if (cachedDetails) {
       applyDetailsToRow(epicKey, cachedDetails)
       return
     }
-    
+
     // Mark as loading to prevent duplicate fetches
     const loadingPromise = (async () => {
-      
       setJiraBudgetRows(prev =>
         prev.map(row =>
           row.epicKey === epicKey
@@ -2902,22 +2916,40 @@ export default function App() {
         )
       )
       try {
-        // Use backend cache for speed - it has correct subtask timespent from worklogs
-        const details = await withTimeout(
-          window.hrs.getJiraWorkItemDetails(epicKey, true),
-          JIRA_DETAIL_TIMEOUT_MS,
-          'Loading Jira task details'
-        ) as {
-          items?: JiraWorkItem[]
-          partial?: boolean
+        // Fast-first strategy:
+        // 1) render light task/subtask list quickly
+        // 2) enrich with detailed payload in background when available
+        const lightItems = (await withTimeout(
+          window.hrs.getJiraWorkItems(epicKey),
+          20_000,
+          'Loading Jira tasks'
+        )) as JiraWorkItem[]
+        const lightEntry = {
+          items: lightItems.length ? dedupeWorkItemsDeep(lightItems) : [],
+          partial: true
         }
-        const rawItems = details.items ?? []
-        
-        const items = rawItems.length ? dedupeWorkItemsDeep(rawItems) : []
-        const entry = { items, partial: Boolean(details.partial) }
-        
-        jiraBudgetDetailsCacheRef.current.set(epicKey, entry)
-        applyDetailsToRow(epicKey, entry)
+        jiraBudgetDetailsCacheRef.current.set(epicKey, lightEntry)
+        applyDetailsToRow(epicKey, lightEntry)
+
+        void (async () => {
+          try {
+            const details = (await withTimeout(
+              window.hrs.getJiraWorkItemDetails(epicKey),
+              JIRA_DETAIL_TIMEOUT_MS,
+              'Loading Jira task details'
+            )) as {
+              items?: JiraWorkItem[]
+              partial?: boolean
+            }
+            const rawItems = details.items ?? []
+            const items = rawItems.length ? dedupeWorkItemsDeep(rawItems) : []
+            const detailedEntry = { items, partial: Boolean(details.partial) }
+            jiraBudgetDetailsCacheRef.current.set(epicKey, detailedEntry)
+            applyDetailsToRow(epicKey, detailedEntry)
+          } catch {
+            // Keep light payload rendered if detailed fetch fails/times out.
+          }
+        })()
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
         setJiraBudgetRows(prev =>
@@ -4703,18 +4735,30 @@ export default function App() {
     )
   }, [monthlyReport])
 
-  const renderCalendarTooltip = (reports?: WorkReportEntry[]) => {
+  const getDayTargetMinutes = (day?: WorkReportDay | null) => {
+    if (!day) return 9 * 60
+    const raw = Number(day.minWorkLog)
+    if (!Number.isFinite(raw)) return 9 * 60
+    if (raw <= 0) return 0
+    return Math.round(raw * 60)
+  }
+
+  const renderCalendarTooltip = (
+    reports?: WorkReportEntry[],
+    options?: { totalMinutes?: number; targetMinutes?: number }
+  ) => {
     if (!reports?.length) return 'No reports'
 
     const groupedByCustomer = new Map<
       string,
       { totalMinutes: number; tasks: string[]; reportsCount: number }
     >()
-    let totalMinutes = 0
+    const hasProvidedTotal = typeof options?.totalMinutes === 'number'
+    let totalMinutes = hasProvidedTotal ? (options?.totalMinutes as number) : 0
 
     for (const report of reports) {
       const minutes = parseHoursHHMMToMinutes(report.hours_HHMM)
-      totalMinutes += minutes
+      if (!hasProvidedTotal) totalMinutes += minutes
       const customer =
         taskMetaById.get(report.taskId)?.customerName?.trim() ||
         report.projectInstance ||
@@ -4742,6 +4786,10 @@ export default function App() {
       }))
       .sort((a, b) => b.totalMinutes - a.totalMinutes)
 
+    const targetMinutes = options?.targetMinutes
+    const missingMinutes =
+      targetMinutes && targetMinutes > totalMinutes ? targetMinutes - totalMinutes : 0
+
     return (
       <div className="calendar-tooltip calendar-tooltip--rich">
         <div className="calendar-tooltip-header">
@@ -4767,6 +4815,16 @@ export default function App() {
             )
           })}
         </div>
+        {missingMinutes > 0 && (
+          <div className="calendar-tooltip-target-line">
+            <span className="calendar-tooltip-target-missing">
+              Missing {minutesToHHMM(missingMinutes)}
+            </span>
+            <span className="calendar-tooltip-task">
+              {minutesToHHMM(totalMinutes)} / {minutesToHHMM(targetMinutes)}
+            </span>
+          </div>
+        )}
       </div>
     )
   }
@@ -4856,6 +4914,52 @@ export default function App() {
   const trayReportedMappedCount = useMemo(
     () => trayReportedCustomers.filter(customer => Boolean(jiraMappings[customer])).length,
     [trayReportedCustomers, jiraMappings]
+  )
+
+  const getCustomerDisplayName = (customer: string | null | undefined) => {
+    if (!customer) return 'Customer'
+    const alias = jiraCustomerAliases[customer]?.trim()
+    return alias || customer
+  }
+
+  const updateCustomerAlias = (customer: string, value: string) => {
+    setJiraCustomerAliases(prev => {
+      const next = { ...prev }
+      const trimmed = value.trim()
+      if (!trimmed || trimmed === customer.trim()) {
+        delete next[customer]
+      } else {
+        next[customer] = value
+      }
+      return next
+    })
+  }
+
+  const customerOptionsDisplay = useMemo(
+    () =>
+      customerOptions.map(option => ({
+        ...option,
+        label: getCustomerDisplayName(option.value)
+      })),
+    [customerOptions, jiraCustomerAliases]
+  )
+
+  const hrsCustomerOptionsDisplay = useMemo(
+    () =>
+      hrsCustomerOptions.map(option => ({
+        ...option,
+        label: getCustomerDisplayName(option.value)
+      })),
+    [hrsCustomerOptions, jiraCustomerAliases]
+  )
+
+  const jiraProjectCustomerOptionsDisplay = useMemo(
+    () =>
+      jiraProjectCustomerOptions.map(option => ({
+        ...option,
+        label: getCustomerDisplayName(option.value)
+      })),
+    [jiraProjectCustomerOptions, jiraCustomerAliases]
   )
 
   useEffect(() => {
@@ -4950,7 +5054,7 @@ export default function App() {
         if (!people.size) people.add('Unassigned')
         for (const person of people) {
           const list = map.get(person) ?? []
-          list.push({ ...item, summary: `${row.customer} · ${item.summary}` })
+          list.push({ ...item, summary: `${getCustomerDisplayName(row.customer)} · ${item.summary}` })
           map.set(person, list)
         }
       }
@@ -5650,7 +5754,7 @@ export default function App() {
   }, [shouldLoadJiraBudgetData, jiraBudgetRows])
 
   useEffect(() => {
-    if (!shouldLoadJiraEpics || !jiraPrefetchDone || !jiraBudgetRows.length) return
+    if (!shouldLoadJiraBudgetData || !jiraPrefetchDone || !jiraBudgetRows.length) return
     for (const row of jiraBudgetRows) {
       if (row.detailsLoaded || row.detailsLoading) continue
       const cached = jiraBudgetDetailsCacheRef.current.get(row.epicKey)
@@ -5660,7 +5764,7 @@ export default function App() {
         void loadBudgetTasks(row.epicKey)
       }
     }
-  }, [shouldLoadJiraEpics, jiraPrefetchDone, jiraBudgetRows])
+  }, [shouldLoadJiraBudgetData, jiraPrefetchDone, jiraBudgetRows])
 
   // Background fetch disabled - full data loads when user expands row
   // (Re-enable if needed for automatic loading)
@@ -5708,6 +5812,7 @@ export default function App() {
       jiraBudgetSortByProgress,
       jiraBudgetTitle,
       jiraEpicAliases,
+      jiraCustomerAliases,
       jiraProjectStartDates,
       jiraProjectPeoplePercent,
       jiraProjectPositionSnapshots,
@@ -5747,6 +5852,7 @@ export default function App() {
     jiraBudgetSortByProgress,
     jiraBudgetTitle,
     jiraEpicAliases,
+    jiraCustomerAliases,
     jiraProjectStartDates,
     jiraProjectPeoplePercent,
     jiraProjectPositionSnapshots,
@@ -7670,7 +7776,7 @@ export default function App() {
             <Select
               label="Customer"
               placeholder={projectName ? 'Choose a customer' : 'Select a project first'}
-              data={customerOptions}
+              data={customerOptionsDisplay}
               value={customerName}
               onChange={value => setCustomerName(value)}
               searchable
@@ -7969,9 +8075,7 @@ export default function App() {
                 <Text className="tray-month-label">
                   {dayjs(reportMonth).format('MMMM YYYY')}
                 </Text>
-                <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(1)}>
-                  Next
-                </Button>
+                <Box className="tray-month-nav-spacer" aria-hidden="true" />
               </Group>
               <div className="tray-nav-row">
                 <Tooltip label="Quick Log" withArrow openDelay={120} withinPortal>
@@ -8040,7 +8144,7 @@ export default function App() {
                     aria-label="Settings"
                     title="Settings"
                   >
-                    <IconUser size={18} stroke={2.2} />
+                    <IconSettings size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
               </div>
@@ -8089,12 +8193,22 @@ export default function App() {
                                     const isHoliday = Boolean(info?.day.isHoliday)
                                     const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
                                     const isFuture = dateValue.isAfter(dayjs(), 'day')
+                                    const dayTargetMinutes = getDayTargetMinutes(info?.day)
                                     const isMissing =
                                       dayCell.inMonth &&
                                       !hasReports &&
                                       !isWeekend &&
                                       !isHoliday &&
                                       !isFuture
+                                    const isUnderTarget =
+                                      dayCell.inMonth &&
+                                      hasReports &&
+                                      !isWeekend &&
+                                      !isHoliday &&
+                                      !isFuture &&
+                                      dayTargetMinutes > 0 &&
+                                      Boolean(info) &&
+                                      (info?.totalMinutes ?? 0) < dayTargetMinutes
                                     const isSelected = selectedDayKey === dayCell.key
                                     const isToday = todayDayKey === dayCell.key
                                     const heatmapActive =
@@ -8107,7 +8221,13 @@ export default function App() {
                                     const intensity = heatmapActive
                                       ? Math.min(info.totalMinutes / maxDayMinutes, 1)
                                       : 0
-                                    const tooltipLabel = renderCalendarTooltip(info?.day.reports)
+                                    const tooltipLabel = renderCalendarTooltip(info?.day.reports, {
+                                      totalMinutes: info?.totalMinutes,
+                                      targetMinutes:
+                                        dayCell.inMonth && !isWeekend && !isHoliday && !isFuture
+                                          ? dayTargetMinutes
+                                          : undefined
+                                    })
                                     return (
                                       <Tooltip
                                         key={dayCell.key}
@@ -8128,6 +8248,7 @@ export default function App() {
                                               dayCell.inMonth ? '' : 'is-outside',
                                               hasReports ? 'has-reports' : '',
                                               isMissing ? 'is-missing' : '',
+                                              isUnderTarget ? 'is-under-target' : '',
                                               isHoliday ? 'is-holiday' : '',
                                               isWeekend ? 'is-weekend' : '',
                                               heatmapActive ? 'heatmap' : '',
@@ -8184,7 +8305,7 @@ export default function App() {
                       <Select
                         label="Customer"
                         placeholder="Choose a customer"
-                        data={customerOptions}
+                        data={customerOptionsDisplay}
                         value={customerName}
                         onChange={value => {
                           filtersTouchedRef.current = true
@@ -8228,12 +8349,6 @@ export default function App() {
                         size="xs"
                       />
                     </SimpleGrid>
-
-                    {!taskIdForLog && (
-                      <Text size="xs" c="dimmed">
-                        Select project, customer, and task to unlock logging.
-                      </Text>
-                    )}
 
                     <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
                       <TimeInput
@@ -8343,31 +8458,6 @@ export default function App() {
                 ) : trayPanel === 'clockify' ? (
                   <Stack gap="xs" className="tray-clock-panel">
                     <Card radius="md" withBorder className="tray-clock-card">
-                      <Stack gap="sm">
-                        <Group justify="space-between" align="center">
-                          <Text fw={700} size="sm">
-                            Clockify mode
-                          </Text>
-                          <Badge size="xs" color={timerRunning ? 'teal' : 'gray'} variant="light">
-                            {timerRunning ? `Running · ${formatElapsed(timerElapsed)}` : 'Idle'}
-                          </Badge>
-                        </Group>
-                        <Text size="xs" c="dimmed">
-                          Keep this app in tray and use floating timer for one-click start/stop logging.
-                        </Text>
-                        <Button
-                          size="xs"
-                          variant="light"
-                          onClick={() => {
-                            void openFloatingTimer()
-                          }}
-                        >
-                          Open floating timer
-                        </Button>
-                      </Stack>
-                    </Card>
-
-                    <Card radius="md" withBorder className="tray-clock-card">
                       <Stack gap="xs">
                         <Group justify="space-between" align="center">
                           <Group gap={6} align="center">
@@ -8375,15 +8465,29 @@ export default function App() {
                               <IconHistory size={12} />
                             </ThemeIcon>
                             <Text fw={700} size="sm">
-                              Use history
+                              Clock history
                             </Text>
                           </Group>
-                          <Badge size="xs" variant="light">
-                            {clockHistoryItems.length}
-                          </Badge>
+                          <Group gap="xs" align="center">
+                            <Badge size="xs" color={timerRunning ? 'teal' : 'gray'} variant="light">
+                              {timerRunning ? formatElapsed(timerElapsed) : 'Idle'}
+                            </Badge>
+                            <Badge size="xs" variant="light">
+                              {clockHistoryItems.length}
+                            </Badge>
+                            <Button
+                              size="compact-xs"
+                              variant="light"
+                              onClick={() => {
+                                void openFloatingTimer()
+                              }}
+                            >
+                              Open timer
+                            </Button>
+                          </Group>
                         </Group>
                         <Text size="xs" c="dimmed">
-                          Pick a recent log to prefill task + customer before opening floating timer.
+                          Pick a recent entry to reuse task + customer quickly.
                         </Text>
 
                         {clockHistoryItems.length ? (
@@ -8454,7 +8558,7 @@ export default function App() {
                                 size="xs"
                               />
                               <Switch
-                                mt={20}
+                                className="meetings-background-switch"
                                 size="xs"
                                 checked={meetingsHeadless}
                                 onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
@@ -8628,7 +8732,7 @@ export default function App() {
                         {topClients.slice(0, 4).map(item => (
                           <Group key={item.client} justify="space-between" wrap="nowrap">
                             <Text size="xs" lineClamp={1}>
-                              {item.client}
+                              {getCustomerDisplayName(item.client)}
                             </Text>
                             <Badge size="xs" variant="light" color="teal">
                               {item.hours}h
@@ -8697,7 +8801,8 @@ export default function App() {
                               const expectedHoursThisMonth = workDaysThisMonth * HOURS_PER_WORK_DAY
                               return rows.map(row => {
                                 const epicAlias = jiraEpicAliases[row.epicKey]
-                                const displayName = epicAlias?.trim() || row.customer
+                                const displayName =
+                                  epicAlias?.trim() || getCustomerDisplayName(row.customer)
                                 const ratio = row.estimateSeconds
                                   ? row.spentSeconds / row.estimateSeconds
                                   : 0
@@ -8895,14 +9000,6 @@ export default function App() {
                       <Button
                         size="xs"
                         className="tray-settings-tab-btn"
-                        variant={traySettingsTab === 'jira' ? 'light' : 'subtle'}
-                        onClick={() => setTraySettingsTab('jira')}
-                      >
-                        Jira
-                      </Button>
-                      <Button
-                        size="xs"
-                        className="tray-settings-tab-btn"
                         variant={traySettingsTab === 'mapping' ? 'light' : 'subtle'}
                         onClick={() => setTraySettingsTab('mapping')}
                       >
@@ -8911,6 +9008,7 @@ export default function App() {
                     </Group>
 
                     {traySettingsTab === 'access' && (
+                      <Stack gap="xs">
                       <Card radius="md" withBorder className="tray-settings-card">
                         <Stack gap="xs">
                           <Group justify="space-between" align="center">
@@ -8976,14 +9074,11 @@ export default function App() {
                           </Group>
                         </Stack>
                       </Card>
-                    )}
-
-                    {traySettingsTab === 'jira' && (
                       <Card radius="md" withBorder className="tray-settings-card">
                         <Stack gap="xs">
                           <Group justify="space-between" align="center">
                             <Text fw={700} size="sm">
-                              Jira connection
+                              Jira access
                             </Text>
                             <Badge size="xs" color={jiraConfigured ? 'teal' : 'gray'} variant="light">
                               {jiraConfigured ? 'Connected' : 'Disconnected'}
@@ -9033,159 +9128,213 @@ export default function App() {
                               {jiraError}
                             </Alert>
                           )}
+                          {!jiraConfigured && (
+                            <Card radius="md" withBorder className="jira-token-guide">
+                              <Stack gap={6}>
+                                <Group justify="space-between" align="center">
+                                  <Text size="xs" fw={700}>
+                                    Jira token setup
+                                  </Text>
+                                  <Button
+                                    size="compact-xs"
+                                    variant="subtle"
+                                    onClick={() => {
+                                      void copyJiraTokenGuideUrl()
+                                    }}
+                                  >
+                                    {jiraTokenGuideCopied ? 'Copied' : 'Copy URL'}
+                                  </Button>
+                                </Group>
+                                <Text size="xs" c="dimmed" className="jira-token-url">
+                                  {ATLASSIAN_TOKEN_URL}
+                                </Text>
+                                <ol className="jira-token-steps">
+                                  <li>Open Atlassian token page.</li>
+                                  <li>Create API token (or token with scopes), name it `HRS Desktop`.</li>
+                                  <li>Paste Jira email and token above.</li>
+                                  <li>Click `Save Jira` and verify status shows `Connected`.</li>
+                                  <li>Go to `Settings → Mapping` and map customers to epics.</li>
+                                  <li>Example email format: `xxxx@valinor.co.il`.</li>
+                                </ol>
+                              </Stack>
+                            </Card>
+                          )}
                         </Stack>
                       </Card>
+                      </Stack>
                     )}
 
                     {traySettingsTab === 'mapping' && (
-                      <Card radius="md" withBorder className="tray-settings-card">
-                        <Stack gap="xs">
-                          <Group justify="space-between" align="center">
-                            <Text fw={700} size="sm">
-                              Jira mappings
-                            </Text>
-                            <Badge size="xs" variant="light" color="teal">
-                              {trayReportedMappedCount}/{trayReportedCustomers.length} mapped
-                            </Badge>
-                          </Group>
-
-                          <Text size="xs" c="dimmed">
-                            Step 1: map customers that reported hours this month.
-                          </Text>
-
-                          {!jiraConfigured && (
-                            <Alert color="yellow" variant="light" radius="md">
-                              Connect Jira in the Jira tab first.
-                            </Alert>
-                          )}
-
-                          {jiraConfigured && !jiraLoading && !jiraEpicOptions.length && (
-                            <Alert color="yellow" variant="light" radius="md">
-                              <Group justify="space-between" align="center">
-                                <Text size="xs">Could not load Jira epics yet.</Text>
-                                <Button
-                                  size="xs"
-                                  variant="light"
-                                  onClick={retryJiraFetch}
-                                  loading={jiraLoading}
-                                >
-                                  Retry epics
-                                </Button>
-                              </Group>
-                            </Alert>
-                          )}
-
-                          <Group className="tray-mapping-headers" justify="space-between" align="center" wrap="nowrap">
-                            <Text size="xs" c="dimmed">
-                              Customer
-                            </Text>
-                            <Text size="xs" c="dimmed">
-                              Epic
-                            </Text>
-                          </Group>
-
-                          {jiraLoading ? (
-                            <Group gap="xs">
-                              <Loader size="xs" />
-                              <Text size="xs" c="dimmed">
-                                Loading Jira epics...
+                      <Stack gap="xs">
+                        <Card radius="md" withBorder className="tray-settings-card">
+                          <Stack gap="xs">
+                            <Group justify="space-between" align="center">
+                              <Text fw={700} size="sm">
+                                Reported This Month
                               </Text>
+                              <Badge size="xs" variant="light" color="teal">
+                                {trayReportedMappedCount}/{trayReportedCustomers.length} mapped
+                              </Badge>
                             </Group>
-                          ) : trayReportedCustomers.length ? (
-                            <Stack gap="xs" className="tray-mapping-list">
-                              {trayReportedCustomers.slice(0, 20).map(customer => (
-                                <Group key={customer} justify="space-between" align="center" wrap="nowrap">
-                                  <Badge
-                                    size="sm"
-                                    variant="light"
-                                    color={jiraMappings[customer] ? 'teal' : 'gray'}
-                                    className="tray-mapping-customer"
-                                  >
-                                    {customer}
-                                  </Badge>
-                                  <Select
-                                    className="tray-mapping-epic"
-                                    placeholder="Select epic"
-                                    data={jiraEpicOptions}
-                                    value={jiraMappings[customer] ?? null}
-                                    onChange={value => updateJiraMapping(customer, value ?? null)}
-                                    searchable
-                                    clearable
-                                    nothingFoundMessage="No epics found"
-                                    disabled={!jiraConfigured || !jiraEpicOptions.length}
-                                    size="xs"
-                                  />
-                                </Group>
-                              ))}
-                            </Stack>
-                          ) : (
-                            <Text size="xs" c="dimmed">
-                              No reported customers this month yet.
-                            </Text>
-                          )}
 
-                          <Text size="xs" c="dimmed">
-                            Step 2: manual mapping (select HRS customer)
-                          </Text>
-                          <Group gap="xs" align="flex-end" wrap="wrap">
-                            <Select
-                              label="HRS customer"
-                              placeholder="Select customer"
-                              data={hrsCustomerOptions}
-                              value={manualBudgetCustomer || null}
-                              onChange={value => {
-                                setManualBudgetCustomer(value ?? '')
-                                if (manualBudgetError) setManualBudgetError(null)
-                              }}
-                              searchable
-                              clearable
-                              nothingFoundMessage="No customers found"
-                              size="xs"
-                            />
-                            <Select
-                              label="Epic"
-                              placeholder="Select epic"
-                              data={jiraEpicOptions}
-                              value={manualBudgetEpicKey}
-                              onChange={value => {
-                                setManualBudgetEpicKey(value)
-                                if (manualBudgetError) setManualBudgetError(null)
-                              }}
-                              searchable
-                              clearable
-                              disabled={!jiraConfigured || !jiraEpicOptions.length}
-                              size="xs"
-                            />
-                            <Button size="xs" onClick={addManualBudget}>
-                              Add
-                            </Button>
-                          </Group>
-                          {manualBudgetError && (
-                            <Text size="xs" c="red">
-                              {manualBudgetError}
-                            </Text>
-                          )}
-                          {Object.keys(jiraManualBudgets).length > 0 && (
-                            <Stack gap={4}>
-                              {Object.entries(jiraManualBudgets).slice(0, 6).map(([customer, epicKey]) => (
-                                <Group key={customer} justify="space-between" align="center" wrap="nowrap">
-                                  <Text size="xs" c="dimmed" lineClamp={1}>
-                                    {customer} · {epicKey}
-                                  </Text>
+                            {!jiraConfigured && (
+                              <Alert color="yellow" variant="light" radius="md">
+                                Connect Jira in Access first.
+                              </Alert>
+                            )}
+
+                            {jiraConfigured && !jiraLoading && !jiraEpicOptions.length && (
+                              <Alert color="yellow" variant="light" radius="md">
+                                <Group justify="space-between" align="center">
+                                  <Text size="xs">Could not load Jira epics yet.</Text>
                                   <Button
                                     size="xs"
-                                    variant="subtle"
-                                    color="red"
-                                    onClick={() => removeManualBudget(customer)}
+                                    variant="light"
+                                    onClick={retryJiraFetch}
+                                    loading={jiraLoading}
                                   >
-                                    Remove
+                                    Retry epics
                                   </Button>
                                 </Group>
-                              ))}
-                            </Stack>
-                          )}
-                        </Stack>
-                      </Card>
+                              </Alert>
+                            )}
+
+                            <Group
+                              className="tray-mapping-headers"
+                              justify="space-between"
+                              align="center"
+                              wrap="nowrap"
+                            >
+                              <Text size="xs" c="dimmed">
+                                Customer
+                              </Text>
+                              <Text size="xs" c="dimmed">
+                                Epic
+                              </Text>
+                            </Group>
+
+                            {jiraLoading ? (
+                              <Group gap="xs">
+                                <Loader size="xs" />
+                                <Text size="xs" c="dimmed">
+                                  Loading Jira epics...
+                                </Text>
+                              </Group>
+                            ) : trayReportedCustomers.length ? (
+                              <Stack gap="xs" className="tray-mapping-list">
+                                {trayReportedCustomers.slice(0, 20).map(customer => (
+                                  <Group
+                                    key={customer}
+                                    justify="space-between"
+                                    align="center"
+                                    wrap="nowrap"
+                                  >
+                                    <Stack gap={4} className="tray-mapping-customer-stack">
+                                      <TextInput
+                                        size="xs"
+                                        placeholder="Customer name"
+                                        value={jiraCustomerAliases[customer] ?? customer}
+                                        onChange={event => updateCustomerAlias(customer, event.currentTarget.value)}
+                                      />
+                                      {jiraCustomerAliases[customer] && (
+                                        <Button
+                                          size="compact-xs"
+                                          variant="subtle"
+                                          className="tray-alias-reset"
+                                          onClick={() => updateCustomerAlias(customer, customer)}
+                                        >
+                                          Use original name
+                                        </Button>
+                                      )}
+                                    </Stack>
+                                    <Select
+                                      className="tray-mapping-epic"
+                                      placeholder="Select epic"
+                                      data={jiraEpicOptions}
+                                      value={jiraMappings[customer] ?? null}
+                                      onChange={value => updateJiraMapping(customer, value ?? null)}
+                                      searchable
+                                      clearable
+                                      nothingFoundMessage="No epics found"
+                                      disabled={!jiraConfigured || !jiraEpicOptions.length}
+                                      size="xs"
+                                    />
+                                  </Group>
+                                ))}
+                              </Stack>
+                            ) : (
+                              <Text size="xs" c="dimmed">
+                                No reported customers this month yet.
+                              </Text>
+                            )}
+                          </Stack>
+                        </Card>
+
+                        <Card radius="md" withBorder className="tray-settings-card">
+                          <Stack gap="xs">
+                            <Text fw={700} size="sm">
+                              Manual Mapping
+                            </Text>
+                            <Group gap="xs" align="flex-end" wrap="wrap">
+                              <Select
+                                label="HRS customer"
+                                placeholder="Select customer"
+                                data={hrsCustomerOptionsDisplay}
+                                value={manualBudgetCustomer || null}
+                                onChange={value => {
+                                  setManualBudgetCustomer(value ?? '')
+                                  if (manualBudgetError) setManualBudgetError(null)
+                                }}
+                                searchable
+                                clearable
+                                nothingFoundMessage="No customers found"
+                                size="xs"
+                              />
+                              <Select
+                                label="Epic"
+                                placeholder="Select epic"
+                                data={jiraEpicOptions}
+                                value={manualBudgetEpicKey}
+                                onChange={value => {
+                                  setManualBudgetEpicKey(value)
+                                  if (manualBudgetError) setManualBudgetError(null)
+                                }}
+                                searchable
+                                clearable
+                                disabled={!jiraConfigured || !jiraEpicOptions.length}
+                                size="xs"
+                              />
+                              <Button size="xs" onClick={addManualBudget}>
+                                Add
+                              </Button>
+                            </Group>
+                            {manualBudgetError && (
+                              <Text size="xs" c="red">
+                                {manualBudgetError}
+                              </Text>
+                            )}
+                            {Object.keys(jiraManualBudgets).length > 0 && (
+                              <Stack gap={4}>
+                                {Object.entries(jiraManualBudgets).slice(0, 6).map(([customer, epicKey]) => (
+                                  <Group key={customer} justify="space-between" align="center" wrap="nowrap">
+                                    <Text size="xs" c="dimmed" lineClamp={1}>
+                                      {getCustomerDisplayName(customer)} · {epicKey}
+                                    </Text>
+                                    <Button
+                                      size="xs"
+                                      variant="subtle"
+                                      color="red"
+                                      onClick={() => removeManualBudget(customer)}
+                                    >
+                                      Remove
+                                    </Button>
+                                  </Group>
+                                ))}
+                              </Stack>
+                            )}
+                          </Stack>
+                        </Card>
+                      </Stack>
                     )}
                   </Stack>
                 )}
@@ -9195,7 +9344,7 @@ export default function App() {
                 opened={trayDayEditorOpen}
                 onClose={closeTrayDayEditor}
                 centered
-                size="lg"
+                size="md"
                 title={
                   trayDayEditorDateKey
                     ? `Reports · ${dayjs(trayDayEditorDateKey).format('DD MMMM YYYY')}`
@@ -9214,7 +9363,7 @@ export default function App() {
                       {trayDayEditorReports.length} reports
                     </Badge>
                     <Badge size="sm" variant="light" color="teal">
-                      {formatMinutesToHHMM(trayDayEditorTotalMinutes)} total
+                      {minutesToHHMM(trayDayEditorTotalMinutes)} total
                     </Badge>
                   </Group>
 
@@ -9247,16 +9396,21 @@ export default function App() {
                             className="tray-day-editor-item"
                           >
                             <Stack gap={8}>
-                              <Group justify="space-between" align="flex-start" wrap="nowrap">
+                              <Group
+                                justify="space-between"
+                                align="flex-start"
+                                wrap="nowrap"
+                                className="tray-day-editor-top"
+                              >
                                 <Stack gap={2} className="tray-day-editor-main">
-                                  <Text size="sm" fw={700} lineClamp={1}>
+                                  <Text size="sm" fw={700} className="tray-day-editor-project">
                                     {projectLabel}
                                   </Text>
-                                  <Text size="xs" c="dimmed" lineClamp={1}>
+                                  <Text size="xs" c="dimmed" className="tray-day-editor-meta">
                                     {customerLabel} · {report.taskName}
                                   </Text>
                                 </Stack>
-                                <Badge variant="light" color="teal">
+                                <Badge variant="light" color="teal" className="tray-day-editor-hours">
                                   {report.hours_HHMM}
                                 </Badge>
                               </Group>
@@ -9284,6 +9438,7 @@ export default function App() {
                                     onChange={event => setEditComment(event.currentTarget.value)}
                                     autosize
                                     minRows={2}
+                                    maxRows={6}
                                     size="xs"
                                   />
                                   <Group justify="flex-end" gap="xs">
@@ -9312,7 +9467,12 @@ export default function App() {
                                   <Text size="xs" className="tray-day-editor-comment">
                                     {report.comment?.trim() || 'No comment'}
                                   </Text>
-                                  <Group justify="flex-end" gap="xs">
+                                  <Group
+                                    justify="flex-end"
+                                    gap="xs"
+                                    wrap="wrap"
+                                    className="tray-day-editor-actions"
+                                  >
                                     <Button
                                       size="xs"
                                       variant="light"
@@ -9559,6 +9719,36 @@ export default function App() {
                       {jiraError}
                     </Alert>
                   )}
+                  {!jiraConfigured && (
+                    <Card radius="md" withBorder className="jira-token-guide">
+                      <Stack gap={6}>
+                        <Group justify="space-between" align="center">
+                          <Text size="xs" fw={700}>
+                            Jira token setup
+                          </Text>
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            onClick={() => {
+                              void copyJiraTokenGuideUrl()
+                            }}
+                          >
+                            {jiraTokenGuideCopied ? 'Copied' : 'Copy URL'}
+                          </Button>
+                        </Group>
+                        <Text size="xs" c="dimmed" className="jira-token-url">
+                          {ATLASSIAN_TOKEN_URL}
+                        </Text>
+                        <ol className="jira-token-steps">
+                          <li>Open Atlassian token page.</li>
+                          <li>Create API token (or token with scopes), name it `HRS Desktop`.</li>
+                          <li>Paste Jira email and token below.</li>
+                          <li>Click `Save Jira credentials`.</li>
+                          <li>Go to `Settings → Mapping` and map customers to epics.</li>
+                        </ol>
+                      </Stack>
+                    </Card>
+                  )}
                   <TextInput
                     label="Jira email"
                     value={jiraEmail}
@@ -9748,7 +9938,7 @@ export default function App() {
                   size="sm"
                 />
                 <Switch
-                  mt={24}
+                  className="meetings-background-switch"
                   size="sm"
                   checked={meetingsHeadless}
                   onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
@@ -10319,7 +10509,7 @@ export default function App() {
                                 ? 'Select a customer'
                                 : 'Select a project first'
                             }
-                            data={jiraProjectCustomerOptions}
+                            data={jiraProjectCustomerOptionsDisplay}
                             value={jiraMappingCustomer}
                             onChange={value => setJiraMappingCustomer(value)}
                             searchable
@@ -10361,9 +10551,24 @@ export default function App() {
                                 align="center"
                                 wrap="wrap"
                               >
-                                <Text size="sm" fw={600} className="jira-customer">
-                                  {customer}
-                                </Text>
+                                <Stack gap={4} className="jira-customer-stack">
+                                  <TextInput
+                                    size="xs"
+                                    placeholder="Customer name"
+                                    value={jiraCustomerAliases[customer] ?? customer}
+                                    onChange={event => updateCustomerAlias(customer, event.currentTarget.value)}
+                                  />
+                                  {jiraCustomerAliases[customer] && (
+                                    <Button
+                                      size="compact-xs"
+                                      variant="subtle"
+                                      className="tray-alias-reset"
+                                      onClick={() => updateCustomerAlias(customer, customer)}
+                                    >
+                                      Use original name
+                                    </Button>
+                                  )}
+                                </Stack>
                                 <Select
                                   className="jira-epic-select"
                                   placeholder="Select epic"
@@ -10500,7 +10705,7 @@ export default function App() {
                   <div className="kpi-mini">
                     <span className="kpi-mini-label">Top client</span>
                     <span className="kpi-mini-value">
-                      {topClients[0]?.client ?? '—'}
+                      {topClients[0] ? getCustomerDisplayName(topClients[0].client) : '—'}
                     </span>
                     <span className="kpi-mini-meta">
                       {topClients[0] ? `${topClients[0].hours}h` : ''}
@@ -10676,7 +10881,7 @@ export default function App() {
                 <Stack gap={topClientsGap}>
                   {topClients.map(item => (
                     <Group key={item.client} justify="space-between">
-                      <Text size="sm">{item.client}</Text>
+                      <Text size="sm">{getCustomerDisplayName(item.client)}</Text>
                       <Badge variant="light" color="teal">
                         {item.hours}h
                       </Badge>
@@ -10770,7 +10975,9 @@ export default function App() {
 		                          </span>
 		                          <span className="kpi-mini-meta">
 		                            {jiraBudgetSummaryMeta.worstCustomer && jiraBudgetSummaryMeta.worstRatio > 0
-		                              ? `At risk: ${jiraBudgetSummaryMeta.worstCustomer} · ${Math.round(
+		                              ? `At risk: ${getCustomerDisplayName(
+		                                  jiraBudgetSummaryMeta.worstCustomer
+		                                )} · ${Math.round(
 		                                  jiraBudgetSummaryMeta.worstRatio * 100
 		                                )}%`
 		                              : '—'}
@@ -10888,7 +11095,7 @@ export default function App() {
                             {Object.entries(jiraManualBudgets).map(([customer, epicKey]) => (
                               <Group key={customer} gap="xs">
                                 <Text size="xs" c="dimmed">
-                                  {customer} · {epicKey}
+                                  {getCustomerDisplayName(customer)} · {epicKey}
                                 </Text>
                                 <Button
                                   size="xs"
@@ -11047,7 +11254,7 @@ export default function App() {
                             ? formatContributorSummary(buildPositionFromAssignments(row.items))
                             : 'No assignments yet.'
                       const epicAlias = jiraEpicAliases[row.epicKey]
-                      const displayName = epicAlias?.trim() || row.customer
+                      const displayName = epicAlias?.trim() || getCustomerDisplayName(row.customer)
 	                      const isRenamingEpic = jiraEpicRenameKey === row.epicKey
 	                      const projectStartDate = jiraProjectStartDates[row.epicKey] ?? null
 	                      const weeklyLogs = row.detailsLoaded
@@ -11267,7 +11474,7 @@ export default function App() {
                               </Group>
                               {epicAlias && (
                                 <Text size="xs" c="dimmed" className="project-meta">
-                                  {row.customer} · {row.epicKey}
+                                  {getCustomerDisplayName(row.customer)} · {row.epicKey}
                                 </Text>
                               )}
                               <Group gap={4} align="center">
@@ -11698,7 +11905,7 @@ export default function App() {
                     <Select
                       label="Customer"
                       placeholder="Choose a customer"
-                      data={customerOptions}
+                      data={customerOptionsDisplay}
                       value={customerName}
                       onChange={value => {
                         filtersTouchedRef.current = true
@@ -11919,14 +12126,10 @@ export default function App() {
                           </Stack>
                         )}
 
-                        {selectedTask ? (
+                        {selectedTask && (
                           <Text size="sm">
                             Logging for <strong>{selectedTask.taskName}</strong> ·{' '}
                             {selectedTask.projectName}
-                          </Text>
-                        ) : (
-                          <Text size="sm" c="dimmed">
-                            Select project, customer, and task to unlock logging.
                           </Text>
                         )}
 
@@ -12132,19 +12335,35 @@ export default function App() {
                             const isWeekend = weekendDays.includes(dayjs(date).day() as DayOfWeek)
                             const isCurrentMonth = dayjs(date).isSame(reportMonth, 'month')
                             const isFuture = dayjs(date).isAfter(dayjs(), 'day')
+                            const dayTargetMinutes = getDayTargetMinutes(info?.day)
                             const isMissing =
                               !hasReports &&
                               isCurrentMonth &&
                               !isWeekend &&
                               !isHoliday &&
                               !isFuture
+                            const isUnderTarget =
+                              hasReports &&
+                              isCurrentMonth &&
+                              !isWeekend &&
+                              !isHoliday &&
+                              !isFuture &&
+                              dayTargetMinutes > 0 &&
+                              Boolean(info) &&
+                              (info?.totalMinutes ?? 0) < dayTargetMinutes
                             const hoursLabel = info ? formatMinutesToLabel(info.totalMinutes) : ''
                             const heatmapActive =
                               heatmapEnabled && hasReports && info && maxDayMinutes && !isWeekend
                             const intensity = heatmapActive
                               ? Math.min(info.totalMinutes / maxDayMinutes, 1)
                               : 0
-                            const tooltipLabel = renderCalendarTooltip(info?.day.reports)
+                            const tooltipLabel = renderCalendarTooltip(info?.day.reports, {
+                              totalMinutes: info?.totalMinutes,
+                              targetMinutes:
+                                isCurrentMonth && !isWeekend && !isHoliday && !isFuture
+                                  ? dayTargetMinutes
+                                  : undefined
+                            })
                             return (
                               <Tooltip
                                 label={tooltipLabel}
@@ -12160,6 +12379,7 @@ export default function App() {
                                     'calendar-day',
                                     hasReports ? 'has-reports' : '',
                                     isMissing ? 'is-missing' : '',
+                                    isUnderTarget ? 'is-under-target' : '',
                                     isHoliday ? 'is-holiday' : '',
                                     isWeekend ? 'is-weekend' : '',
                                     heatmapActive ? 'heatmap' : ''
@@ -12518,7 +12738,7 @@ export default function App() {
                           {meetingsSummary.topClients.length
                             ? meetingsSummary.topClients
                                 .slice(0, 3)
-                                .map(item => `${item.client} (${item.count})`)
+                                .map(item => `${getCustomerDisplayName(item.client)} (${item.count})`)
                                 .join(' · ')
                             : 'No mapped clients yet'}
                         </span>
@@ -12854,6 +13074,32 @@ export default function App() {
           <Text size="sm" c="dimmed">
             Use your Jira email and API token to connect.
           </Text>
+          {!jiraConfigured && (
+            <Card radius="md" withBorder className="jira-token-guide">
+              <Stack gap={6}>
+                <Group justify="space-between" align="center">
+                  <Text size="xs" fw={700}>
+                    Token page
+                  </Text>
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    onClick={() => {
+                      void copyJiraTokenGuideUrl()
+                    }}
+                  >
+                    {jiraTokenGuideCopied ? 'Copied' : 'Copy URL'}
+                  </Button>
+                </Group>
+                <Text size="xs" c="dimmed" className="jira-token-url">
+                  {ATLASSIAN_TOKEN_URL}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  Create an API token, name it `HRS Desktop`, then paste it below.
+                </Text>
+              </Stack>
+            </Card>
+          )}
           {jiraError && (
             <Alert color="red" variant="light" radius="md">
               {jiraError}
@@ -12902,7 +13148,10 @@ export default function App() {
           <Select
             label="Client"
             placeholder="Select a client"
-            data={uniqueCustomers.map(customer => ({ value: customer, label: customer }))}
+            data={uniqueCustomers.map(customer => ({
+              value: customer,
+              label: getCustomerDisplayName(customer)
+            }))}
             value={exportClient}
             onChange={value => setExportClient(value)}
             searchable

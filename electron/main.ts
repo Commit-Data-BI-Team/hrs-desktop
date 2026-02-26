@@ -54,6 +54,8 @@ const trayWindowSize = { width: 430, height: 660 }
 const reportsWindowSize = { width: 1220, height: 860 }
 const settingsWindowSize = { width: 700, height: 780 }
 const meetingsWindowSize = { width: 1220, height: 860 }
+const MAIN_LOG_MAX_BYTES = 2 * 1024 * 1024
+const MAIN_LOG_ROTATIONS = 4
 
 function getMainLogPaths(): string[] {
   const paths = new Set<string>()
@@ -67,18 +69,68 @@ function getMainLogPaths(): string[] {
   return Array.from(paths)
 }
 
+function rotateLogFileIfNeeded(logPath: string) {
+  try {
+    const stat = fs.statSync(logPath)
+    if (stat.size < MAIN_LOG_MAX_BYTES) return
+  } catch {
+    return
+  }
+
+  for (let index = MAIN_LOG_ROTATIONS; index >= 1; index -= 1) {
+    const src = `${logPath}.${index}`
+    const dest = `${logPath}.${index + 1}`
+    try {
+      if (index === MAIN_LOG_ROTATIONS) {
+        fs.rmSync(src, { force: true })
+      } else if (fs.existsSync(src)) {
+        fs.renameSync(src, dest)
+      }
+    } catch {}
+  }
+
+  try {
+    if (fs.existsSync(logPath)) {
+      fs.renameSync(logPath, `${logPath}.1`)
+    }
+  } catch {}
+}
+
+function redactLogText(input: string): string {
+  let text = input
+
+  // Redact credentials and auth-like key/value pairs.
+  text = text.replace(
+    /("?(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|token|password|passwd|secret|customauth|sessionid|csrftoken)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+    '$1[REDACTED]'
+  )
+
+  // Redact bearer tokens.
+  text = text.replace(/\b(Bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi, '$1 [REDACTED]')
+
+  // Redact sensitive query parameters.
+  text = text.replace(
+    /([?&](?:token|password|passwd|auth|authorization|cookie|session|apikey|api_key|customauth)=)[^&\s]+/gi,
+    '$1[REDACTED]'
+  )
+
+  return text
+}
+
 function writeMainLog(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
   const timestamp = new Date().toISOString()
-  const line = `[${timestamp}] [${level}] ${parts
+  const raw = parts
     .map(part =>
       typeof part === 'string'
         ? part
         : util.inspect(part, { depth: 4, breakLength: 120, compact: true })
     )
-    .join(' ')}`
+    .join(' ')
+  const line = `[${timestamp}] [${level}] ${redactLogText(raw)}`
   for (const logPath of getMainLogPaths()) {
     try {
       fs.mkdirSync(path.dirname(logPath), { recursive: true })
+      rotateLogFileIfNeeded(logPath)
       fs.appendFileSync(logPath, `${line}\n`)
     } catch {}
   }
@@ -86,17 +138,44 @@ function writeMainLog(level: 'INFO' | 'WARN' | 'ERROR', ...parts: unknown[]) {
 
 function logInfo(...parts: unknown[]) {
   writeMainLog('INFO', ...parts)
-  console.log(...parts)
+  const safeLine = redactLogText(
+    parts
+      .map(part =>
+        typeof part === 'string'
+          ? part
+          : util.inspect(part, { depth: 4, breakLength: 120, compact: true })
+      )
+      .join(' ')
+  )
+  console.log(safeLine)
 }
 
 function logWarn(...parts: unknown[]) {
   writeMainLog('WARN', ...parts)
-  console.warn(...parts)
+  const safeLine = redactLogText(
+    parts
+      .map(part =>
+        typeof part === 'string'
+          ? part
+          : util.inspect(part, { depth: 4, breakLength: 120, compact: true })
+      )
+      .join(' ')
+  )
+  console.warn(safeLine)
 }
 
 function logError(...parts: unknown[]) {
   writeMainLog('ERROR', ...parts)
-  console.error(...parts)
+  const safeLine = redactLogText(
+    parts
+      .map(part =>
+        typeof part === 'string'
+          ? part
+          : util.inspect(part, { depth: 4, breakLength: 120, compact: true })
+      )
+      .join(' ')
+  )
+  console.error(safeLine)
 }
 
 process.on('uncaughtException', error => {
@@ -705,6 +784,9 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('app:setFloatingCollapsed', (_event, collapsed: boolean) => {
+    if (typeof collapsed !== 'boolean') {
+      throw new Error('Invalid app:setFloatingCollapsed payload')
+    }
     if (!floatingWindow) return false
     const size = collapsed ? floatingSizes.collapsed : floatingSizes.expanded
     floatingWindow.setSize(size.width, size.height, false)

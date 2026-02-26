@@ -31,6 +31,7 @@ type AppPreferences = {
   jiraBudgetSortByProgress: boolean
   jiraBudgetTitle: string
   jiraEpicAliases: Record<string, string>
+  jiraCustomerAliases: Record<string, string>
   jiraProjectStartDates: Record<string, string>
   jiraProjectPeoplePercent: Record<string, Record<string, number>>
   jiraProjectPositionSnapshots: Record<
@@ -124,6 +125,7 @@ const defaultPreferences: AppPreferences = {
   jiraBudgetSortByProgress: false,
   jiraBudgetTitle: 'Jira project budgets',
   jiraEpicAliases: {},
+  jiraCustomerAliases: {},
   jiraProjectStartDates: {},
   jiraProjectPeoplePercent: {},
   jiraProjectPositionSnapshots: {},
@@ -171,6 +173,7 @@ export function getPreferences(): AppPreferences {
       stored?.jiraBudgetSortByProgress ?? defaultPreferences.jiraBudgetSortByProgress,
     jiraBudgetTitle: stored?.jiraBudgetTitle ?? defaultPreferences.jiraBudgetTitle,
     jiraEpicAliases: stored?.jiraEpicAliases ?? defaultPreferences.jiraEpicAliases,
+    jiraCustomerAliases: stored?.jiraCustomerAliases ?? defaultPreferences.jiraCustomerAliases,
     jiraProjectStartDates:
       stored?.jiraProjectStartDates ?? defaultPreferences.jiraProjectStartDates,
     jiraProjectPeoplePercent:

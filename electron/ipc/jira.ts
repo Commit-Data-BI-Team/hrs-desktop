@@ -7,11 +7,22 @@ import {
   setJiraCredentials,
   setJiraMapping
 } from '../jira/config'
+import {
+  sanitizeString,
+  validateEmail,
+  validateExactObject,
+  validateJiraIssueKey,
+  validateNumberRange,
+  validateOptionalString,
+  validateStringLength
+} from '../utils/validation'
 
 const PROJECT_KEY = 'VDA'
 const PROJECT_NAME = 'Data Analytics Tasks'
 const JIRA_CACHE_TTL_MS = 5 * 60 * 1000
 const JIRA_PERSIST_TTL_MS = 6 * 60 * 60 * 1000
+const JIRA_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
+const JIRA_E2E = process.env.HRS_E2E === '1' || process.env.JIRA_E2E === '1'
 
 type JiraWorkItemDetailsPayload = {
   items: JiraWorkItem[]
@@ -165,6 +176,15 @@ type JiraSearchIssue = {
       key: string
       fields?: {
         summary?: string
+        status?: {
+          name?: string | null
+        } | null
+        timespent?: number | null
+        timeoriginalestimate?: number | null
+        timetracking?: {
+          originalEstimateSeconds?: number | null
+          timeSpentSeconds?: number | null
+        } | null
         assignee?: {
           displayName?: string | null
         } | null
@@ -215,7 +235,167 @@ type JiraWorkItem = {
   assigneeName?: string | null
 }
 
+type JiraEpic = {
+  key: string
+  summary: string
+}
+
+const E2E_EPICS: JiraEpic[] = [
+  { key: 'VDA-98', summary: 'Weizmann Institute of Science' },
+  { key: 'VDA-147', summary: 'Microsoft' }
+]
+
+const E2E_WORK_ITEMS_BY_EPIC: Record<string, JiraWorkItem[]> = {
+  'VDA-98': [
+    {
+      key: 'VDA-402',
+      summary: 'Medallion design',
+      timespent: 14 * 3600,
+      estimateSeconds: 40 * 3600,
+      assigneeName: 'Talia Sela',
+      statusName: 'In Progress',
+      subtasks: [
+        {
+          key: 'VDA-417',
+          summary: 'Bronze stage',
+          timespent: 8 * 3600,
+          estimateSeconds: 12 * 3600,
+          assigneeName: 'Talia Sela',
+          statusName: 'In Progress',
+          worklogs: [],
+          worklogTotal: 0,
+          lastWorklog: null
+        },
+        {
+          key: 'VDA-418',
+          summary: 'Silver stage',
+          timespent: 6 * 3600,
+          estimateSeconds: 10 * 3600,
+          assigneeName: 'Unassigned',
+          statusName: 'To Do',
+          worklogs: [],
+          worklogTotal: 0,
+          lastWorklog: null
+        }
+      ],
+      worklogs: [],
+      worklogTotal: 0,
+      lastWorklog: null
+    }
+  ],
+  'VDA-147': [
+    {
+      key: 'VDA-501',
+      summary: 'Essence dashboards',
+      timespent: 7 * 3600,
+      estimateSeconds: 20 * 3600,
+      assigneeName: 'Vitaly Shechtman',
+      statusName: 'In Progress',
+      subtasks: [
+        {
+          key: 'VDA-519',
+          summary: 'Usage model',
+          timespent: 4 * 3600,
+          estimateSeconds: 8 * 3600,
+          assigneeName: 'Vitaly Shechtman',
+          statusName: 'In Progress',
+          worklogs: [],
+          worklogTotal: 0,
+          lastWorklog: null
+        }
+      ],
+      worklogs: [],
+      worklogTotal: 0,
+      lastWorklog: null
+    }
+  ]
+}
+
+function validateEpicKey(value: unknown): string {
+  if (typeof value !== 'string') {
+    throw new Error('Invalid epic key: expected string')
+  }
+  const key = sanitizeString(value).toUpperCase()
+  if (!JIRA_KEY_REGEX.test(key)) {
+    throw new Error('Invalid epic key format')
+  }
+  return key
+}
+
 export function registerJiraIpc() {
+  if (JIRA_E2E) {
+    let mappings: Record<string, string> = {
+      'Weizmann Institute of Science': 'VDA-98',
+      Microsoft: 'VDA-147'
+    }
+    ipcMain.handle('jira:getStatus', async () => ({
+      baseUrl: 'https://jira.local',
+      email: 'e2e@jira.local',
+      configured: true,
+      hasCredentials: true,
+      projectKey: PROJECT_KEY,
+      projectName: PROJECT_NAME
+    }))
+    ipcMain.handle('jira:setCredentials', async () => true)
+    ipcMain.handle('jira:clearCredentials', async () => true)
+    ipcMain.handle('jira:getMappings', async () => mappings)
+    ipcMain.handle('jira:setMapping', async (_event, customer: string, epicKey: string | null) => {
+      const safeCustomer = validateStringLength(customer, 1, 160)
+      if (epicKey) {
+        mappings = { ...mappings, [safeCustomer]: validateEpicKey(epicKey) }
+      } else {
+        const next = { ...mappings }
+        delete next[safeCustomer]
+        mappings = next
+      }
+      return true
+    })
+    ipcMain.handle('jira:getEpics', async () => E2E_EPICS)
+    ipcMain.handle('jira:getWorkItems', async (_event, epicKey: string) => {
+      const safeEpicKey = validateEpicKey(epicKey)
+      return E2E_WORK_ITEMS_BY_EPIC[safeEpicKey] ?? []
+    })
+    ipcMain.handle('jira:getWorkItemsSummary', async (_event, epicKey: string) => {
+      const safeEpicKey = validateEpicKey(epicKey)
+      const items = E2E_WORK_ITEMS_BY_EPIC[safeEpicKey] ?? []
+      let spentSeconds = 0
+      let estimateSeconds = 0
+      for (const item of items) {
+        spentSeconds += item.timespent ?? 0
+        estimateSeconds += item.estimateSeconds ?? 0
+        for (const subtask of item.subtasks ?? []) {
+          spentSeconds += subtask.timespent ?? 0
+          estimateSeconds += subtask.estimateSeconds ?? 0
+        }
+      }
+      return { spentSeconds, estimateSeconds, partial: false }
+    })
+    ipcMain.handle('jira:getEpicDebug', async (_event, epicKey: string) => ({
+      epicKey: validateEpicKey(epicKey),
+      fields: {}
+    }))
+    ipcMain.handle('jira:getTimeTrackingConfig', async () => ({
+      hoursPerDay: 8,
+      daysPerWeek: 5
+    }))
+    ipcMain.handle('jira:getWorkItemDetails', async (_event, epicKey: string) => {
+      const safeEpicKey = validateEpicKey(epicKey)
+      return { items: E2E_WORK_ITEMS_BY_EPIC[safeEpicKey] ?? [], partial: false }
+    })
+    ipcMain.handle('jira:getIssueWorklogs', async () => [])
+    ipcMain.handle('jira:addWorklog', async () => ({
+      id: `e2e-${Date.now()}`,
+      started: new Date().toISOString(),
+      seconds: 3600,
+      comment: null,
+      authorName: 'E2E',
+      authorId: 'e2e'
+    }))
+    ipcMain.handle('jira:deleteWorklog', async () => true)
+    ipcMain.handle('jira:getWorklogHistory', async () => [])
+    return
+  }
+
   ipcMain.handle('jira:getStatus', async () => {
     const { baseUrl, email, token } = await getJiraCredentials()
     const hasCredentials = Boolean(email && token)
@@ -239,10 +419,9 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:setCredentials', async (_event, email: string, token: string) => {
-    if (!email || !token) {
-      throw new Error('JIRA_AUTH_REQUIRED')
-    }
-    await setJiraCredentials(email, token)
+    const safeEmail = validateEmail(email)
+    const safeToken = validateStringLength(token, 10, 512)
+    await setJiraCredentials(safeEmail, safeToken)
     jiraCache.clear()
     return true
   })
@@ -259,7 +438,9 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:setMapping', async (_event, customer: string, epicKey: string | null) => {
-    return setJiraMapping(customer, epicKey ?? null)
+    const safeCustomer = validateStringLength(customer, 1, 160)
+    const safeEpicKey = epicKey === null ? null : validateEpicKey(epicKey)
+    return setJiraMapping(safeCustomer, safeEpicKey)
   })
 
   ipcMain.handle('jira:getEpics', async () => {
@@ -277,50 +458,50 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:getWorkItems', async (_event, epicKey: string) => {
-    if (!epicKey) return []
+    const safeEpicKey = validateEpicKey(epicKey)
     const WORK_ITEM_LIMIT = 200
-    const cacheKey = `workitems:${epicKey}:limit:${WORK_ITEM_LIMIT}`
+    const cacheKey = `workitems:${safeEpicKey}:limit:${WORK_ITEM_LIMIT}`
     // Light fetch - just return cached data, don't validate completeness
     // Full fetch with worklogs happens when user expands a row
     const cached = getCachedValue<JiraWorkItem[]>(cacheKey)
     if (cached) return cached
-    const persisted = getPersistedWorkItemsLight(epicKey)
+    const persisted = getPersistedWorkItemsLight(safeEpicKey)
     if (persisted) {
       setCachedValue(cacheKey, persisted.items ?? [], JIRA_PERSIST_TTL_MS)
       const fetchedAt = Date.parse(persisted.fetchedAt)
       const ageMs = Number.isFinite(fetchedAt) ? Date.now() - fetchedAt : Number.POSITIVE_INFINITY
       const shouldRefresh = ageMs > 15 * 60 * 1000
-      if (shouldRefresh && !workItemsLightRefreshInFlight.has(epicKey)) {
+      if (shouldRefresh && !workItemsLightRefreshInFlight.has(safeEpicKey)) {
         const promise = (async () => {
           try {
             const since = Number.isFinite(fetchedAt) ? new Date(fetchedAt) : undefined
-            const delta = await fetchWorkItemsLight(epicKey, {
+            const delta = await fetchWorkItemsLight(safeEpicKey, {
               limit: WORK_ITEM_LIMIT,
               updatedSince: since
             })
             const merged = mergeWorkItemsDeep(persisted.items ?? [], delta)
-            setPersistedWorkItemsLight(epicKey, merged)
+            setPersistedWorkItemsLight(safeEpicKey, merged)
             setCachedValue(cacheKey, merged, JIRA_PERSIST_TTL_MS)
           } catch {
             // Ignore refresh errors; keep serving the cached payload.
           } finally {
-            workItemsLightRefreshInFlight.delete(epicKey)
+            workItemsLightRefreshInFlight.delete(safeEpicKey)
           }
         })()
-        workItemsLightRefreshInFlight.set(epicKey, promise)
+        workItemsLightRefreshInFlight.set(safeEpicKey, promise)
       }
       return persisted.items ?? []
     }
 
-    const items = await fetchWorkItemsLight(epicKey, { limit: WORK_ITEM_LIMIT })
-    setPersistedWorkItemsLight(epicKey, items)
+    const items = await fetchWorkItemsLight(safeEpicKey, { limit: WORK_ITEM_LIMIT })
+    setPersistedWorkItemsLight(safeEpicKey, items)
     setCachedValue(cacheKey, items, JIRA_PERSIST_TTL_MS)
     return items
   })
 
   ipcMain.handle('jira:getWorkItemsSummary', async (_event, epicKey: string) => {
-    if (!epicKey) return { spentSeconds: 0, estimateSeconds: 0, partial: false }
-    const cacheKey = `workitemsummary:${epicKey}`
+    const safeEpicKey = validateEpicKey(epicKey)
+    const cacheKey = `workitemsummary:${safeEpicKey}`
     const cached = getCachedValue<{ spentSeconds: number; estimateSeconds: number; partial: boolean }>(
       cacheKey
     )
@@ -335,7 +516,7 @@ export function registerJiraIpc() {
     ]
     try {
       const epicData = (await jiraRequest(
-        `/rest/api/3/issue/${encodeURIComponent(epicKey)}?fields=${epicFields.join(',')}`
+        `/rest/api/3/issue/${encodeURIComponent(safeEpicKey)}?fields=${epicFields.join(',')}`
       )) as {
         fields?: {
           aggregatetimetracking?: {
@@ -376,8 +557,8 @@ export function registerJiraIpc() {
       // fall back to summary search below
     }
     const limit = 300
-    const primaryJql = `parent = ${epicKey} AND issuetype != Epic ORDER BY updated DESC`
-    const fallbackJql = `"Epic Link" = ${epicKey} AND issuetype != Epic ORDER BY updated DESC`
+    const primaryJql = `parent = ${safeEpicKey} AND issuetype != Epic ORDER BY updated DESC`
+    const fallbackJql = `"Epic Link" = ${safeEpicKey} AND issuetype != Epic ORDER BY updated DESC`
     let issues: JiraSearchIssue[] = []
     let reachedLimit = false
     const fields = ['timespent', 'timeoriginalestimate', 'timetracking']
@@ -415,7 +596,7 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:getEpicDebug', async (_event, epicKey: string) => {
-    if (!epicKey) return null
+    const safeEpicKey = validateEpicKey(epicKey)
     const epicFields = [
       'aggregatetimetracking',
       'aggregatetimeoriginalestimate',
@@ -425,10 +606,10 @@ export function registerJiraIpc() {
       'timespent'
     ]
     const data = (await jiraRequest(
-      `/rest/api/3/issue/${encodeURIComponent(epicKey)}?fields=${epicFields.join(',')}`
+      `/rest/api/3/issue/${encodeURIComponent(safeEpicKey)}?fields=${epicFields.join(',')}`
     )) as { fields?: Record<string, unknown> }
     return {
-      epicKey,
+      epicKey: safeEpicKey,
       fields: data.fields ?? {}
     }
   })
@@ -453,41 +634,32 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:getWorkItemDetails', async (_event, epicKey: string, forceRefresh = false) => {
-    if (!epicKey) return { items: [], partial: false }
-    const cacheKey = `workitemdetails:${epicKey}`
+    const safeEpicKey = validateEpicKey(epicKey)
+    const safeForce = typeof forceRefresh === 'boolean' ? forceRefresh : false
+    const cacheKey = `workitemdetails:${safeEpicKey}`
+    const startedAt = Date.now()
 
     // Helper to check if ALL items and subtasks have complete data
     // (either worklogs loaded OR non-zero timespent)
     const hasCompleteData = (items: JiraWorkItem[]) => {
       if (!items.length) return false
-      // Check if all items and subtasks have worklogs array defined
-      // This ensures we actually fetched the worklog data, not just timespent
+      // Check if all items/subtasks have normalized detail shape cached.
       return items.every(item => {
-        // Item must have worklogs property (even if empty array)
         if (item.worklogs === undefined) return false
         const subtasks = item.subtasks ?? []
-        // All subtasks must also have worklogs property
-        return subtasks.every(sub => {
-          if (sub.worklogs === undefined) return false
-          const hasSubtaskMeta =
-            Boolean(sub.statusName) ||
-            Boolean(sub.assigneeName) ||
-            (sub.estimateSeconds ?? 0) > 0 ||
-            (sub.timespent ?? 0) > 0
-          return hasSubtaskMeta
-        })
+        return subtasks.every(sub => sub.worklogs !== undefined)
       })
     }
 
     // Force refresh: clear all caches
-    if (forceRefresh) {
+    if (safeForce) {
       jiraCache.delete(cacheKey)
       const store = jiraStore.get('workItemDetails') ?? {}
-      delete store[epicKey]
+      delete store[safeEpicKey]
       jiraStore.set('workItemDetails', store)
     }
 
-    if (!forceRefresh) {
+    if (!safeForce) {
       const cached = getCachedValue<JiraWorkItemDetailsPayload>(cacheKey)
       const cachedHasCompleteData = cached ? hasCompleteData(cached.items) : false
       
@@ -500,7 +672,7 @@ export function registerJiraIpc() {
         jiraCache.delete(cacheKey)
       }
 
-      const persisted = getPersistedWorkItemDetails(epicKey)
+      const persisted = getPersistedWorkItemDetails(safeEpicKey)
       const persistedHasCompleteData = persisted ? hasCompleteData(persisted.items) : false
       const persistedIsFresh = persisted ? isPersistedFresh(persisted) : false
       
@@ -513,36 +685,55 @@ export function registerJiraIpc() {
       // Clear persisted cache if incomplete (will be replaced with fresh data)
       if (persisted && !persistedHasCompleteData) {
         const store = jiraStore.get('workItemDetails') ?? {}
-        delete store[epicKey]
+        delete store[safeEpicKey]
         jiraStore.set('workItemDetails', store)
       }
     }
 
     // Always do a full fetch if we don't have valid cached data
     try {
-      const payload = await fetchWorkItemDetails(epicKey)
-      setPersistedWorkItemDetails(epicKey, payload)
+      console.log('[jira:getWorkItemDetails] fetch start', safeEpicKey, safeForce ? 'force' : 'normal')
+      const payload = await fetchWorkItemDetails(safeEpicKey)
+      setPersistedWorkItemDetails(safeEpicKey, payload)
       setCachedValue(cacheKey, payload, JIRA_PERSIST_TTL_MS)
+      console.log(
+        '[jira:getWorkItemDetails] fetch success',
+        safeEpicKey,
+        `items=${payload.items.length}`,
+        `elapsed=${Date.now() - startedAt}ms`
+      )
       return payload
     } catch (error) {
-      console.error('[jira:getWorkItemDetails] Error fetching for', epicKey, error)
+      const message = error instanceof Error ? error.message : String(error)
+      console.error(
+        '[jira:getWorkItemDetails] Error fetching for',
+        safeEpicKey,
+        message,
+        `elapsed=${Date.now() - startedAt}ms`
+      )
       throw error
     }
   })
 
   ipcMain.handle('jira:getIssueWorklogs', async (_event, issueKey: string) => {
-    if (!issueKey) return []
-    const worklogs = await fetchAllWorklogs(issueKey)
+    const safeIssueKey = validateJiraIssueKey(issueKey)
+    const worklogs = await fetchAllWorklogs(safeIssueKey)
     return normalizeWorklogs(worklogs)
   })
 
   ipcMain.handle(
     'jira:addWorklog',
     async (_event, payload: { issueKey: string; started: string; seconds: number; comment?: string }) => {
-      const { issueKey, started, seconds, comment } = payload ?? {}
-      if (!issueKey || !started || !seconds) {
-        throw new Error('JIRA_BAD_REQUEST')
-      }
+      const safe = validateExactObject<{
+        issueKey?: unknown
+        started?: unknown
+        seconds?: unknown
+        comment?: unknown
+      }>(payload ?? {}, ['issueKey', 'started', 'seconds', 'comment'], 'jira worklog payload')
+      const issueKey = validateJiraIssueKey(safe.issueKey)
+      const started = validateStringLength(safe.started, 16, 40)
+      const seconds = validateNumberRange(safe.seconds, 1, 60 * 60 * 24 * 5, { integer: true })
+      const comment = validateOptionalString(safe.comment, { min: 0, max: 4000 })
       const created = (await jiraRequest(
         `/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog`,
         {
@@ -578,10 +769,13 @@ export function registerJiraIpc() {
   ipcMain.handle(
     'jira:deleteWorklog',
     async (_event, payload: { issueKey: string; worklogId: string }) => {
-      const { issueKey, worklogId } = payload ?? {}
-      if (!issueKey || !worklogId) {
-        throw new Error('JIRA_BAD_REQUEST')
-      }
+      const safe = validateExactObject<{ issueKey?: unknown; worklogId?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'worklogId'],
+        'jira delete worklog payload'
+      )
+      const issueKey = validateJiraIssueKey(safe.issueKey)
+      const worklogId = validateStringLength(safe.worklogId, 1, 64)
       await jiraRequest(
         `/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog/${encodeURIComponent(
           worklogId
@@ -595,9 +789,9 @@ export function registerJiraIpc() {
   )
 
   ipcMain.handle('jira:getWorklogHistory', async (_event, issueKey: string) => {
-    if (!issueKey) return []
+    const safeIssueKey = validateJiraIssueKey(issueKey)
     const data = await jiraRequest(
-      `/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog?maxResults=20`
+      `/rest/api/3/issue/${encodeURIComponent(safeIssueKey)}/worklog?maxResults=20`
     )
     const worklogs = (data as { worklogs?: JiraWorklogEntry[] }).worklogs ?? []
     return normalizeWorklogs(worklogs)
@@ -628,7 +822,12 @@ async function fetchWorkItemDetails(
       'timeoriginalestimate',
       'timetracking',
       'assignee',
-      'subtasks'
+      'subtasks',
+      'subtasks.status',
+      'subtasks.assignee',
+      'subtasks.timespent',
+      'subtasks.timeoriginalestimate',
+      'subtasks.timetracking'
     ]
     try {
       const result = await searchIssuesWithLimit(baseJql, fields, detailsLimit)
@@ -658,86 +857,44 @@ async function fetchWorkItemDetails(
   }
 
   const subtaskRefsByIssue = new Map<string, JiraSearchIssue['fields']['subtasks']>()
-  const subtaskKeySet = new Set<string>()
   for (const issue of issues) {
     const refs = (issue.fields?.subtasks ?? []).slice(0, subtaskLimit)
     if ((issue.fields?.subtasks?.length ?? 0) > subtaskLimit) {
       detailsPartial = true
     }
     subtaskRefsByIssue.set(issue.key, refs)
-    for (const ref of refs) {
-      subtaskKeySet.add(ref.key)
-    }
   }
   
-  // Fetch subtask details for reliable subtask hours/assignee/status in UI.
-  // We keep this batched and lightweight (fields only, no comments/changelog).
-  let subtaskLookup = new Map<string, JiraSearchIssue>()
-  if (subtaskKeySet.size) {
-    try {
-      const subtaskDetails = await fetchIssuesByKeys(Array.from(subtaskKeySet), [
-        'summary',
-        'status',
-        'timespent',
-        'timeoriginalestimate',
-        'timetracking',
-        'assignee'
-      ])
-      subtaskLookup = new Map(subtaskDetails.map(issue => [issue.key, issue]))
-    } catch {
-      // Fallback to subtask refs + worklogs below.
-    }
-  }
-
-    const worklogKeys = Array.from(
-      new Set([
-        ...issues.map(issue => issue.key),
-        ...subtaskKeySet
-      ])
-    )
-    
-    const worklogMap = await fetchWorklogsForKeys(worklogKeys)
-
   const items = issues.map(issue => {
       const subtasks = (subtaskRefsByIssue.get(issue.key) ?? []).map(subtask => {
-        const detail = subtaskLookup.get(subtask.key)
-        const detailWorklogs = normalizeWorklogs(worklogMap.get(subtask.key) ?? [])
-      const detailWorklogTotal = detailWorklogs.length
-        const spentFromLogs = sumWorklogSeconds(detailWorklogs)
-        const lastWorklog = getLatestWorklog(detailWorklogs)
-        // Use || instead of ?? to fall back to spentFromLogs when timespent is 0
+        // Fast path: rely on already-returned subtask fields (no extra per-subtask Jira requests).
         const subtaskTimespent =
-          detail?.fields?.timespent ||
-          detail?.fields?.timetracking?.timeSpentSeconds ||
-          spentFromLogs
+          subtask.fields?.timespent ||
+          subtask.fields?.timetracking?.timeSpentSeconds ||
+          0
         
         return {
           key: subtask.key,
-          summary: detail?.fields?.summary ?? subtask.fields?.summary ?? subtask.key,
+          summary: subtask.fields?.summary ?? subtask.key,
           timespent: subtaskTimespent,
           estimateSeconds:
-            detail?.fields?.timeoriginalestimate ??
-            detail?.fields?.timetracking?.originalEstimateSeconds ??
+            subtask.fields?.timeoriginalestimate ??
+            subtask.fields?.timetracking?.originalEstimateSeconds ??
             0,
         assigneeName:
-          detail?.fields?.assignee?.displayName ??
           subtask.fields?.assignee?.displayName ??
           null,
-        statusName: detail?.fields?.status?.name ?? null,
-        worklogs: detailWorklogs,
-        worklogTotal: detailWorklogTotal,
-        lastWorklog
+        statusName: subtask.fields?.status?.name ?? null,
+        worklogs: [],
+        worklogTotal: 0,
+        lastWorklog: null
       }
     })
-      const worklogs = normalizeWorklogs(worklogMap.get(issue.key) ?? [])
-      const worklogTotal = worklogs.length
-    const spentFromLogs = sumWorklogSeconds(worklogs)
-    const lastWorklog = getLatestWorklog(worklogs)
-    // Use || instead of ?? to fall back to spentFromLogs when timespent is 0
+    // Fast path: use tracked times from issue fields.
     const issueTimespent =
       issue.fields?.timespent ||
       issue.fields?.timetracking?.timeSpentSeconds ||
-      spentFromLogs
+      0
     return {
       key: issue.key,
       summary: issue.fields?.summary ?? issue.key,
@@ -748,9 +905,9 @@ async function fetchWorkItemDetails(
         0,
       assigneeName: issue.fields?.assignee?.displayName ?? null,
       statusName: issue.fields?.status?.name ?? null,
-      worklogs,
-      worklogTotal,
-      lastWorklog,
+      worklogs: [],
+      worklogTotal: 0,
+      lastWorklog: null,
       subtasks
     }
   })
@@ -845,8 +1002,12 @@ async function searchIssues(
   const maxResults = 100
   const limit = options.limit ?? Number.POSITIVE_INFINITY
   let startAt = 0
+  let pageCount = 0
+  let previousSignature: string | null = null
   const results: JiraSearchIssue[] = []
   while (true) {
+    pageCount += 1
+    if (pageCount > 50) break
     const params = new URLSearchParams({
       jql,
       startAt: String(startAt),
@@ -858,11 +1019,15 @@ async function searchIssues(
     )) as JiraSearchResponse
     const issues = data.issues ?? []
     if (issues.length === 0) break
+    const signature = issues.map(issue => issue.key).join(',')
+    if (signature && signature === previousSignature) break
+    previousSignature = signature
     const remaining = limit - results.length
     if (remaining <= 0) break
     results.push(...issues.slice(0, remaining))
     startAt += issues.length
     if (data.total !== undefined && results.length >= data.total) break
+    if (issues.length < maxResults) break
     if (results.length >= limit) break
   }
   return results
@@ -875,8 +1040,12 @@ async function searchIssuesWithLimit(
 ): Promise<{ issues: JiraSearchIssue[]; reachedLimit: boolean }> {
   const maxResults = 100
   let startAt = 0
+  let pageCount = 0
+  let previousSignature: string | null = null
   const results: JiraSearchIssue[] = []
   while (true) {
+    pageCount += 1
+    if (pageCount > 50) break
     const params = new URLSearchParams({
       jql,
       startAt: String(startAt),
@@ -888,11 +1057,15 @@ async function searchIssuesWithLimit(
     )) as JiraSearchResponse
     const issues = data.issues ?? []
     if (!issues.length) break
+    const signature = issues.map(issue => issue.key).join(',')
+    if (signature && signature === previousSignature) break
+    previousSignature = signature
     const remaining = limit - results.length
     if (remaining <= 0) break
     results.push(...issues.slice(0, remaining))
     startAt += issues.length
     if (data.total !== undefined && results.length >= data.total) break
+    if (issues.length < maxResults) break
     if (results.length >= limit) break
   }
   return { issues: results, reachedLimit: results.length >= limit }
@@ -938,24 +1111,6 @@ async function fetchAllWorklogs(issueKey: string): Promise<JiraWorklogEntry[]> {
   return all
 }
 
-async function fetchWorklogsForKeys(keys: string[]) {
-  const map = new Map<string, JiraWorklogEntry[]>()
-  if (!keys.length) return map
-  const queue = [...keys]
-  const concurrency = Math.min(6, queue.length)
-  await Promise.all(
-    Array.from({ length: concurrency }, async () => {
-      while (true) {
-        const key = queue.shift()
-        if (!key) return
-        const logs = await fetchAllWorklogs(key)
-        map.set(key, logs)
-      }
-    })
-  )
-  return map
-}
-
 function normalizeWorklogs(worklogs: JiraWorklogEntry[]) {
   return worklogs.map(entry => ({
     id: entry.id,
@@ -967,29 +1122,11 @@ function normalizeWorklogs(worklogs: JiraWorklogEntry[]) {
   }))
 }
 
-function sumWorklogSeconds(worklogs: ReturnType<typeof normalizeWorklogs>) {
-  return worklogs.reduce((sum, entry) => sum + (entry.seconds ?? 0), 0)
-}
-
-function getLatestWorklog(worklogs: ReturnType<typeof normalizeWorklogs>) {
-  let latest: ReturnType<typeof normalizeWorklogs>[number] | null = null
-  let latestTime = 0
-  for (const entry of worklogs) {
-    if (!entry.started) continue
-    const ts = Date.parse(entry.started)
-    if (!Number.isNaN(ts) && ts >= latestTime) {
-      latestTime = ts
-      latest = entry
-    }
-  }
-  return latest
-}
-
 function sleep(ms: number) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
-const JIRA_REQUEST_TIMEOUT_MS = 120000
+const JIRA_REQUEST_TIMEOUT_MS = 45000
 
 async function jiraRequest(path: string, options: RequestInit = {}, attempt = 0) {
   const { baseUrl, email, token } = await getJiraCredentials()

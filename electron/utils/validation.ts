@@ -151,6 +151,75 @@ export function validateSafeObject<T extends Record<string, unknown>>(obj: unkno
 }
 
 /**
+ * Validate plain object and reject unknown keys.
+ */
+export function validateExactObject<T extends Record<string, unknown>>(
+  value: unknown,
+  allowedKeys: readonly string[],
+  label = 'object'
+): T {
+  const obj = validateSafeObject<Record<string, unknown>>(value)
+  const keySet = new Set(allowedKeys)
+  for (const key of Object.keys(obj)) {
+    if (!keySet.has(key)) {
+      throw new Error(`Invalid ${label}: unknown field "${key}"`)
+    }
+  }
+  return obj as T
+}
+
+/**
+ * Validate nullable/optional string field.
+ */
+export function validateOptionalString(
+  value: unknown,
+  options: { min?: number; max?: number; allowNull?: boolean } = {}
+): string | null | undefined {
+  if (value === undefined) return undefined
+  if (value === null) {
+    if (options.allowNull) return null
+    throw new Error('Invalid value: null is not allowed')
+  }
+  const min = options.min ?? 0
+  const max = options.max ?? 10000
+  return validateStringLength(value, min, max)
+}
+
+/**
+ * Validate enum string values.
+ */
+export function validateEnum<T extends string>(value: unknown, values: readonly T[]): T {
+  if (typeof value !== 'string') {
+    throw new Error('Invalid enum value: expected string')
+  }
+  if (!values.includes(value as T)) {
+    throw new Error(`Invalid enum value: ${value}`)
+  }
+  return value as T
+}
+
+/**
+ * Validate number within inclusive range.
+ */
+export function validateNumberRange(
+  value: unknown,
+  min: number,
+  max: number,
+  { integer = false }: { integer?: boolean } = {}
+): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    throw new Error('Invalid number')
+  }
+  if (integer && !Number.isInteger(value)) {
+    throw new Error('Invalid number: expected integer')
+  }
+  if (value < min || value > max) {
+    throw new Error(`Invalid number: expected ${min}..${max}`)
+  }
+  return value
+}
+
+/**
  * Validate array of specific type
  */
 export function validateArray<T>(
@@ -218,4 +287,3 @@ export function secureIpcHandler<T extends unknown[], R>(
     }
   }
 }
-

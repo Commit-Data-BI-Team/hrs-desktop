@@ -2,11 +2,19 @@ import { BrowserWindow, ipcMain, session, Session } from 'electron'
 import dayjs from 'dayjs'
 import { clearCustomAuth, getCustomAuth, setCustomAuth } from '../hrs/config'
 import { clearHrsCredentials, getHrsCredentials, setHrsCredentials } from '../hrs/credentials'
+import {
+  validateDate,
+  validateExactObject,
+  validateNumberRange,
+  validateStringLength
+} from '../utils/validation'
 
 const HRS_ORIGIN = 'https://hrs.comm-it.co.il'
 const ADMIN_KEY_URL = `${HRS_ORIGIN}/admin/reactuserreporting/`
 const HRS_CACHE_TTL_MS = 5 * 60 * 1000
 const HRS_E2E = process.env.HRS_E2E === '1'
+const TIME_HHMM_REGEX = /^(?:[01]?\d|2[0-3]):[0-5]\d$/
+const HOURS_HHMM_REGEX = /^\d{1,2}:[0-5]\d$/
 
 const E2E_TASKS = [
   {
@@ -128,6 +136,66 @@ function setCachedValue(key: string, value: unknown) {
   hrsCache.set(key, { expiresAt: Date.now() + HRS_CACHE_TTL_MS, value })
 }
 
+function validateTime(value: unknown, fieldName: string): string {
+  const safe = validateStringLength(value, 4, 5)
+  if (!TIME_HHMM_REGEX.test(safe)) {
+    throw new Error(`Invalid ${fieldName}: expected HH:MM`)
+  }
+  return safe
+}
+
+function validateHoursHHMM(value: unknown): string {
+  const safe = validateStringLength(value, 4, 5)
+  if (!HOURS_HHMM_REGEX.test(safe)) {
+    throw new Error('Invalid hours_HHMM format')
+  }
+  return safe
+}
+
+function validateLogWorkPayload(payload: unknown) {
+  const safePayload = validateExactObject<{ date?: unknown; workLogs?: unknown }>(
+    payload ?? {},
+    ['date', 'workLogs'],
+    'log work payload'
+  )
+  const date = validateDate(safePayload.date)
+  if (!Array.isArray(safePayload.workLogs)) {
+    throw new Error('Invalid workLogs: expected array')
+  }
+  if (safePayload.workLogs.length > 200) {
+    throw new Error('Too many work logs in one request')
+  }
+  const workLogs = safePayload.workLogs.map(item => {
+    const safeItem = validateExactObject<{
+      id?: unknown
+      from?: unknown
+      to?: unknown
+      hours_HHMM?: unknown
+      hours?: unknown
+      comment?: unknown
+      notSaved?: unknown
+      reporting_from?: unknown
+      taskId?: unknown
+    }>(
+      item,
+      ['id', 'from', 'to', 'hours_HHMM', 'hours', 'comment', 'notSaved', 'reporting_from', 'taskId'],
+      'work log item'
+    )
+    return {
+      id: validateNumberRange(safeItem.id, 1, 10_000_000, { integer: true }),
+      from: validateTime(safeItem.from, 'from'),
+      to: validateTime(safeItem.to, 'to'),
+      hours_HHMM: validateHoursHHMM(safeItem.hours_HHMM),
+      hours: validateNumberRange(safeItem.hours, 0, 24),
+      comment: validateStringLength(safeItem.comment, 0, 2000),
+      notSaved: typeof safeItem.notSaved === 'boolean' ? safeItem.notSaved : false,
+      reporting_from: validateStringLength(safeItem.reporting_from, 1, 100),
+      taskId: validateNumberRange(safeItem.taskId, 1, 10_000_000, { integer: true })
+    }
+  })
+  return { date, workLogs }
+}
+
 function invalidateHrsCache(date?: string) {
   if (!date) {
     hrsCache.clear()
@@ -179,7 +247,8 @@ export function registerHrsIpc(
     try {
       await ensureCustomAuth(getLoginSession())
     } catch (err) {
-      console.warn('[hrs] CustomAuth not available yet:', err)
+      const message = err instanceof Error ? err.message : String(err)
+      console.warn('[hrs] CustomAuth not available yet:', message)
     }
     return true
   })
@@ -193,7 +262,9 @@ export function registerHrsIpc(
   })
 
   ipcMain.handle('hrs:setCredentials', async (_event, username: string, password: string) => {
-    await setHrsCredentials(username, password)
+    const safeUsername = validateStringLength(username, 1, 200)
+    const safePassword = validateStringLength(password, 1, 300)
+    await setHrsCredentials(safeUsername, safePassword)
     return true
   })
 
@@ -252,7 +323,7 @@ export function registerHrsIpc(
   ipcMain.handle('hrs:getWorkLogs', async (_event, date?: string) => {
     const cookieHeader = await getCookieHeader(getLoginSession())
 
-    const targetDate = (date && date.trim()) || getLocalIsoDate()
+    const targetDate = date ? validateDate(date) : getLocalIsoDate()
     const cacheKey = `worklogs:${targetDate}`
     const cached = getCachedValue(cacheKey)
     if (cached) return cached
@@ -280,15 +351,17 @@ export function registerHrsIpc(
   })
 
   ipcMain.handle('hrs:getReports', async (_event, startDate: string, endDate: string) => {
+    const safeStartDate = validateDate(startDate)
+    const safeEndDate = validateDate(endDate)
     const loginSession = getLoginSession()
     const customAuth = await ensureCustomAuth(loginSession)
     const cookieHeader = await getCookieHeader(loginSession)
-    const cacheKey = `reports:${startDate}:${endDate}`
+    const cacheKey = `reports:${safeStartDate}:${safeEndDate}`
     const cached = getCachedValue(cacheKey)
     if (cached) return cached
 
     const res = await fetch(
-      `${HRS_ORIGIN}/api/getReports/?startDate=${encodeURIComponent(startDate)}&endDate=${encodeURIComponent(endDate)}`,
+      `${HRS_ORIGIN}/api/getReports/?startDate=${encodeURIComponent(safeStartDate)}&endDate=${encodeURIComponent(safeEndDate)}`,
       {
         headers: {
           Cookie: cookieHeader,
@@ -312,30 +385,27 @@ export function registerHrsIpc(
   })
 
   ipcMain.handle('hrs:logWork', async (_event, payload: unknown) => {
+    const safePayload = validateLogWorkPayload(payload)
     const loginSession = getLoginSession()
     const customAuth = await ensureCustomAuth(loginSession)
     const cookieHeader = await getCookieHeader(loginSession)
 
-    const result = await postLogWork(cookieHeader, customAuth, payload)
-    if (payload && typeof payload === 'object' && 'date' in payload) {
-      const dateValue = (payload as { date?: string }).date
-      invalidateHrsCache(dateValue)
-    } else {
-      invalidateHrsCache()
-    }
+    const result = await postLogWork(cookieHeader, customAuth, safePayload)
+    invalidateHrsCache(safePayload.date)
     return result
   })
 
   ipcMain.handle('hrs:deleteLog', async (_event, date: string) => {
+    const safeDate = validateDate(date)
     const loginSession = getLoginSession()
     const customAuth = await ensureCustomAuth(loginSession)
     const cookieHeader = await getCookieHeader(loginSession)
 
     const result = await postLogWork(cookieHeader, customAuth, {
-      date,
+      date: safeDate,
       workLogs: []
     })
-    invalidateHrsCache(date)
+    invalidateHrsCache(safeDate)
     return result
   })
 }

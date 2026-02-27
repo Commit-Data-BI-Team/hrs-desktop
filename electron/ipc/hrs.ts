@@ -15,6 +15,7 @@ const HRS_CACHE_TTL_MS = 5 * 60 * 1000
 const HRS_E2E = process.env.HRS_E2E === '1'
 const TIME_HHMM_REGEX = /^(?:[01]?\d|2[0-3]):[0-5]\d$/
 const HOURS_HHMM_REGEX = /^\d{1,2}:[0-5]\d$/
+const MAX_SAFE_ENTITY_ID = 1_000_000_000
 
 const E2E_TASKS = [
   {
@@ -182,7 +183,7 @@ function validateLogWorkPayload(payload: unknown) {
       'work log item'
     )
     return {
-      id: validateNumberRange(safeItem.id, 1, 10_000_000, { integer: true }),
+      id: validateNumberRange(safeItem.id, 1, MAX_SAFE_ENTITY_ID, { integer: true }),
       from: validateTime(safeItem.from, 'from'),
       to: validateTime(safeItem.to, 'to'),
       hours_HHMM: validateHoursHHMM(safeItem.hours_HHMM),
@@ -190,7 +191,7 @@ function validateLogWorkPayload(payload: unknown) {
       comment: validateStringLength(safeItem.comment, 0, 2000),
       notSaved: typeof safeItem.notSaved === 'boolean' ? safeItem.notSaved : false,
       reporting_from: validateStringLength(safeItem.reporting_from, 1, 100),
-      taskId: validateNumberRange(safeItem.taskId, 1, 10_000_000, { integer: true })
+      taskId: validateNumberRange(safeItem.taskId, 1, MAX_SAFE_ENTITY_ID, { integer: true })
     }
   })
   return { date, workLogs }

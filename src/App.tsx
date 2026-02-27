@@ -465,7 +465,31 @@ function parseHoursHHMMToMinutes(value: string): number {
   const hours = Number(match[1])
   const minutes = Number(match[2])
   if (Number.isNaN(hours) || Number.isNaN(minutes)) return 0
+  if (hours < 0 || minutes < 0 || minutes > 59) return 0
   return hours * 60 + minutes
+}
+
+function parseHoursInputToMinutes(value: string): number {
+  const raw = value.trim()
+  if (!raw) return 0
+  const normalized = raw.replace(',', '.')
+
+  const hhmmMinutes = parseHoursHHMMToMinutes(normalized)
+  if (hhmmMinutes > 0) return hhmmMinutes
+
+  if (!/^\d+(?:\.\d+)?$/.test(normalized)) return 0
+  const decimalHours = Number(normalized)
+  if (!Number.isFinite(decimalHours) || decimalHours <= 0) return 0
+  const minutes = Math.round(decimalHours * 60)
+  if (minutes <= 0) return 0
+  if (minutes > 99 * 60 + 59) return 0
+  return minutes
+}
+
+function normalizeHoursInputToHHMM(value: string): string | null {
+  const minutes = parseHoursInputToMinutes(value)
+  if (!minutes) return null
+  return minutesToHHMM(minutes)
 }
 
 function formatTimeFromDate(date: Date): string {
@@ -563,7 +587,7 @@ function toLogWorkItem(
   const from = timeRange?.from ?? fallbackFrom
   const to = timeRange?.to ?? fallbackTo
   return {
-    id: Date.now() + index,
+    id: index + 1,
     from,
     to,
     hours_HHMM: report.hours_HHMM,
@@ -3593,7 +3617,7 @@ export default function App() {
 	      }
 
 	      const newLogItem: LogWorkItem = {
-	        id: Date.now() + existingReports.length + 1,
+	        id: existingReports.length + 1,
 	        from: effectiveFromTime,
 	        to: effectiveToTime,
 	        hours_HHMM: duration.hoursHHMM,
@@ -3994,6 +4018,10 @@ export default function App() {
   async function deleteReportEntry(dateKey: string, entryIndex: number) {
     const dayInfo = reportsByDate.get(dateKey)
     if (!dayInfo) return
+    if (entryIndex < 0 || entryIndex >= dayInfo.day.reports.length) {
+      setLogError('Selected report could not be found. Please refresh and try again.')
+      return
+    }
     const remaining = dayInfo.day.reports.filter((_, idx) => idx !== entryIndex)
     const removedEntry = dayInfo.day.reports[entryIndex]
     const removedKey = removedEntry ? getReportEntryKey(removedEntry, dateKey) : null
@@ -4161,10 +4189,13 @@ export default function App() {
   async function saveEditReport(dateKey: string, index: number) {
     const dayInfo = reportsByDate.get(dateKey)
     if (!dayInfo) return
-    const trimmedHours = editHours.trim()
-    const minutes = parseHoursHHMMToMinutes(trimmedHours)
-    if (!minutes) {
-      setEditError('Enter hours as HH:MM (at least 00:01).')
+    if (index < 0 || index >= dayInfo.day.reports.length) {
+      setEditError('Selected report could not be found. Please refresh and try again.')
+      return
+    }
+    const normalizedHours = normalizeHoursInputToHHMM(editHours)
+    if (!normalizedHours) {
+      setEditError('Enter hours as HH:MM or decimal (for example: 01:30 or 1.5).')
       return
     }
     const trimmedComment = editComment.trim()
@@ -4179,7 +4210,7 @@ export default function App() {
         idx === index
           ? {
               ...report,
-              hours_HHMM: trimmedHours,
+              hours_HHMM: normalizedHours,
               comment: trimmedComment
             }
           : report
@@ -4195,7 +4226,7 @@ export default function App() {
       await window.hrs.logWork(payload)
       const oldEntry = dayInfo.day.reports[index]
       const oldKey = getReportEntryKey(oldEntry, dateKey)
-      const newEntry = { ...oldEntry, hours_HHMM: trimmedHours, comment: trimmedComment }
+      const newEntry = { ...oldEntry, hours_HHMM: normalizedHours, comment: trimmedComment }
       const newKey = getReportEntryKey(newEntry, dateKey)
       if (oldKey !== newKey && jiraLoggedEntries[oldKey]) {
         const next = { ...jiraLoggedEntries }
@@ -4204,6 +4235,7 @@ export default function App() {
         persistJiraLoggedEntries(next)
       }
       setLogSuccess(`Log updated for ${dateKey}.`)
+      setEditHours(normalizedHours)
       setEditingEntry(null)
       void refreshReportWorkLogsForDate(dateKey)
       loadReportsForMonth(dayjs(dateKey).toDate())
@@ -4331,14 +4363,14 @@ export default function App() {
   async function bulkEditReports(items: ReportItem[]) {
     if (!items.length) return
     const trimmedHours = bulkEditHours.trim()
-    const minutes = trimmedHours ? parseHoursHHMMToMinutes(trimmedHours) : null
-    if (trimmedHours && !minutes) {
-      setBulkActionError('Enter hours as HH:MM (at least 00:01).')
+    const normalizedHours = trimmedHours ? normalizeHoursInputToHHMM(trimmedHours) : null
+    if (trimmedHours && !normalizedHours) {
+      setBulkActionError('Enter hours as HH:MM or decimal (for example: 01:30 or 1.5).')
       return
     }
     const trimmedComment = bulkEditComment.trim()
     const hasComment = trimmedComment.length >= 3
-    const hasHours = Boolean(minutes)
+    const hasHours = Boolean(normalizedHours)
     if (!hasComment && !hasHours) {
       setBulkActionError('Provide a comment or hours to update.')
       return
@@ -4371,7 +4403,7 @@ export default function App() {
           return {
             ...report,
             comment: nextComment,
-            hours_HHMM: minutes ? trimmedHours : report.hours_HHMM
+            hours_HHMM: normalizedHours ?? report.hours_HHMM
           }
         })
         for (const entry of entries) {
@@ -4401,6 +4433,7 @@ export default function App() {
       }
       clearReportSelection()
       setBulkEditOpen(false)
+      if (normalizedHours) setBulkEditHours(normalizedHours)
       loadReportsForMonth(reportMonth)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -5604,7 +5637,7 @@ export default function App() {
   }, [shouldLoadJiraBudgetData, jiraConfigured])
 
   useEffect(() => {
-    if (!shouldLoadJiraEpics || !jiraConfigured || !mappedEpicKey) {
+    if (!jiraConfigured || !mappedEpicKey) {
       setJiraIssues([])
       setJiraIssueKey(null)
       setJiraIssueLoadError(null)
@@ -5620,7 +5653,7 @@ export default function App() {
     }
     setJiraLoadingIssues(false)
     setJiraIssueLoadError(null)
-  }, [shouldLoadJiraEpics, jiraConfigured, mappedEpicKey, logToJira])
+  }, [jiraConfigured, mappedEpicKey, logToJira])
 
   useEffect(() => {
     if (!logToJira) return
@@ -7025,7 +7058,7 @@ export default function App() {
                   value={editHours}
                   onChange={event => setEditHours(event.currentTarget.value)}
                   className="report-edit-hours"
-                  placeholder="HH:MM"
+                  placeholder="HH:MM or 1.5"
                 />
               ) : (
                 <Badge variant="light" color="teal" className="report-hours-badge">
@@ -8399,7 +8432,6 @@ export default function App() {
                               }
                             }}
                             label="Log to Jira"
-                            disabled={!jiraConfigured || !mappedEpicKey || jiraLoadingIssues}
                           />
                         </Group>
 
@@ -9426,7 +9458,7 @@ export default function App() {
                                   <Group grow>
                                     <TextInput
                                       label="Hours"
-                                      placeholder="HH:MM"
+                                      placeholder="HH:MM or 1.5"
                                       value={editHours}
                                       onChange={event => setEditHours(event.currentTarget.value)}
                                       size="xs"
@@ -12050,7 +12082,6 @@ export default function App() {
                                   }
                                 }}
                                 label="Log to Jira"
-                                disabled={!jiraConfigured || !mappedEpicKey || jiraLoadingIssues}
                               />
                             </Group>
 
@@ -13364,7 +13395,7 @@ export default function App() {
           />
           <TextInput
             label="Hours (optional)"
-            placeholder="HH:MM"
+            placeholder="HH:MM or 1.5"
             value={bulkEditHours}
             onChange={event => setBulkEditHours(event.currentTarget.value)}
           />

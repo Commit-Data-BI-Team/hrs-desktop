@@ -47,6 +47,8 @@ jobs:
   publish-release:
     runs-on: ubuntu-latest
     needs: [build-mac, build-win]
+    env:
+      GH_REPO: ${{ github.repository }}
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -76,8 +78,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1 || \
-          gh release create "$GITHUB_REF_NAME" --title "$GITHUB_REF_NAME" --notes "Automated release $GITHUB_REF_NAME"
+          gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" >/dev/null 2>&1 || \
+          gh release create "$GITHUB_REF_NAME" -R "$GH_REPO" --title "$GITHUB_REF_NAME" --notes "Automated release $GITHUB_REF_NAME"
       - name: Keep only required assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -93,7 +95,7 @@ jobs:
             "latest-mac.yml"
             "latest.yml"
           )
-          mapfile -t CURRENT < <(gh release view "$GITHUB_REF_NAME" --json assets -q '.assets[].name')
+          mapfile -t CURRENT < <(gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" --json assets -q '.assets[].name')
           for name in "${CURRENT[@]}"; do
             keep=0
             for allowed in "${ALLOWED[@]}"; do
@@ -103,11 +105,11 @@ jobs:
               fi
             done
             if [[ $keep -eq 0 ]]; then
-              gh release delete-asset "$GITHUB_REF_NAME" "$name" -y
+              gh release delete-asset "$GITHUB_REF_NAME" "$name" -R "$GH_REPO" -y
             fi
           done
       - name: Upload required assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release upload "$GITHUB_REF_NAME" release-files/* --clobber
+          gh release upload "$GITHUB_REF_NAME" release-files/* -R "$GH_REPO" --clobber

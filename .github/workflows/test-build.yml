@@ -40,7 +40,7 @@ jobs:
         run: npm run build
       
       - name: 🍎 Build macOS (Apple Silicon only for speed)
-        run: npm run dist:mac:arm64
+        run: npm run dist:mac:arm64 -- --publish never
       
       - name: ✅ Verify output
         run: |
@@ -72,7 +72,7 @@ jobs:
         run: npm run build
       
       - name: 🪟 Build Windows 64-bit
-        run: npm run dist:win:x64
+        run: npm run dist:win:x64 -- --publish never
       
       - name: ✅ Verify output
         run: |

@@ -165,6 +165,41 @@ contextBridge.exposeInMainWorld('hrs', {
   openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
+  getUpdateState: () => ipcRenderer.invoke('app:getUpdateState'),
+  checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
+  downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
+  installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  onUpdateState: (
+    handler: (state: {
+      state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+      message?: string
+      version?: string
+      releaseDate?: string
+      percent?: number
+    }) => void
+  ) => {
+    const listener = (
+      _event: Electron.IpcRendererEvent,
+      state: {
+        state:
+          | 'disabled'
+          | 'idle'
+          | 'checking'
+          | 'available'
+          | 'downloading'
+          | 'ready'
+          | 'error'
+        message?: string
+        version?: string
+        releaseDate?: string
+        percent?: number
+      }
+    ) => handler(state)
+    ipcRenderer.on('app:updateState', listener)
+    return () => {
+      ipcRenderer.removeListener('app:updateState', listener)
+    }
+  },
   onTrayOpened: (handler: () => void) => {
     const listener = () => handler()
     ipcRenderer.on('app:trayOpened', listener)

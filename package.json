@@ -33,6 +33,7 @@
     "@tabler/icons-react": "^3.36.1",
     "dayjs": "^1.11.19",
     "electron-store": "^11.0.2",
+    "electron-updater": "^6.3.9",
     "keytar": "^7.9.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -61,101 +62,108 @@
   },
   "main": "dist-electron/main.js",
   "build": {
-    "appId": "com.b4db1r3.hrsdesktop",
-    "productName": "HRS Desktop",
-    "directories": {
-      "buildResources": "build",
-      "output": "dist"
-    },
-    "files": [
-      "dist-renderer/**",
-      "dist-electron/**",
-      "build/**",
-      "scripts/**",
-      "package.json"
-    ],
-    "asarUnpack": [
-      "scripts/**"
-    ],
-    "mac": {
-      "target": [
-        {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        },
-        {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
-        }
-      ],
-      "identity": null,
-      "icon": "build/icon.icns",
-      "category": "public.app-category.productivity",
-      "extendInfo": {
-        "LSUIElement": true
-      },
-      "hardenedRuntime": true,
-      "gatekeeperAssess": false,
-      "entitlements": "build/entitlements.mac.plist",
-      "entitlementsInherit": "build/entitlements.mac.plist"
-    },
-    "dmg": {
-      "window": {
-        "width": 540,
-        "height": 380
-      },
-      "iconSize": 128,
-      "contents": [
-        {
-          "x": 130,
-          "y": 220,
-          "type": "file"
-        },
-        {
-          "x": 410,
-          "y": 220,
-          "type": "link",
-          "path": "/Applications"
-        }
-      ],
-      "sign": false
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64",
-            "ia32"
-          ]
-        },
-        {
-          "target": "portable",
-          "arch": [
-            "x64"
-          ]
-        }
-      ],
-      "icon": "build/icon.ico",
-      "publisherName": "HRS Desktop",
-      "verifyUpdateCodeSignature": false
-    },
-    "nsis": {
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "allowElevation": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "HRS Desktop"
-    },
-    "portable": {
-      "artifactName": "${productName}-${version}-portable.exe"
+  "appId": "com.b4db1r3.hrsdesktop",
+  "productName": "HRS Desktop",
+  "directories": {
+    "buildResources": "build",
+    "output": "dist"
+  },
+  "files": [
+    "dist-renderer/**",
+    "dist-electron/**",
+    "build/**",
+    "scripts/**",
+    "package.json"
+  ],
+  "asarUnpack": [
+    "scripts/**"
+  ],
+  "publish": [
+    {
+      "provider": "github",
+      "owner": "Commit-Data-BI-Team",
+      "repo": "hrs-desktop"
     }
+  ],
+  "mac": {
+    "target": [
+      {
+        "target": "dmg",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      },
+      {
+        "target": "zip",
+        "arch": [
+          "x64",
+          "arm64"
+        ]
+      }
+    ],
+    "identity": null,
+    "icon": "build/icon.icns",
+    "category": "public.app-category.productivity",
+    "extendInfo": {
+      "LSUIElement": true
+    },
+    "hardenedRuntime": true,
+    "gatekeeperAssess": false,
+    "entitlements": "build/entitlements.mac.plist",
+    "entitlementsInherit": "build/entitlements.mac.plist"
+  },
+  "dmg": {
+    "window": {
+      "width": 540,
+      "height": 380
+    },
+    "iconSize": 128,
+    "contents": [
+      {
+        "x": 130,
+        "y": 220,
+        "type": "file"
+      },
+      {
+        "x": 410,
+        "y": 220,
+        "type": "link",
+        "path": "/Applications"
+      }
+    ],
+    "sign": false
+  },
+  "win": {
+    "target": [
+      {
+        "target": "nsis",
+        "arch": [
+          "x64",
+          "ia32"
+        ]
+      },
+      {
+        "target": "portable",
+        "arch": [
+          "x64"
+        ]
+      }
+    ],
+    "icon": "build/icon.ico",
+    "publisherName": "HRS Desktop",
+    "verifyUpdateCodeSignature": false
+  },
+  "nsis": {
+    "oneClick": false,
+    "allowToChangeInstallationDirectory": true,
+    "allowElevation": true,
+    "createDesktopShortcut": true,
+    "createStartMenuShortcut": true,
+    "shortcutName": "HRS Desktop"
+  },
+  "portable": {
+    "artifactName": "${productName}-${version}-portable.exe"
   }
+}
 }

@@ -184,6 +184,14 @@ type AppPreferences = {
   smartDefaults: SmartDefaults
 }
 
+type AppUpdateState = {
+  state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+  message?: string
+  version?: string
+  releaseDate?: string
+  percent?: number
+}
+
 type HrsApi = {
   login: () => Promise<boolean>
   connectViaAdminLogin: () => Promise<boolean>
@@ -303,6 +311,11 @@ type HrsApi = {
   openReportsWindow: () => Promise<boolean>
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
+  getUpdateState: () => Promise<AppUpdateState>
+  checkForUpdates: () => Promise<boolean>
+  downloadUpdate: () => Promise<boolean>
+  installUpdate: () => Promise<boolean>
+  onUpdateState: (handler: (state: AppUpdateState) => void) => () => void
   onTrayOpened: (handler: () => void) => () => void
   onTrayClosing: (handler: (reason: 'blur' | 'toggle' | 'open-main') => void) => () => void
 }

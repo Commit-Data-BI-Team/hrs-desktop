@@ -244,6 +244,14 @@ type AppPreferences = {
   }
 }
 
+type AppUpdateState = {
+  state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+  message?: string
+  version?: string
+  releaseDate?: string
+  percent?: number
+}
+
 type SelectOption = {
   value: string
   label: string
@@ -1330,6 +1338,8 @@ export default function App() {
   const [jiraLoadingIssues, setJiraLoadingIssues] = useState(false)
   const [jiraIssueLoadError, setJiraIssueLoadError] = useState<string | null>(null)
   const [logToJira, setLogToJira] = useState(false)
+  const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({ state: 'idle' })
+  const [appUpdateActionLoading, setAppUpdateActionLoading] = useState(false)
   const [jiraActiveOnly, setJiraActiveOnly] = useState(true)
   const [jiraReportedOnly, setJiraReportedOnly] = useState(true)
   const [jiraMappingProject, setJiraMappingProject] = useState<string | null>(null)
@@ -1464,6 +1474,28 @@ export default function App() {
       })
     })
     return () => {
+      unsubscribe?.()
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!window?.hrs) return
+    let disposed = false
+    void window.hrs
+      .getUpdateState?.()
+      .then(state => {
+        if (!disposed && state) {
+          setAppUpdateState(state)
+        }
+      })
+      .catch(() => {
+        // Ignore updater init failures in renderer and rely on pushed events.
+      })
+    const unsubscribe = window.hrs.onUpdateState?.(state => {
+      setAppUpdateState(state)
+    })
+    return () => {
+      disposed = true
       unsubscribe?.()
     }
   }, [])
@@ -2724,6 +2756,63 @@ export default function App() {
       setJiraTokenGuideCopied(true)
     } catch {
       setJiraError('Unable to copy URL. Copy it manually from the guide below.')
+    }
+  }
+
+  async function runUpdateAction(action: 'check' | 'download' | 'install') {
+    if (!window?.hrs) return
+    setAppUpdateActionLoading(true)
+    try {
+      if (action === 'check') {
+        await window.hrs.checkForUpdates()
+      } else if (action === 'download') {
+        await window.hrs.downloadUpdate()
+      } else {
+        await window.hrs.installUpdate()
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setAppUpdateState({ state: 'error', message })
+    } finally {
+      setAppUpdateActionLoading(false)
+    }
+  }
+
+  function getUpdateBadgeColor() {
+    switch (appUpdateState.state) {
+      case 'ready':
+        return 'teal'
+      case 'available':
+      case 'downloading':
+      case 'checking':
+        return 'blue'
+      case 'error':
+        return 'red'
+      case 'disabled':
+        return 'gray'
+      default:
+        return 'gray'
+    }
+  }
+
+  function getUpdateBadgeLabel() {
+    switch (appUpdateState.state) {
+      case 'checking':
+        return 'Checking...'
+      case 'available':
+        return appUpdateState.version ? `v${appUpdateState.version} available` : 'Available'
+      case 'downloading':
+        return appUpdateState.percent != null
+          ? `${Math.round(appUpdateState.percent)}%`
+          : 'Downloading'
+      case 'ready':
+        return appUpdateState.version ? `Ready v${appUpdateState.version}` : 'Ready'
+      case 'error':
+        return 'Update error'
+      case 'disabled':
+        return 'Disabled'
+      default:
+        return 'Up to date'
     }
   }
 
@@ -9193,6 +9282,63 @@ export default function App() {
                           )}
                         </Stack>
                       </Card>
+                      <Card radius="md" withBorder className="tray-settings-card">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center">
+                            <Text fw={700} size="sm">
+                              App updates
+                            </Text>
+                            <Badge size="xs" color={getUpdateBadgeColor()} variant="light">
+                              {getUpdateBadgeLabel()}
+                            </Badge>
+                          </Group>
+                          <Text size="xs" c="dimmed">
+                            {appUpdateState.message ||
+                              'Check for updates and install the latest signed release.'}
+                          </Text>
+                          {appUpdateState.releaseDate && (
+                            <Text size="xs" c="dimmed">
+                              Release date: {dayjs(appUpdateState.releaseDate).format('DD-MM-YYYY HH:mm')}
+                            </Text>
+                          )}
+                          <Group justify="space-between" align="center">
+                            <Button
+                              size="xs"
+                              variant="light"
+                              onClick={() => {
+                                void runUpdateAction('check')
+                              }}
+                              loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
+                            >
+                              Check now
+                            </Button>
+                            <Group gap="xs">
+                              <Button
+                                size="xs"
+                                variant="default"
+                                onClick={() => {
+                                  void runUpdateAction('download')
+                                }}
+                                disabled={appUpdateState.state !== 'available'}
+                                loading={appUpdateActionLoading && appUpdateState.state === 'downloading'}
+                              >
+                                Download
+                              </Button>
+                              <Button
+                                size="xs"
+                                color="teal"
+                                onClick={() => {
+                                  void runUpdateAction('install')
+                                }}
+                                disabled={appUpdateState.state !== 'ready'}
+                                loading={appUpdateActionLoading && appUpdateState.state === 'ready'}
+                              >
+                                Restart & install
+                              </Button>
+                            </Group>
+                          </Group>
+                        </Stack>
+                      </Card>
                       </Stack>
                     )}
 
@@ -9817,6 +9963,59 @@ export default function App() {
                   <Text size="xs" c="dimmed">
                     Customer-to-epic mappings are managed in Reports.
                   </Text>
+                </Stack>
+              </Card>
+
+              <Card radius="md" withBorder>
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Text fw={700}>App updates</Text>
+                    <Badge color={getUpdateBadgeColor()} variant="light">
+                      {getUpdateBadgeLabel()}
+                    </Badge>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    {appUpdateState.message ||
+                      'Check for updates and install the latest signed release.'}
+                  </Text>
+                  {appUpdateState.releaseDate && (
+                    <Text size="xs" c="dimmed">
+                      Release date: {dayjs(appUpdateState.releaseDate).format('DD-MM-YYYY HH:mm')}
+                    </Text>
+                  )}
+                  <Group justify="space-between" align="center">
+                    <Button
+                      variant="light"
+                      onClick={() => {
+                        void runUpdateAction('check')
+                      }}
+                      loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
+                    >
+                      Check now
+                    </Button>
+                    <Group gap="xs">
+                      <Button
+                        variant="default"
+                        onClick={() => {
+                          void runUpdateAction('download')
+                        }}
+                        disabled={appUpdateState.state !== 'available'}
+                        loading={appUpdateActionLoading && appUpdateState.state === 'downloading'}
+                      >
+                        Download
+                      </Button>
+                      <Button
+                        color="teal"
+                        onClick={() => {
+                          void runUpdateAction('install')
+                        }}
+                        disabled={appUpdateState.state !== 'ready'}
+                        loading={appUpdateActionLoading && appUpdateState.state === 'ready'}
+                      >
+                        Restart & install
+                      </Button>
+                    </Group>
+                  </Group>
                 </Stack>
               </Card>
 

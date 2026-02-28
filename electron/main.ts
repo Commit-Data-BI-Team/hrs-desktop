@@ -56,6 +56,159 @@ const settingsWindowSize = { width: 700, height: 780 }
 const meetingsWindowSize = { width: 1220, height: 860 }
 const MAIN_LOG_MAX_BYTES = 2 * 1024 * 1024
 const MAIN_LOG_ROTATIONS = 4
+const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+
+type AppUpdateState = {
+  state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
+  message?: string
+  version?: string
+  releaseDate?: string
+  percent?: number
+}
+
+type UpdaterLike = {
+  autoDownload: boolean
+  autoInstallOnAppQuit: boolean
+  setFeedURL: (options: { provider: string; url: string }) => void
+  checkForUpdates: () => Promise<unknown>
+  downloadUpdate: () => Promise<unknown>
+  quitAndInstall: () => void
+  on: (event: string, listener: (...args: unknown[]) => void) => void
+}
+
+let updateCheckTimer: NodeJS.Timeout | null = null
+let updaterConfigured = false
+let latestUpdateState: AppUpdateState = { state: 'idle' }
+let appUpdater: UpdaterLike | null = null
+
+function emitUpdateState(next: AppUpdateState) {
+  latestUpdateState = next
+  const targets = [mainWindow, trayWindow, reportsWindow, settingsWindow, meetingsWindow, floatingWindow]
+  for (const target of targets) {
+    if (!target || target.isDestroyed()) continue
+    target.webContents.send('app:updateState', next)
+  }
+}
+
+function setUpdateDisabled(message: string) {
+  updaterConfigured = false
+  emitUpdateState({ state: 'disabled', message })
+}
+
+async function checkForUpdatesNow() {
+  if (!updaterConfigured || !appUpdater) {
+    setUpdateDisabled('Updates are not configured for this build.')
+    return null
+  }
+  try {
+    emitUpdateState({ state: 'checking' })
+    return await appUpdater.checkForUpdates()
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logError('[updater] check failed', message)
+    emitUpdateState({ state: 'error', message })
+    return null
+  }
+}
+
+async function ensureUpdaterLoaded() {
+  if (appUpdater) return true
+  try {
+    const updaterModuleName = 'electron-updater'
+    const updaterModule = (await import(updaterModuleName)) as { autoUpdater?: UpdaterLike }
+    if (!updaterModule?.autoUpdater) {
+      throw new Error('autoUpdater export not found')
+    }
+    appUpdater = updaterModule.autoUpdater
+    return true
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logWarn('[updater] module not available', message)
+    setUpdateDisabled('Updater package missing. Run `npm install` to include electron-updater.')
+    return false
+  }
+}
+
+async function setupAutoUpdater() {
+  if (!app.isPackaged) {
+    setUpdateDisabled('Auto-update works in packaged builds only.')
+    return
+  }
+  const hasUpdater = await ensureUpdaterLoaded()
+  if (!hasUpdater || !appUpdater) return
+
+  const feedUrl = process.env.HRS_UPDATE_FEED_URL?.trim()
+  try {
+    if (feedUrl) {
+      appUpdater.setFeedURL({ provider: 'generic', url: feedUrl })
+      updaterConfigured = true
+      logInfo('[updater] using feed URL from HRS_UPDATE_FEED_URL')
+    } else {
+      const defaultConfigPath = path.join(process.resourcesPath, 'app-update.yml')
+      updaterConfigured = fs.existsSync(defaultConfigPath)
+      if (!updaterConfigured) {
+        setUpdateDisabled(
+          'Missing update feed. Set HRS_UPDATE_FEED_URL or publish with app-update.yml.'
+        )
+        return
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    logError('[updater] failed to configure updater', message)
+    setUpdateDisabled(message)
+    return
+  }
+
+  appUpdater.autoDownload = false
+  appUpdater.autoInstallOnAppQuit = true
+
+  appUpdater.on('checking-for-update', () => {
+    emitUpdateState({ state: 'checking' })
+  })
+  appUpdater.on('update-available', (info: unknown) => {
+    const typed = info as { version?: string; releaseDate?: string | Date }
+    emitUpdateState({
+      state: 'available',
+      version: typed.version,
+      releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined
+    })
+  })
+  appUpdater.on('update-not-available', () => {
+    emitUpdateState({ state: 'idle', message: 'You are up to date.' })
+  })
+  appUpdater.on('download-progress', (progress: unknown) => {
+    const typed = progress as { percent?: number }
+    const percent = typed.percent ?? 0
+    emitUpdateState({
+      state: 'downloading',
+      percent,
+      message: `${Math.round(percent)}% downloaded`
+    })
+  })
+  appUpdater.on('update-downloaded', (info: unknown) => {
+    const typed = info as { version?: string; releaseDate?: string | Date }
+    emitUpdateState({
+      state: 'ready',
+      version: typed.version,
+      releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined,
+      message: 'Update ready. Restart to install.'
+    })
+  })
+  appUpdater.on('error', error => {
+    const message = error instanceof Error ? error.message : String(error)
+    logError('[updater] runtime error', message)
+    emitUpdateState({ state: 'error', message })
+  })
+
+  emitUpdateState({ state: 'idle', message: 'Ready to check for updates.' })
+  setTimeout(() => {
+    void checkForUpdatesNow()
+  }, 15000)
+  updateCheckTimer = setInterval(() => {
+    void checkForUpdatesNow()
+  }, UPDATE_CHECK_INTERVAL_MS)
+}
 
 function getMainLogPaths(): string[] {
   const paths = new Set<string>()
@@ -755,6 +908,7 @@ app.whenReady().then(() => {
   registerExportIpc()
   registerNotificationIpc()
   registerMeetingsIpc()
+  void setupAutoUpdater()
   ipcMain.handle('app:openMainWindow', () => {
     showMainWindow()
     if (trayWindow?.isVisible()) {
@@ -792,6 +946,35 @@ app.whenReady().then(() => {
     floatingWindow.setSize(size.width, size.height, false)
     return true
   })
+  ipcMain.handle('app:getUpdateState', () => latestUpdateState)
+  ipcMain.handle('app:checkForUpdates', async () => {
+    const result = await checkForUpdatesNow()
+    return Boolean(result)
+  })
+  ipcMain.handle('app:downloadUpdate', async () => {
+    if (!updaterConfigured || !appUpdater) {
+      setUpdateDisabled('Updates are not configured for this build.')
+      return false
+    }
+    try {
+      await appUpdater.downloadUpdate()
+      return true
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      emitUpdateState({ state: 'error', message })
+      return false
+    }
+  })
+  ipcMain.handle('app:installUpdate', async () => {
+    if (!updaterConfigured || !appUpdater) {
+      setUpdateDisabled('Updates are not configured for this build.')
+      return false
+    }
+    setImmediate(() => {
+      appUpdater?.quitAndInstall()
+    })
+    return true
+  })
   if (startInTray && trayReady) {
     logInfo('[main] starting in tray-only mode (main window lazy)')
   } else {
@@ -803,6 +986,13 @@ app.on('window-all-closed', () => {
   logInfo('[main] window-all-closed', `tray=${Boolean(tray)}`, `isQuitting=${isQuitting}`)
   if (tray && !isQuitting) return
   if (process.platform !== 'darwin') app.quit()
+})
+
+app.on('before-quit', () => {
+  if (updateCheckTimer) {
+    clearInterval(updateCheckTimer)
+    updateCheckTimer = null
+  }
 })
 
 /* =========================

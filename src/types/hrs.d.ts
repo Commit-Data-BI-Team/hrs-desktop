@@ -188,7 +188,9 @@ type AppUpdateState = {
   state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
   message?: string
   version?: string
+  currentVersion?: string
   releaseDate?: string
+  changelog?: string[]
   percent?: number
 }
 
@@ -311,6 +313,7 @@ type HrsApi = {
   openReportsWindow: () => Promise<boolean>
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
+  getAppVersion: () => Promise<string>
   getUpdateState: () => Promise<AppUpdateState>
   checkForUpdates: () => Promise<boolean>
   downloadUpdate: () => Promise<boolean>

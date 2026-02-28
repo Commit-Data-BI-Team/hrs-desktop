@@ -66,7 +66,9 @@ type AppUpdateState = {
   state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
   message?: string
   version?: string
+  currentVersion?: string
   releaseDate?: string
+  changelog?: string[]
   percent?: number
 }
 
@@ -82,8 +84,35 @@ type UpdaterLike = {
 
 let updateCheckTimer: NodeJS.Timeout | null = null
 let updaterConfigured = false
-let latestUpdateState: AppUpdateState = { state: 'idle' }
+let latestUpdateState: AppUpdateState = { state: 'idle', currentVersion: app.getVersion() }
 let appUpdater: UpdaterLike | null = null
+
+function normalizeChangelog(raw: unknown): string[] {
+  if (!raw) return []
+  if (typeof raw === 'string') {
+    return raw
+      .split(/\r?\n/)
+      .map(line => line.trim().replace(/^[-*]\s+/, ''))
+      .filter(Boolean)
+      .slice(0, 12)
+  }
+  if (Array.isArray(raw)) {
+    const collected = raw
+      .map(item => {
+        if (typeof item === 'string') return item
+        if (item && typeof item === 'object') {
+          const typed = item as { note?: unknown; version?: unknown }
+          if (typeof typed.note === 'string') return typed.note
+          if (typeof typed.version === 'string') return `Release ${typed.version}`
+        }
+        return ''
+      })
+      .filter(Boolean)
+      .join('\n')
+    return normalizeChangelog(collected)
+  }
+  return []
+}
 
 function formatUpdaterError(error: unknown): string {
   const raw = error instanceof Error ? error.message || String(error) : String(error)
@@ -102,11 +131,15 @@ function formatUpdaterError(error: unknown): string {
 }
 
 function emitUpdateState(next: AppUpdateState) {
-  latestUpdateState = next
+  const normalized: AppUpdateState = {
+    ...next,
+    currentVersion: app.getVersion()
+  }
+  latestUpdateState = normalized
   const targets = [mainWindow, trayWindow, reportsWindow, settingsWindow, meetingsWindow, floatingWindow]
   for (const target of targets) {
     if (!target || target.isDestroyed()) continue
-    target.webContents.send('app:updateState', next)
+    target.webContents.send('app:updateState', normalized)
   }
 }
 
@@ -259,11 +292,12 @@ async function setupAutoUpdater() {
     emitUpdateState({ state: 'checking' })
   })
   appUpdater.on('update-available', (info: unknown) => {
-    const typed = info as { version?: string; releaseDate?: string | Date }
+    const typed = info as { version?: string; releaseDate?: string | Date; releaseNotes?: unknown }
     emitUpdateState({
       state: 'available',
       version: typed.version,
-      releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined
+      releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined,
+      changelog: normalizeChangelog(typed.releaseNotes)
     })
   })
   appUpdater.on('update-not-available', () => {
@@ -279,11 +313,12 @@ async function setupAutoUpdater() {
     })
   })
   appUpdater.on('update-downloaded', (info: unknown) => {
-    const typed = info as { version?: string; releaseDate?: string | Date }
+    const typed = info as { version?: string; releaseDate?: string | Date; releaseNotes?: unknown }
     emitUpdateState({
       state: 'ready',
       version: typed.version,
       releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined,
+      changelog: normalizeChangelog(typed.releaseNotes),
       message: 'Update ready. Restart to install.'
     })
   })
@@ -1038,6 +1073,7 @@ app.whenReady().then(() => {
     floatingWindow.setSize(size.width, size.height, false)
     return true
   })
+  ipcMain.handle('app:getVersion', () => app.getVersion())
   ipcMain.handle('app:getUpdateState', () => latestUpdateState)
   ipcMain.handle('app:checkForUpdates', async () => {
     const result = await checkForUpdatesNow()

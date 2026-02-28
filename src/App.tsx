@@ -248,8 +248,35 @@ type AppUpdateState = {
   state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
   message?: string
   version?: string
+  currentVersion?: string
   releaseDate?: string
+  changelog?: string[]
   percent?: number
+}
+
+type MeetingsFetchPhase = 'idle' | 'init' | 'auth' | 'query' | 'finalize' | 'done' | 'error'
+
+const MEETINGS_FETCH_PHASE_WEIGHT: Record<MeetingsFetchPhase, number> = {
+  idle: 0,
+  init: 1,
+  auth: 2,
+  query: 3,
+  finalize: 4,
+  done: 5,
+  error: 6
+}
+
+function advanceMeetingsFetchPhase(
+  current: MeetingsFetchPhase,
+  next: MeetingsFetchPhase
+): MeetingsFetchPhase {
+  if (next === 'error') return 'error'
+  if (current === 'error') return current
+  if (next === 'done') return 'done'
+  if (current === 'done') return current
+  return MEETINGS_FETCH_PHASE_WEIGHT[next] > MEETINGS_FETCH_PHASE_WEIGHT[current]
+    ? next
+    : current
 }
 
 type SelectOption = {
@@ -1379,6 +1406,7 @@ export default function App() {
   const [meetingsUpdatedAt, setMeetingsUpdatedAt] = useState<string | null>(null)
   const [meetingsProgress, setMeetingsProgress] = useState<string | null>(null)
   const [meetingsProgressLog, setMeetingsProgressLog] = useState<string[]>([])
+  const [meetingsFetchPhase, setMeetingsFetchPhase] = useState<MeetingsFetchPhase>('idle')
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [meetingsCredentialsOpen, setMeetingsCredentialsOpen] = useState(false)
@@ -1429,7 +1457,8 @@ export default function App() {
     'log' | 'clockify' | 'meetings' | 'reports' | 'settings'
   >('log')
   const [trayReportExpandedEpic, setTrayReportExpandedEpic] = useState<string | null>(null)
-  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'mapping'>('access')
+  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'mapping' | 'updates'>('access')
+  const [appVersion, setAppVersion] = useState('')
   const [trayDayEditorOpen, setTrayDayEditorOpen] = useState(false)
   const [trayDayEditorDateKey, setTrayDayEditorDateKey] = useState<string | null>(null)
   const [reviewMode, setReviewMode] = useState(false)
@@ -1469,9 +1498,26 @@ export default function App() {
     const unsubscribe = window.hrs.onMeetingsProgress(message => {
       setMeetingsProgress(message)
       setMeetingsProgressLog(prev => {
-        const next = [...prev, message]
+        const next = prev[prev.length - 1] === message ? prev : [...prev, message]
         return next.length > 80 ? next.slice(next.length - 80) : next
       })
+      const normalized = message.toLowerCase()
+      if (
+        normalized.includes('graph explorer loaded') ||
+        normalized.includes('background mode enabled')
+      ) {
+        setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
+        return
+      }
+      if (
+        normalized.includes('sign in') ||
+        normalized.includes('duo') ||
+        normalized.includes('access token') ||
+        normalized.includes('token request') ||
+        normalized.includes('query')
+      ) {
+        setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'query'))
+      }
     })
     return () => {
       unsubscribe?.()
@@ -1482,10 +1528,21 @@ export default function App() {
     if (!window?.hrs) return
     let disposed = false
     void window.hrs
+      .getAppVersion?.()
+      .then(version => {
+        if (!disposed && typeof version === 'string') {
+          setAppVersion(version)
+        }
+      })
+      .catch(() => {
+        // Ignore unavailable bridge function.
+      })
+    void window.hrs
       .getUpdateState?.()
       .then(state => {
         if (!disposed && state) {
           setAppUpdateState(state)
+          if (state.currentVersion) setAppVersion(state.currentVersion)
         }
       })
       .catch(() => {
@@ -1493,6 +1550,7 @@ export default function App() {
       })
     const unsubscribe = window.hrs.onUpdateState?.(state => {
       setAppUpdateState(state)
+      if (state.currentVersion) setAppVersion(state.currentVersion)
     })
     return () => {
       disposed = true
@@ -2237,11 +2295,12 @@ export default function App() {
   async function fetchMeetings(background = false) {
     setMeetingsLoading(true)
     setMeetingsError(null)
+    setMeetingsFetchPhase('init')
     if (!background) {
-      setMeetingsProgressLog([])
+      setMeetingsProgressLog(['Preparing browser session…'])
     }
     if (!background) {
-      setMeetingsProgress('Starting meetings fetch…')
+      setMeetingsProgress('Preparing browser session…')
     }
     try {
       const monthKey = dayjs(reportMonth).format('YYYY-MM')
@@ -2253,8 +2312,11 @@ export default function App() {
         setMeetingsMonth(monthKey)
         setMeetingsUpdatedAt(cached.updatedAt ?? null)
         setMeetingsProgress('Using cached meetings.')
+        setMeetingsFetchPhase('done')
         return
       }
+      setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
+      setMeetingsProgress('Authenticating with Microsoft…')
       const result = await window.hrs.getMeetings({
         browser: meetingsBrowser,
         headless: meetingsHeadless,
@@ -2262,6 +2324,8 @@ export default function App() {
         username: meetingsUsername.trim() || null,
         password: meetingsPassword || null
       })
+      setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'finalize'))
+      setMeetingsProgress('Finalizing meetings data…')
       setMeetings(result.meetings || [])
       setMeetingsMonth(result.month || monthKey)
       const updatedAt = new Date().toISOString()
@@ -2270,11 +2334,18 @@ export default function App() {
         ...prev,
         [monthKey]: { updatedAt, meetings: result.meetings || [] }
       }))
-      setMeetingsProgress(null)
+      setMeetingsProgress('Meetings ready.')
+      setMeetingsProgressLog(prev => {
+        const message = `Completed fetch (${(result.meetings || []).length} meetings).`
+        const next = prev[prev.length - 1] === message ? prev : [...prev, message]
+        return next.length > 80 ? next.slice(next.length - 80) : next
+      })
+      setMeetingsFetchPhase('done')
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setMeetingsError(message)
-      setMeetingsProgress(null)
+      setMeetingsProgress('Fetch failed.')
+      setMeetingsFetchPhase('error')
     } finally {
       setMeetingsLoading(false)
     }
@@ -2815,6 +2886,17 @@ export default function App() {
         return 'Up to date'
     }
   }
+
+  const currentVersionLabel = appUpdateState.currentVersion || appVersion || 'Unknown'
+  const updateVersionLabel = appUpdateState.version || null
+  const updateChangelogItems = useMemo(
+    () =>
+      (appUpdateState.changelog ?? [])
+        .map(line => line.trim())
+        .filter(Boolean)
+        .slice(0, 8),
+    [appUpdateState.changelog]
+  )
 
   async function updateJiraMapping(customer: string, epicKey: string | null) {
     try {
@@ -4542,16 +4624,17 @@ export default function App() {
       if (jiraLoggedEntries[entryKey]) continue
       const meta = taskMetaById.get(item.taskId)
       const customer = meta?.customerName || 'Customer'
+      const displayCustomer = getCustomerDisplayName(customer)
       const epicKey = jiraMappings[customer]
       if (!epicKey) {
-        setBulkActionError(`Missing Jira mapping for ${customer}.`)
+        setBulkActionError(`Missing Jira mapping for ${displayCustomer}.`)
         return
       }
       try {
         const issues = await window.hrs.getJiraWorkItems(epicKey)
         if (issues.length !== 1) {
           setBulkActionError(
-            `Multiple Jira work items for ${customer}. Choose the issue manually.`
+            `Multiple Jira work items for ${displayCustomer}. Choose the issue manually.`
           )
           return
         }
@@ -5051,7 +5134,7 @@ export default function App() {
       if (!trimmed || trimmed === customer.trim()) {
         delete next[customer]
       } else {
-        next[customer] = value
+        next[customer] = trimmed
       }
       return next
     })
@@ -5558,7 +5641,9 @@ export default function App() {
       setMeetingsUpdatedAt(cached.updatedAt ?? null)
       return
     }
-    void fetchMeetings(true)
+    setMeetings([])
+    setMeetingsMonth(monthKey)
+    setMeetingsUpdatedAt(null)
   }, [isTray, loggedIn, trayPanel, reportMonth, meetingsCache])
 
   useEffect(() => {
@@ -6177,6 +6262,77 @@ export default function App() {
     }
   }, [meetings, meetingClientMappings])
 
+  const meetingsHasFetchedOnce = useMemo(
+    () => Object.keys(meetingsCache).length > 0,
+    [meetingsCache]
+  )
+
+  const meetingsFetchSteps = useMemo(
+    () => [
+      {
+        key: 'init',
+        title: 'Start browser session',
+        detail: meetingsBrowser === 'chrome' && meetingsHeadless
+          ? 'Chrome runs in background mode.'
+          : 'Browser window is prepared for login.'
+      },
+      {
+        key: 'auth',
+        title: 'Authenticate Microsoft account',
+        detail: 'Approve DUO if prompted.'
+      },
+      {
+        key: 'query',
+        title: 'Fetch calendar events',
+        detail: `Load meetings for ${dayjs(reportMonth).format('MMMM YYYY')}.`
+      },
+      {
+        key: 'finalize',
+        title: 'Build meetings list',
+        detail: 'Normalize and cache meetings for this month.'
+      }
+    ],
+    [meetingsBrowser, meetingsHeadless, reportMonth]
+  )
+
+  const meetingsStepStatuses = useMemo(() => {
+    const phaseIndexMap: Record<MeetingsFetchPhase, number> = {
+      idle: -1,
+      init: 0,
+      auth: 1,
+      query: 2,
+      finalize: 3,
+      done: 4,
+      error: 3
+    }
+    const phaseIndex = phaseIndexMap[meetingsFetchPhase]
+    const completedIndex = meetingsFetchPhase === 'done' ? 3 : Math.max(-1, phaseIndex - 1)
+    const activeIndex =
+      meetingsFetchPhase === 'error'
+        ? Math.max(0, Math.min(3, phaseIndex))
+        : meetingsLoading
+          ? Math.max(0, Math.min(3, phaseIndex))
+          : -1
+
+    return meetingsFetchSteps.map((_, index) => {
+      if (meetingsFetchPhase === 'error' && index === activeIndex) return 'error' as const
+      if (meetingsFetchPhase === 'done' || index <= completedIndex) return 'done' as const
+      if (index === activeIndex) return 'active' as const
+      return 'pending' as const
+    })
+  }, [meetingsFetchPhase, meetingsLoading, meetingsFetchSteps])
+
+  const showMeetingsProgressTracker = useMemo(
+    () =>
+      meetingsLoading ||
+      meetingsFetchPhase === 'error' ||
+      Boolean(meetingsProgress) ||
+      meetingsProgressLog.length > 0,
+    [meetingsLoading, meetingsFetchPhase, meetingsProgress, meetingsProgressLog.length]
+  )
+
+  const trayMeetingsNeedsBootstrap = isTray && trayPanel === 'meetings' && !meetingsHasFetchedOnce
+
   const meetingsSorted = useMemo(() => {
     const entries = meetings.map((meeting, index) => {
       const started = dayjs(meeting.startTime.replace(' ', 'T'))
@@ -6259,10 +6415,15 @@ export default function App() {
       .slice(0, 8)
       .map(item => ({
         ...item,
-        customer: taskMetaById.get(item.taskId)?.customerName ?? 'Unknown',
+        customer: getCustomerDisplayName(taskMetaById.get(item.taskId)?.customerName ?? 'Unknown'),
         project: taskMetaById.get(item.taskId)?.projectName ?? item.projectInstance ?? item.taskName
       }))
-  }, [allReportItems, taskMetaById])
+  }, [allReportItems, taskMetaById, jiraCustomerAliases])
+
+  const clockHistoryTotalMinutes = useMemo(
+    () => clockHistoryItems.reduce((sum, item) => sum + parseHoursHHMMToMinutes(item.hours_HHMM), 0),
+    [clockHistoryItems]
+  )
 
   useEffect(() => {
     if (!loggedIn || !isMainWindow) return
@@ -6926,8 +7087,9 @@ export default function App() {
     for (const item of filteredReportItems) {
       const meta = taskMetaById.get(item.taskId)
       const projectLabel = meta?.projectName || item.projectInstance || 'Project'
-      const customerLabel = meta?.customerName || 'Customer'
-      const key = `${projectLabel}||${customerLabel}`
+      const customerRaw = meta?.customerName || 'Customer'
+      const customerLabel = getCustomerDisplayName(customerRaw)
+      const key = `${projectLabel}||${customerRaw}`
       const group = groups.get(key) ?? {
         projectLabel,
         customerLabel,
@@ -6955,7 +7117,7 @@ export default function App() {
       }
     }
     return rows
-  }, [filteredReportItems, searchActive, taskMetaById])
+  }, [filteredReportItems, searchActive, taskMetaById, jiraCustomerAliases])
 
   const hasReportGroups = useMemo(
     () => reportDisplayRows.some(row => row.type === 'group'),
@@ -7065,7 +7227,7 @@ export default function App() {
   ) => {
     const meta = taskMetaById.get(report.taskId)
     const projectLabel = meta?.projectName || report.projectInstance || 'Project'
-    const customerLabel = meta?.customerName || 'Customer'
+    const customerLabel = getCustomerDisplayName(meta?.customerName || 'Customer')
     const entryKey = getReportEntryKey(report, report.dateKey)
     const isJiraLogged = Boolean(jiraLoggedEntries[entryKey])
     const isSelected = Boolean(selectedReportEntries[entryKey])
@@ -7350,7 +7512,7 @@ export default function App() {
     return exportItems.map(item => {
       const meta = taskMetaById.get(item.taskId)
       const project = meta?.projectName || item.projectInstance || 'Project'
-      const customer = meta?.customerName || 'Customer'
+      const customer = getCustomerDisplayName(meta?.customerName || 'Customer')
       const entryKey = getReportEntryKey(item, item.dateKey)
       const jiraEntry = jiraLoggedEntries[entryKey]
       return {
@@ -7365,7 +7527,7 @@ export default function App() {
         jiraIssue: jiraEntry?.issueKey ?? ''
       }
     })
-  }, [monthlyReport, exportItems, taskMetaById, jiraLoggedEntries])
+  }, [monthlyReport, exportItems, taskMetaById, jiraLoggedEntries, jiraCustomerAliases])
 
   const exportSummary = useMemo(() => {
     const synced = exportRows.filter(row => row.jiraLogged === 'Yes').length
@@ -8156,35 +8318,6 @@ export default function App() {
               >
                 Login now
               </Button>
-              <Group grow>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => {
-                    switchTrayPanel('settings')
-                  }}
-                >
-                  Settings
-                </Button>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => {
-                    switchTrayPanel('reports')
-                  }}
-                >
-                  Reports
-                </Button>
-                <Button
-                  size="xs"
-                  variant="subtle"
-                  onClick={() => {
-                    switchTrayPanel('meetings')
-                  }}
-                >
-                  Meetings
-                </Button>
-              </Group>
             </Stack>
           )}
 
@@ -8271,7 +8404,7 @@ export default function App() {
                 </Tooltip>
               </div>
 
-              <div className="tray-panel-body">
+              <div className={`tray-panel-body${trayPanel === 'clockify' ? ' is-clockify' : ''}`}>
                 {trayPanel === 'log' ? (
                   <Stack gap="xs">
                     <div className="tray-calendar-shell">
@@ -8578,6 +8711,55 @@ export default function App() {
                   </Stack>
                 ) : trayPanel === 'clockify' ? (
                   <Stack gap="xs" className="tray-clock-panel">
+                    <Card radius="md" withBorder className="tray-clock-hero-card">
+                      <Stack gap="xs">
+                        <Group justify="space-between" align="center">
+                          <Group gap={8} align="center">
+                            <ThemeIcon size="sm" variant="light" color="blue">
+                              <IconClock size={12} />
+                            </ThemeIcon>
+                            <Text fw={700} size="sm">
+                              Clockify mode
+                            </Text>
+                          </Group>
+                          <Badge size="sm" color={timerRunning ? 'teal' : 'gray'} variant="light">
+                            {timerRunning ? formatElapsed(timerElapsed) : 'Idle'}
+                          </Badge>
+                        </Group>
+                        <Text size="xs" c="dimmed">
+                          Start/stop using the floating timer, then reuse recent logs below.
+                        </Text>
+                        <SimpleGrid cols={2} spacing="xs" className="tray-clock-kpis">
+                          <div className="tray-clock-kpi">
+                            <Text size="xs" c="dimmed">
+                              Entries
+                            </Text>
+                            <Text fw={700} size="sm">
+                              {clockHistoryItems.length}
+                            </Text>
+                          </div>
+                          <div className="tray-clock-kpi">
+                            <Text size="xs" c="dimmed">
+                              Logged hours
+                            </Text>
+                            <Text fw={700} size="sm">
+                              {minutesToHHMM(clockHistoryTotalMinutes)}
+                            </Text>
+                          </div>
+                        </SimpleGrid>
+                        <Button
+                          size="sm"
+                          variant="light"
+                          fullWidth
+                          onClick={() => {
+                            void openFloatingTimer()
+                          }}
+                        >
+                          Open floating timer
+                        </Button>
+                      </Stack>
+                    </Card>
+
                     <Card radius="md" withBorder className="tray-clock-card">
                       <Stack gap="xs">
                         <Group justify="space-between" align="center">
@@ -8589,23 +8771,9 @@ export default function App() {
                               Clock history
                             </Text>
                           </Group>
-                          <Group gap="xs" align="center">
-                            <Badge size="xs" color={timerRunning ? 'teal' : 'gray'} variant="light">
-                              {timerRunning ? formatElapsed(timerElapsed) : 'Idle'}
-                            </Badge>
-                            <Badge size="xs" variant="light">
-                              {clockHistoryItems.length}
-                            </Badge>
-                            <Button
-                              size="compact-xs"
-                              variant="light"
-                              onClick={() => {
-                                void openFloatingTimer()
-                              }}
-                            >
-                              Open timer
-                            </Button>
-                          </Group>
+                          <Badge size="xs" variant="light">
+                            {clockHistoryItems.length}
+                          </Badge>
                         </Group>
                         <Text size="xs" c="dimmed">
                           Pick a recent entry to reuse task + customer quickly.
@@ -8640,9 +8808,11 @@ export default function App() {
                             ))}
                           </Stack>
                         ) : (
-                          <Text size="xs" c="dimmed">
-                            No recent logs found yet.
-                          </Text>
+                          <div className="tray-clock-history-empty">
+                            <Text size="xs" c="dimmed">
+                              No recent logs found yet.
+                            </Text>
+                          </div>
                         )}
                       </Stack>
                     </Card>
@@ -8708,26 +8878,85 @@ export default function App() {
                       </Stack>
                     </Card>
 
-                    <Group justify="space-between" align="center">
-                      <Button
-                        size="xs"
-                        variant="light"
-                        onClick={() => {
-                          void fetchMeetings()
-                        }}
-                        loading={meetingsLoading}
-                      >
-                        Refresh meetings
-                      </Button>
-                      <Badge variant="light" color="gray">
-                        {meetingsSummary.totalMeetings} meetings
-                      </Badge>
-                    </Group>
+                    {trayMeetingsNeedsBootstrap ? (
+                      <Card radius="md" withBorder className="tray-meetings-onboarding">
+                        <Stack gap="xs">
+                          <Text size="sm" fw={700}>
+                            First-time meetings setup
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            Save your domain credentials, then run the first fetch.
+                          </Text>
+                          <Button
+                            size="md"
+                            fullWidth
+                            variant="light"
+                            onClick={() => {
+                              void fetchMeetings()
+                            }}
+                            loading={meetingsLoading}
+                          >
+                            Fetch meetings for {dayjs(reportMonth).format('MMMM YYYY')}
+                          </Button>
+                        </Stack>
+                      </Card>
+                    ) : (
+                      <Group justify="space-between" align="center">
+                        <Button
+                          size="xs"
+                          variant="light"
+                          onClick={() => {
+                            void fetchMeetings()
+                          }}
+                          loading={meetingsLoading}
+                        >
+                          Refresh meetings
+                        </Button>
+                        <Badge variant="light" color="gray">
+                          {meetingsSummary.totalMeetings} meetings
+                        </Badge>
+                      </Group>
+                    )}
 
-                    {meetingsProgress && (
-                      <Text size="xs" c="dimmed">
-                        {meetingsProgress}
-                      </Text>
+                    {showMeetingsProgressTracker && (
+                      <Card radius="md" withBorder className="tray-meetings-progress">
+                        <Stack gap={6}>
+                          {meetingsFetchSteps.map((step, index) => (
+                            <Group
+                              key={step.key}
+                              align="flex-start"
+                              gap="xs"
+                              wrap="nowrap"
+                              className={`tray-meetings-step tray-meetings-step-${meetingsStepStatuses[index]}`}
+                            >
+                              <span className="tray-meetings-step-dot">
+                                {meetingsStepStatuses[index] === 'done' ? (
+                                  <IconCheck size={12} />
+                                ) : meetingsStepStatuses[index] === 'active' ? (
+                                  <Loader size={12} />
+                                ) : meetingsStepStatuses[index] === 'error' ? (
+                                  <IconAlertTriangle size={12} />
+                                ) : (
+                                  index + 1
+                                )}
+                              </span>
+                              <div className="tray-meetings-step-copy">
+                                <Text size="xs" fw={600}>
+                                  {step.title}
+                                </Text>
+                                <Text size="xs" c="dimmed">
+                                  {step.detail}
+                                </Text>
+                              </div>
+                            </Group>
+                          ))}
+                          {meetingsProgress && (
+                            <Text size="xs" c="dimmed">
+                              Current: {meetingsProgress}
+                            </Text>
+                          )}
+                        </Stack>
+                      </Card>
                     )}
 
                     {meetingsError && (
@@ -8736,13 +8965,13 @@ export default function App() {
                       </Alert>
                     )}
 
-                    {meetingsUpdatedAt && (
+                    {!trayMeetingsNeedsBootstrap && meetingsUpdatedAt && (
                       <Text size="xs" c="dimmed">
                         Last updated {dayjs(meetingsUpdatedAt).format('DD-MM-YYYY HH:mm')}
                       </Text>
                     )}
 
-                    {meetingsSorted.length ? (
+                    {!trayMeetingsNeedsBootstrap && meetingsSorted.length ? (
                       <Stack gap="xs" className="tray-meetings-list">
                         {meetingsSorted.map((meeting, index) => {
                           const meetingKey = getMeetingKey(meeting)
@@ -8792,11 +9021,11 @@ export default function App() {
                           )
                         })}
                       </Stack>
-                    ) : (
+                    ) : !trayMeetingsNeedsBootstrap ? (
                       <Text size="sm" c="dimmed">
                         {meetingsLoading ? 'Fetching meetings…' : 'No meetings found for this month.'}
                       </Text>
-                    )}
+                    ) : null}
                   </Stack>
                 ) : trayPanel === 'reports' ? (
                   <Stack gap="xs" className="tray-reports-panel">
@@ -8891,6 +9120,14 @@ export default function App() {
                           </Button>
                         </Group>
                       </Group>
+                      <Group justify="flex-end" mt={6}>
+                        <Switch
+                          size="xs"
+                          checked={jiraBudgetSortByProgress}
+                          onChange={event => setJiraBudgetSortByProgress(event.currentTarget.checked)}
+                          label="Sort by progress"
+                        />
+                      </Group>
                       <Stack gap={8} mt={8}>
                         {!jiraConfigured && (
                           <Text size="xs" c="dimmed">
@@ -8911,9 +9148,18 @@ export default function App() {
                           !jiraLoading &&
                           (jiraBudgetRows.length ? (
                             (() => {
-                              const rows = [...jiraBudgetRows].sort(
-                                (a, b) => b.spentSeconds - a.spentSeconds
-                              )
+                              const rows = [...jiraBudgetRows].sort((a, b) => {
+                                if (jiraBudgetSortByProgress) {
+                                  const aHasData = a.estimateSeconds > 0 || a.spentSeconds > 0
+                                  const bHasData = b.estimateSeconds > 0 || b.spentSeconds > 0
+                                  if (aHasData !== bHasData) return aHasData ? -1 : 1
+                                  const aRatio = a.estimateSeconds > 0 ? a.spentSeconds / a.estimateSeconds : 0
+                                  const bRatio = b.estimateSeconds > 0 ? b.spentSeconds / b.estimateSeconds : 0
+                                  if (bRatio !== aRatio) return bRatio - aRatio
+                                }
+                                if (b.spentSeconds !== a.spentSeconds) return b.spentSeconds - a.spentSeconds
+                                return a.customer.localeCompare(b.customer)
+                              })
                               const maxSpent = Math.max(
                                 ...rows.map(row => row.spentSeconds || 0),
                                 1
@@ -9055,6 +9301,11 @@ export default function App() {
                                                       </Badge>
                                                     </Group>
                                                     <Text size="xs" c="dimmed" lineClamp={1}>
+                                                      {item.assigneeName
+                                                        ? `Assigned to ${item.assigneeName}`
+                                                        : 'Unassigned'}
+                                                    </Text>
+                                                    <Text size="xs" c="dimmed" lineClamp={1}>
                                                       {formatJiraHours(spent)}
                                                       {estimate ? ` / ${formatJiraHours(estimate)}` : ' · No estimate'}
                                                     </Text>
@@ -9068,9 +9319,16 @@ export default function App() {
                                                             wrap="nowrap"
                                                             className="tray-project-subtask"
                                                           >
-                                                            <Text size="xs" c="dimmed" lineClamp={1}>
-                                                              {subtask.key} · {subtask.summary}
-                                                            </Text>
+                                                            <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
+                                                              <Text size="xs" c="dimmed" lineClamp={1}>
+                                                                {subtask.key} · {subtask.summary}
+                                                              </Text>
+                                                              <Text size="xs" c="dimmed" lineClamp={1}>
+                                                                {subtask.assigneeName
+                                                                  ? `Assigned to ${subtask.assigneeName}`
+                                                                  : 'Unassigned'}
+                                                              </Text>
+                                                            </Stack>
                                                             <Badge size="xs" variant="light" color="gray">
                                                               {formatJiraHours(subtask.timespent ?? 0)}
                                                             </Badge>
@@ -9125,6 +9383,14 @@ export default function App() {
                         onClick={() => setTraySettingsTab('mapping')}
                       >
                         Mapping
+                      </Button>
+                      <Button
+                        size="xs"
+                        className="tray-settings-tab-btn"
+                        variant={traySettingsTab === 'updates' ? 'light' : 'subtle'}
+                        onClick={() => setTraySettingsTab('updates')}
+                      >
+                        Updates
                       </Button>
                     </Group>
 
@@ -9282,63 +9548,6 @@ export default function App() {
                           )}
                         </Stack>
                       </Card>
-                      <Card radius="md" withBorder className="tray-settings-card">
-                        <Stack gap="xs">
-                          <Group justify="space-between" align="center">
-                            <Text fw={700} size="sm">
-                              App updates
-                            </Text>
-                            <Badge size="xs" color={getUpdateBadgeColor()} variant="light">
-                              {getUpdateBadgeLabel()}
-                            </Badge>
-                          </Group>
-                          <Text size="xs" c="dimmed">
-                            {appUpdateState.message ||
-                              'Check for updates and install the latest signed release.'}
-                          </Text>
-                          {appUpdateState.releaseDate && (
-                            <Text size="xs" c="dimmed">
-                              Release date: {dayjs(appUpdateState.releaseDate).format('DD-MM-YYYY HH:mm')}
-                            </Text>
-                          )}
-                          <Group justify="space-between" align="center">
-                            <Button
-                              size="xs"
-                              variant="light"
-                              onClick={() => {
-                                void runUpdateAction('check')
-                              }}
-                              loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
-                            >
-                              Check now
-                            </Button>
-                            <Group gap="xs">
-                              <Button
-                                size="xs"
-                                variant="default"
-                                onClick={() => {
-                                  void runUpdateAction('download')
-                                }}
-                                disabled={appUpdateState.state !== 'available'}
-                                loading={appUpdateActionLoading && appUpdateState.state === 'downloading'}
-                              >
-                                Download
-                              </Button>
-                              <Button
-                                size="xs"
-                                color="teal"
-                                onClick={() => {
-                                  void runUpdateAction('install')
-                                }}
-                                disabled={appUpdateState.state !== 'ready'}
-                                loading={appUpdateActionLoading && appUpdateState.state === 'ready'}
-                              >
-                                Restart & install
-                              </Button>
-                            </Group>
-                          </Group>
-                        </Stack>
-                      </Card>
                       </Stack>
                     )}
 
@@ -9403,8 +9612,9 @@ export default function App() {
                                 {trayReportedCustomers.slice(0, 20).map(customer => (
                                   <Group
                                     key={customer}
+                                    className="tray-mapping-row"
                                     justify="space-between"
-                                    align="center"
+                                    align="flex-start"
                                     wrap="nowrap"
                                   >
                                     <Stack gap={4} className="tray-mapping-customer-stack">
@@ -9514,6 +9724,103 @@ export default function App() {
                         </Card>
                       </Stack>
                     )}
+
+                    {traySettingsTab === 'updates' && (
+                      <Stack gap="xs">
+                        <Card radius="md" withBorder className="tray-settings-card">
+                          <Stack gap="xs">
+                            <Group justify="space-between" align="center">
+                              <Text fw={700} size="sm">
+                                App updates
+                              </Text>
+                              <Badge size="xs" color={getUpdateBadgeColor()} variant="light">
+                                {getUpdateBadgeLabel()}
+                              </Badge>
+                            </Group>
+                            <Group justify="space-between" align="center" wrap="nowrap">
+                              <Text size="xs" c="dimmed">
+                                Current version
+                              </Text>
+                              <Badge size="xs" variant="outline" color="gray">
+                                v{currentVersionLabel}
+                              </Badge>
+                            </Group>
+                            {updateVersionLabel && (
+                              <Group justify="space-between" align="center" wrap="nowrap">
+                                <Text size="xs" c="dimmed">
+                                  Available version
+                                </Text>
+                                <Badge size="xs" variant="light" color="blue">
+                                  v{updateVersionLabel}
+                                </Badge>
+                              </Group>
+                            )}
+                            <Text size="xs" c="dimmed">
+                              {appUpdateState.message ||
+                                'Check for updates and install the latest signed release.'}
+                            </Text>
+                            {appUpdateState.releaseDate && (
+                              <Text size="xs" c="dimmed">
+                                Release date: {dayjs(appUpdateState.releaseDate).format('DD-MM-YYYY HH:mm')}
+                              </Text>
+                            )}
+                            {updateChangelogItems.length > 0 && (
+                              <Stack gap={4} className="update-changelog-list">
+                                <Text size="xs" fw={600}>
+                                  Changelog
+                                </Text>
+                                {updateChangelogItems.map((item, index) => (
+                                  <Text key={`${item}-${index}`} size="xs" c="dimmed">
+                                    • {item}
+                                  </Text>
+                                ))}
+                              </Stack>
+                            )}
+                            {updateChangelogItems.length === 0 && (
+                              <Text size="xs" c="dimmed">
+                                Changelog will appear here when release notes are available.
+                              </Text>
+                            )}
+                            <Group justify="space-between" align="center">
+                              <Button
+                                size="xs"
+                                variant="light"
+                                onClick={() => {
+                                  void runUpdateAction('check')
+                                }}
+                                loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
+                              >
+                                Check now
+                              </Button>
+                              <Group gap="xs">
+                                <Button
+                                  size="xs"
+                                  variant="default"
+                                  onClick={() => {
+                                    void runUpdateAction('download')
+                                  }}
+                                  disabled={appUpdateState.state !== 'available'}
+                                  loading={appUpdateActionLoading && appUpdateState.state === 'downloading'}
+                                >
+                                  Download
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  color="teal"
+                                  onClick={() => {
+                                    void runUpdateAction('install')
+                                  }}
+                                  disabled={appUpdateState.state !== 'ready'}
+                                  loading={appUpdateActionLoading && appUpdateState.state === 'ready'}
+                                >
+                                  Restart & install
+                                </Button>
+                              </Group>
+                            </Group>
+                          </Stack>
+                        </Card>
+                      </Stack>
+                    )}
                   </Stack>
                 )}
               </div>
@@ -9557,7 +9864,7 @@ export default function App() {
                         const dateKey = trayDayEditorDateKey || ''
                         const meta = taskMetaById.get(report.taskId)
                         const projectLabel = meta?.projectName || report.projectInstance || 'Project'
-                        const customerLabel = meta?.customerName || 'Customer'
+                        const customerLabel = getCustomerDisplayName(meta?.customerName || 'Customer')
                         const isEditing =
                           editingEntry?.dateKey === dateKey && editingEntry?.index === report.dayIndex
                         const timeRange =
@@ -9974,6 +10281,24 @@ export default function App() {
                       {getUpdateBadgeLabel()}
                     </Badge>
                   </Group>
+                  <Group justify="space-between" align="center" wrap="nowrap">
+                    <Text size="xs" c="dimmed">
+                      Current version
+                    </Text>
+                    <Badge size="xs" variant="outline" color="gray">
+                      v{currentVersionLabel}
+                    </Badge>
+                  </Group>
+                  {updateVersionLabel && (
+                    <Group justify="space-between" align="center" wrap="nowrap">
+                      <Text size="xs" c="dimmed">
+                        Available version
+                      </Text>
+                      <Badge size="xs" variant="light" color="blue">
+                        v{updateVersionLabel}
+                      </Badge>
+                    </Group>
+                  )}
                   <Text size="xs" c="dimmed">
                     {appUpdateState.message ||
                       'Check for updates and install the latest signed release.'}
@@ -9981,6 +10306,23 @@ export default function App() {
                   {appUpdateState.releaseDate && (
                     <Text size="xs" c="dimmed">
                       Release date: {dayjs(appUpdateState.releaseDate).format('DD-MM-YYYY HH:mm')}
+                    </Text>
+                  )}
+                  {updateChangelogItems.length > 0 && (
+                    <Stack gap={4} className="update-changelog-list">
+                      <Text size="xs" fw={600}>
+                        Changelog
+                      </Text>
+                      {updateChangelogItems.map((item, index) => (
+                        <Text key={`${item}-${index}`} size="xs" c="dimmed">
+                          • {item}
+                        </Text>
+                      ))}
+                    </Stack>
+                  )}
+                  {updateChangelogItems.length === 0 && (
+                    <Text size="xs" c="dimmed">
+                      Changelog will appear here when release notes are available.
                     </Text>
                   )}
                   <Group justify="space-between" align="center">
@@ -10779,7 +11121,7 @@ export default function App() {
                                 key={customer}
                                 className="jira-mapping-row"
                                 justify="space-between"
-                                align="center"
+                                align="flex-start"
                                 wrap="wrap"
                               >
                                 <Stack gap={4} className="jira-customer-stack">

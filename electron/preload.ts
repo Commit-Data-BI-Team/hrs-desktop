@@ -165,6 +165,7 @@ contextBridge.exposeInMainWorld('hrs', {
   openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
+  getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getUpdateState: () => ipcRenderer.invoke('app:getUpdateState'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
@@ -174,7 +175,9 @@ contextBridge.exposeInMainWorld('hrs', {
       state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
       message?: string
       version?: string
+      currentVersion?: string
       releaseDate?: string
+      changelog?: string[]
       percent?: number
     }) => void
   ) => {
@@ -191,7 +194,9 @@ contextBridge.exposeInMainWorld('hrs', {
           | 'error'
         message?: string
         version?: string
+        currentVersion?: string
         releaseDate?: string
+        changelog?: string[]
         percent?: number
       }
     ) => handler(state)

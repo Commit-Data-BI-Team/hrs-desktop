@@ -69,7 +69,7 @@ type AppUpdateState = {
 type UpdaterLike = {
   autoDownload: boolean
   autoInstallOnAppQuit: boolean
-  setFeedURL: (options: { provider: string; url: string }) => void
+  setFeedURL: (options: Record<string, unknown>) => void
   checkForUpdates: () => Promise<unknown>
   downloadUpdate: () => Promise<unknown>
   quitAndInstall: () => void
@@ -97,7 +97,9 @@ function setUpdateDisabled(message: string) {
 
 async function checkForUpdatesNow() {
   if (!updaterConfigured || !appUpdater) {
-    setUpdateDisabled('Updates are not configured for this build.')
+    if (latestUpdateState.state !== 'disabled') {
+      setUpdateDisabled('Updates are not configured for this build.')
+    }
     return null
   }
   try {
@@ -145,10 +147,47 @@ async function setupAutoUpdater() {
       logInfo('[updater] using feed URL from HRS_UPDATE_FEED_URL')
     } else {
       const defaultConfigPath = path.join(process.resourcesPath, 'app-update.yml')
-      updaterConfigured = fs.existsSync(defaultConfigPath)
+      if (fs.existsSync(defaultConfigPath)) {
+        updaterConfigured = true
+      } else {
+        // Fallback: if packaged app lacks app-update.yml, use publish config from package.json.
+        try {
+          const packageJsonPath = path.join(app.getAppPath(), 'package.json')
+          const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8')) as {
+            build?: { publish?: Array<Record<string, unknown>> | Record<string, unknown> }
+          }
+          const publishRaw = pkg.build?.publish
+          const publishList = Array.isArray(publishRaw)
+            ? publishRaw
+            : publishRaw
+              ? [publishRaw]
+              : []
+          const first = publishList[0] ?? null
+          const provider =
+            first && typeof first.provider === 'string' ? first.provider.toLowerCase() : null
+          if (provider === 'github') {
+            const owner = typeof first.owner === 'string' ? first.owner : ''
+            const repo = typeof first.repo === 'string' ? first.repo : ''
+            if (owner && repo) {
+              appUpdater.setFeedURL({ provider: 'github', owner, repo })
+              updaterConfigured = true
+              logInfo('[updater] using GitHub publish config fallback', `${owner}/${repo}`)
+            }
+          } else if (provider === 'generic') {
+            const url = typeof first.url === 'string' ? first.url.trim() : ''
+            if (url) {
+              appUpdater.setFeedURL({ provider: 'generic', url })
+              updaterConfigured = true
+              logInfo('[updater] using generic publish config fallback')
+            }
+          }
+        } catch (error) {
+          logWarn('[updater] failed to read package publish config fallback', error)
+        }
+      }
       if (!updaterConfigured) {
         setUpdateDisabled(
-          'Missing update feed. Set HRS_UPDATE_FEED_URL or publish with app-update.yml.'
+          'Missing update feed. Set HRS_UPDATE_FEED_URL or ensure app-update.yml is bundled.'
         )
         return
       }

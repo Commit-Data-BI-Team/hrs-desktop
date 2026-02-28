@@ -1,10 +1,12 @@
 name: Build & Release
 
 on:
-  # Trigger on version tags (e.g., v1.0.0, v1.2.3)
+  # Test builds on branches (release publishing is handled by release.yml)
   push:
-    tags:
-      - 'v*'
+    branches:
+      - main
+      - master
+      - develop
   
   # Allow manual trigger from GitHub UI
   workflow_dispatch:
@@ -56,15 +58,6 @@ jobs:
             dist/*.zip
           retention-days: 30
       
-      - name: 📝 Upload to GitHub Release (if tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            dist/*.dmg
-            dist/*.zip
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-windows:
     name: Build Windows
@@ -102,14 +95,6 @@ jobs:
             dist/*.exe
           retention-days: 30
       
-      - name: 📝 Upload to GitHub Release (if tag)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            dist/*.exe
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   build-summary:
     name: Build Summary
@@ -127,10 +112,5 @@ jobs:
           echo "- Windows: ${{ needs.build-windows.result }}" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          if [ "${{ github.ref_type }}" == "tag" ]; then
-            echo "### 📦 Release created at:" >> $GITHUB_STEP_SUMMARY
-            echo "https://github.com/${{ github.repository }}/releases/tag/${{ github.ref_name }}" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "### 📦 Download artifacts from:" >> $GITHUB_STEP_SUMMARY
-            echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "### 📦 Download artifacts from:" >> $GITHUB_STEP_SUMMARY
+          echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY

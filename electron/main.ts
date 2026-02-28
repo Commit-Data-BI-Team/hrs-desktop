@@ -85,6 +85,22 @@ let updaterConfigured = false
 let latestUpdateState: AppUpdateState = { state: 'idle' }
 let appUpdater: UpdaterLike | null = null
 
+function formatUpdaterError(error: unknown): string {
+  const raw = error instanceof Error ? error.message || String(error) : String(error)
+  const compact = raw.replace(/\s+/g, ' ').trim()
+  const withoutHeaders = compact.split(/\bHeaders:\b/i)[0]?.trim() ?? compact
+  const redacted = redactLogText(withoutHeaders)
+
+  if (/releases\.atom/i.test(redacted) && /\b404\b/.test(redacted)) {
+    return 'Update feed returned 404. Repository is likely private or no public release feed is available.'
+  }
+  if (/authentication token is correct/i.test(redacted) || /unauthorized|forbidden/i.test(redacted)) {
+    return 'Update feed requires authentication. Configure a public update feed for end users.'
+  }
+
+  return redacted.length > 260 ? `${redacted.slice(0, 257)}...` : redacted
+}
+
 function emitUpdateState(next: AppUpdateState) {
   latestUpdateState = next
   const targets = [mainWindow, trayWindow, reportsWindow, settingsWindow, meetingsWindow, floatingWindow]
@@ -110,8 +126,8 @@ async function checkForUpdatesNow() {
     emitUpdateState({ state: 'checking' })
     return await appUpdater.checkForUpdates()
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logError('[updater] check failed', message)
+    const message = formatUpdaterError(error)
+    logError('[updater] check failed', error)
     emitUpdateState({ state: 'error', message })
     return null
   }
@@ -230,7 +246,7 @@ async function setupAutoUpdater() {
       }
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
+    const message = formatUpdaterError(error)
     logError('[updater] failed to configure updater', message)
     setUpdateDisabled(message)
     return
@@ -272,8 +288,8 @@ async function setupAutoUpdater() {
     })
   })
   appUpdater.on('error', error => {
-    const message = error instanceof Error ? error.message : String(error)
-    logError('[updater] runtime error', message)
+    const message = formatUpdaterError(error)
+    logError('[updater] runtime error', error)
     emitUpdateState({ state: 'error', message })
   })
 
@@ -1036,7 +1052,7 @@ app.whenReady().then(() => {
       await appUpdater.downloadUpdate()
       return true
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = formatUpdaterError(error)
       emitUpdateState({ state: 'error', message })
       return false
     }

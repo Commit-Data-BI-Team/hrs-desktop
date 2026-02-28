@@ -1,5 +1,6 @@
 import { app, BrowserWindow, ipcMain, nativeImage, session, Tray, Menu, screen } from 'electron'
 import fs from 'node:fs'
+import { createRequire } from 'node:module'
 import path from 'node:path'
 import util from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -11,6 +12,7 @@ import { registerNotificationIpc } from './ipc/notifications'
 import { registerMeetingsIpc } from './ipc/meetings'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const nodeRequire = createRequire(import.meta.url)
 
 let mainWindow: BrowserWindow | null = null
 let floatingWindow: BrowserWindow | null = null
@@ -57,6 +59,8 @@ const meetingsWindowSize = { width: 1220, height: 860 }
 const MAIN_LOG_MAX_BYTES = 2 * 1024 * 1024
 const MAIN_LOG_ROTATIONS = 4
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+const DEFAULT_GITHUB_UPDATE_OWNER = 'Commit-Data-BI-Team'
+const DEFAULT_GITHUB_UPDATE_REPO = 'hrs-desktop'
 
 type AppUpdateState = {
   state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
@@ -115,20 +119,46 @@ async function checkForUpdatesNow() {
 
 async function ensureUpdaterLoaded() {
   if (appUpdater) return true
-  try {
-    const updaterModuleName = 'electron-updater'
-    const updaterModule = (await import(updaterModuleName)) as { autoUpdater?: UpdaterLike }
-    if (!updaterModule?.autoUpdater) {
-      throw new Error('autoUpdater export not found')
-    }
-    appUpdater = updaterModule.autoUpdater
+  const loadErrors: string[] = []
+  const tryAttachUpdater = (mod: unknown): boolean => {
+    const candidate = mod as
+      | UpdaterLike
+      | { autoUpdater?: UpdaterLike; default?: UpdaterLike | { autoUpdater?: UpdaterLike } }
+      | null
+      | undefined
+    const updater =
+      candidate && typeof candidate === 'object'
+        ? candidate.autoUpdater ||
+          (candidate.default && typeof candidate.default === 'object'
+            ? (candidate.default as { autoUpdater?: UpdaterLike }).autoUpdater
+            : undefined) ||
+          ((candidate.default as UpdaterLike | undefined) ?? undefined)
+        : undefined
+    if (!updater || typeof updater.checkForUpdates !== 'function') return false
+    appUpdater = updater
     return true
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error)
-    logWarn('[updater] module not available', message)
-    setUpdateDisabled('Updater package missing. Run `npm install` to include electron-updater.')
-    return false
   }
+
+  try {
+    const required = nodeRequire('electron-updater')
+    if (tryAttachUpdater(required)) return true
+    loadErrors.push('require() succeeded but no autoUpdater export found')
+  } catch (error) {
+    loadErrors.push(error instanceof Error ? error.message : String(error))
+  }
+
+  try {
+    const imported = await import('electron-updater')
+    if (tryAttachUpdater(imported)) return true
+    loadErrors.push('import() succeeded but no autoUpdater export found')
+  } catch (error) {
+    loadErrors.push(error instanceof Error ? error.message : String(error))
+  }
+
+  const message = loadErrors.join(' | ')
+  logWarn('[updater] module not available', message)
+  setUpdateDisabled('Updater package missing or invalid export in this build.')
+  return false
 }
 
 async function setupAutoUpdater() {
@@ -186,10 +216,17 @@ async function setupAutoUpdater() {
         }
       }
       if (!updaterConfigured) {
-        setUpdateDisabled(
-          'Missing update feed. Set HRS_UPDATE_FEED_URL or ensure app-update.yml is bundled.'
+        // Final fallback for this app: fixed GitHub repository updater feed.
+        appUpdater.setFeedURL({
+          provider: 'github',
+          owner: DEFAULT_GITHUB_UPDATE_OWNER,
+          repo: DEFAULT_GITHUB_UPDATE_REPO
+        })
+        updaterConfigured = true
+        logInfo(
+          '[updater] using hardcoded GitHub fallback',
+          `${DEFAULT_GITHUB_UPDATE_OWNER}/${DEFAULT_GITHUB_UPDATE_REPO}`
         )
-        return
       }
     }
   } catch (error) {
@@ -1016,6 +1053,9 @@ app.whenReady().then(() => {
   })
   if (startInTray && trayReady) {
     logInfo('[main] starting in tray-only mode (main window lazy)')
+    // Show tray panel once on startup so users see the app immediately.
+    trayOpenOnReady = true
+    createTrayWindow()
   } else {
     createMainWindow(false)
   }

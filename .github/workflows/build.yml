@@ -30,7 +30,7 @@ jobs:
       - name: 🔧 Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
       
       - name: 📦 Install dependencies
@@ -77,7 +77,7 @@ jobs:
       - name: 🔧 Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: '18'
+          node-version: '20'
           cache: 'npm'
       
       - name: 📦 Install dependencies
@@ -134,4 +134,3 @@ jobs:
             echo "### 📦 Download artifacts from:" >> $GITHUB_STEP_SUMMARY
             echo "https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}" >> $GITHUB_STEP_SUMMARY
           fi
-

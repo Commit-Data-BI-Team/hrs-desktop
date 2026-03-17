@@ -12,7 +12,7 @@ const encryptedStore = new Store({
  */
 export function setSecureCredential(key: string, value: string): void {
   if (!safeStorage.isEncryptionAvailable()) {
-    console.warn('[security] OS encryption not available, falling back to encrypted store')
+    console.warn('[security] OS encryption not available, using fallback store')
     // Fallback: still store encrypted, just not using OS keychain
     encryptedStore.set(key, value)
     return
@@ -21,9 +21,8 @@ export function setSecureCredential(key: string, value: string): void {
   try {
     const encrypted = safeStorage.encryptString(value)
     encryptedStore.set(key, encrypted.toString('base64'))
-    console.log('[security] Credential stored securely:', key)
   } catch (error) {
-    console.error('[security] Failed to encrypt credential:', error)
+    console.error('[security] Failed to encrypt credential')
     throw new Error('Failed to store credential securely')
   }
 }
@@ -47,7 +46,7 @@ export function getSecureCredential(key: string): string | null {
     const buffer = Buffer.from(encrypted, 'base64')
     return safeStorage.decryptString(buffer)
   } catch (error) {
-    console.error('[security] Failed to decrypt credential:', error)
+    console.error('[security] Failed to decrypt credential')
     // Might be an old unencrypted value
     return typeof encrypted === 'string' ? encrypted : null
   }
@@ -58,7 +57,6 @@ export function getSecureCredential(key: string): string | null {
  */
 export function deleteSecureCredential(key: string): void {
   encryptedStore.delete(key)
-  console.log('[security] Credential deleted:', key)
 }
 
 /**
@@ -95,7 +93,7 @@ export function migratePlainToSecure(
         migrated++
       }
     } catch (error) {
-      console.error(`[security] Failed to migrate ${key}:`, error)
+      console.error('[security] Failed to migrate one credential')
       failed.push(key)
     }
   }
@@ -103,4 +101,3 @@ export function migratePlainToSecure(
   console.log(`[security] Migration complete: ${migrated} migrated, ${failed.length} failed`)
   return { migrated, failed }
 }
-

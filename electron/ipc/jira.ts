@@ -24,6 +24,24 @@ const JIRA_PERSIST_TTL_MS = 6 * 60 * 60 * 1000
 const JIRA_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
 const JIRA_E2E = process.env.HRS_E2E === '1' || process.env.JIRA_E2E === '1'
 
+function redactSensitiveText(input: string): string {
+  let text = input
+  text = text.replace(
+    /("?(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|token|password|passwd|secret|customauth|sessionid|csrftoken)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+    '$1[REDACTED]'
+  )
+  text = text.replace(/\b(Bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi, '$1 [REDACTED]')
+  text = text.replace(
+    /([?&](?:token|password|passwd|auth|authorization|cookie|session|apikey|api_key|customauth)=)[^&\s]+/gi,
+    '$1[REDACTED]'
+  )
+  return text
+}
+
+function safeLogLine(value: string) {
+  return redactSensitiveText(value).replace(/\s+/g, ' ').trim().slice(0, 500)
+}
+
 type JiraWorkItemDetailsPayload = {
   items: JiraWorkItem[]
   partial: boolean
@@ -635,7 +653,10 @@ export function registerJiraIpc() {
 
   ipcMain.handle('jira:getWorkItemDetails', async (_event, epicKey: string, forceRefresh = false) => {
     const safeEpicKey = validateEpicKey(epicKey)
-    const safeForce = typeof forceRefresh === 'boolean' ? forceRefresh : false
+    if (forceRefresh !== undefined && typeof forceRefresh !== 'boolean') {
+      throw new Error('Invalid forceRefresh flag')
+    }
+    const safeForce = Boolean(forceRefresh)
     const cacheKey = `workitemdetails:${safeEpicKey}`
     const startedAt = Date.now()
 
@@ -704,7 +725,7 @@ export function registerJiraIpc() {
       )
       return payload
     } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
+      const message = safeLogLine(error instanceof Error ? error.message : String(error))
       console.error(
         '[jira:getWorkItemDetails] Error fetching for',
         safeEpicKey,
@@ -1170,7 +1191,7 @@ async function jiraRequest(path: string, options: RequestInit = {}, attempt = 0)
       throw new Error('JIRA_AUTH_REQUIRED')
     }
     const text = await res.text()
-    throw new Error(`JIRA ${res.status}: ${text}`)
+    throw new Error(`JIRA ${res.status}: ${safeLogLine(text)}`)
   }
   if (res.status === 204) return {}
   return res.json()

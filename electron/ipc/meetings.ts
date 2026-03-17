@@ -5,7 +5,9 @@ import fs from 'node:fs'
 import {
   validateEnum,
   validateExactObject,
-  validateOptionalString
+  validateNumberRange,
+  validateOptionalString,
+  validateStringLength
 } from '../utils/validation'
 
 type MeetingsResult = {
@@ -31,6 +33,83 @@ type MeetingsOptions = {
 }
 
 const REQUIRED_PACKAGES = ['selenium', 'requests', 'pytz']
+
+function redactSensitiveText(input: string): string {
+  let value = input
+  value = value.replace(
+    /("?(?:authorization|cookie|set-cookie|x-api-key|api[_-]?key|token|password|passwd|secret|customauth|sessionid|csrftoken)"?\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;}\]]+)/gi,
+    '$1[REDACTED]'
+  )
+  value = value.replace(/\b(Bearer)\s+[A-Za-z0-9\-._~+/]+=*/gi, '$1 [REDACTED]')
+  value = value.replace(
+    /([?&](?:token|password|passwd|auth|authorization|cookie|session|apikey|api_key|customauth)=)[^&\s]+/gi,
+    '$1[REDACTED]'
+  )
+  return value
+}
+
+function sanitizeProgressLine(line: string): string {
+  return redactSensitiveText(line).replace(/\s+/g, ' ').trim().slice(0, 500)
+}
+
+function validateMeetingsResultPayload(payload: unknown): MeetingsResult {
+  const safe = validateExactObject<{
+    month?: unknown
+    count?: unknown
+    meetings?: unknown
+  }>(payload ?? {}, ['month', 'count', 'meetings'], 'meetings result')
+
+  const month = validateStringLength(safe.month, 7, 7)
+  if (!/^\d{4}-\d{2}$/.test(month)) {
+    throw new Error('Invalid meetings result month')
+  }
+  if (!Array.isArray(safe.meetings)) {
+    throw new Error('Invalid meetings result: meetings must be an array')
+  }
+  if (safe.meetings.length > 5000) {
+    throw new Error('Invalid meetings result: too many meetings')
+  }
+
+  const meetings = safe.meetings.map((entry, index) => {
+    const item = validateExactObject<{
+      subject?: unknown
+      startTime?: unknown
+      endTime?: unknown
+      participants?: unknown
+      attendanceCount?: unknown
+      attendanceEmails?: unknown
+      attendeeEmails?: unknown
+    }>(
+      entry,
+      ['subject', 'startTime', 'endTime', 'participants', 'attendanceCount', 'attendanceEmails', 'attendeeEmails'],
+      `meeting item ${index + 1}`
+    )
+    const attendanceCountRaw =
+      item.attendanceCount === null
+        ? null
+        : validateNumberRange(item.attendanceCount, 0, 10000, { integer: true })
+    const validateEmailList = (value: unknown): string[] => {
+      if (!Array.isArray(value)) return []
+      return value.slice(0, 200).map(email => validateStringLength(email, 0, 320))
+    }
+    return {
+      subject: validateStringLength(item.subject, 0, 500),
+      startTime: validateStringLength(item.startTime, 1, 64),
+      endTime: validateStringLength(item.endTime, 1, 64),
+      participants: validateStringLength(item.participants, 0, 2000),
+      attendanceCount: attendanceCountRaw,
+      attendanceEmails: validateEmailList(item.attendanceEmails),
+      attendeeEmails: validateEmailList(item.attendeeEmails)
+    }
+  })
+
+  const count = validateNumberRange(safe.count, 0, 5000, { integer: true })
+  return {
+    month,
+    count: Math.min(count, meetings.length),
+    meetings
+  }
+}
 
 function shouldIgnoreProgressLine(line: string) {
   const value = line.trim()
@@ -183,7 +262,7 @@ export function registerMeetingsIpc() {
         const lines = stderrBuffer.split(/\r?\n/)
         stderrBuffer = lines.pop() ?? ''
         for (const line of lines) {
-          const trimmed = line.trim()
+          const trimmed = sanitizeProgressLine(line)
           if (trimmed && !shouldIgnoreProgressLine(trimmed)) {
             event.sender.send('meetings:progress', trimmed)
           }
@@ -193,19 +272,20 @@ export function registerMeetingsIpc() {
         reject(err)
       })
       child.on('close', code => {
-        const remaining = stderrBuffer.trim()
+        const remaining = sanitizeProgressLine(stderrBuffer)
         if (remaining && !shouldIgnoreProgressLine(remaining)) {
           event.sender.send('meetings:progress', remaining)
         }
         if (code !== 0) {
-          reject(new Error(stderr.trim() || `Meetings script failed (${code})`))
+          const safeError = sanitizeProgressLine(stderr)
+          reject(new Error(safeError || `Meetings script failed (${code})`))
           return
         }
         try {
           const parsed = JSON.parse(stdout)
-          resolve(parsed as MeetingsResult)
+          resolve(validateMeetingsResultPayload(parsed))
         } catch (err) {
-          reject(new Error(`Invalid meetings JSON: ${(err as Error).message}`))
+          reject(new Error(`Invalid meetings JSON: ${sanitizeProgressLine((err as Error).message)}`))
         }
       })
     })

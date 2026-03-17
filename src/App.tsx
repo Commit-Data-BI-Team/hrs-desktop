@@ -1622,6 +1622,7 @@ export default function App() {
   const logWorkRef = useRef<HTMLDivElement | null>(null)
   const reportsCacheRef = useRef<Map<string, MonthlyReport>>(new Map())
   const reportsPrefetchRef = useRef<Set<string>>(new Set())
+  const currentMonthTrackerRef = useRef(dayjs().format('YYYY-MM'))
   const [reportListWidth, setReportListWidth] = useState(0)
   const [hoursTooltip, setHoursTooltip] = useState<{
     x: number
@@ -1675,7 +1676,8 @@ export default function App() {
   const isMainWindow =
     !isFloating && !isTray && !isReportsWindow && !isSettingsWindow && !isMeetingsWindow
   const shouldLoadLogData = isMainWindow || isTray || isReportsWindow
-  const shouldLoadJiraEpics = isMainWindow || isReportsWindow
+  const shouldLoadWorkLogs = shouldLoadLogData || isFloating
+  const shouldLoadJiraEpics = isMainWindow || isReportsWindow || isFloating
   const shouldLoadTrayReportJira = isTray && loggedIn
   const shouldLoadJiraBudgetData = shouldLoadJiraEpics || shouldLoadTrayReportJira
   const isAuxWindow = isSettingsWindow || isMeetingsWindow
@@ -5572,6 +5574,49 @@ export default function App() {
   }, [loggedIn, shouldLoadLogData, reportMonth])
 
   useEffect(() => {
+    const syncMonthOnRollover = () => {
+      const now = dayjs()
+      const currentMonthKey = now.format('YYYY-MM')
+      const previousCurrentMonthKey = currentMonthTrackerRef.current
+      if (currentMonthKey === previousCurrentMonthKey) return
+      currentMonthTrackerRef.current = currentMonthKey
+      if (dayjs(reportMonth).format('YYYY-MM') !== previousCurrentMonthKey) return
+
+      const nextDate = now.toDate()
+      setReportMonth(nextDate)
+      setSelectedReportDate(prev => {
+        if (!prev) return nextDate
+        return dayjs(prev).format('YYYY-MM') === previousCurrentMonthKey ? nextDate : prev
+      })
+      setLogDate(prev => {
+        if (!prev) return nextDate
+        return dayjs(prev).format('YYYY-MM') === previousCurrentMonthKey ? nextDate : prev
+      })
+
+      if (loggedIn && shouldLoadLogData) {
+        void loadReportsForMonth(nextDate)
+      }
+    }
+
+    syncMonthOnRollover()
+    const intervalId = window.setInterval(syncMonthOnRollover, 60 * 1000)
+    const onFocus = () => syncMonthOnRollover()
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible') {
+        syncMonthOnRollover()
+      }
+    }
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onVisibility)
+
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onVisibility)
+    }
+  }, [reportMonth, loggedIn, shouldLoadLogData])
+
+  useEffect(() => {
     if (!loggedIn || !shouldLoadLogData) return
     if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
     const intervalId = window.setInterval(() => {
@@ -5765,9 +5810,9 @@ export default function App() {
   }, [monthlyReport, reportMonth])
 
   useEffect(() => {
-    if (!loggedIn || !shouldLoadLogData) return
+    if (!loggedIn || !shouldLoadWorkLogs) return
     loadLogs()
-  }, [loggedIn, shouldLoadLogData])
+  }, [loggedIn, shouldLoadWorkLogs])
 
   useEffect(() => {
     if (!loggedIn || !isMainWindow || !logs.length) return

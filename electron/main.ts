@@ -1151,9 +1151,12 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
       icon: fs.existsSync(iconPath) ? iconPath : undefined,
       webPreferences: {
         session: loginSession,
-        // SECURITY: Login window needs less strict settings for HRS site compatibility
-        contextIsolation: false,  // Required for HRS login page
+        // SECURITY: keep login renderer isolated as well.
+        contextIsolation: true,
         nodeIntegration: false,
+        nodeIntegrationInWorker: false,
+        nodeIntegrationInSubFrames: false,
+        sandbox: true,
         webSecurity: true,
         allowRunningInsecureContent: false
       }

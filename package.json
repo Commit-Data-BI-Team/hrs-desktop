@@ -68,6 +68,7 @@
       "buildResources": "build",
       "output": "dist"
     },
+    "afterPack": "scripts/adhoc-sign-mac.mjs",
     "files": [
       "dist-renderer/**",
       "dist-electron/**",

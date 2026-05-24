@@ -36,6 +36,7 @@ import {
   IconCalendar,
   IconHistory,
   IconClipboardText,
+  IconListDetails,
   IconChartBar,
   IconSettings
 } from '@tabler/icons-react'
@@ -82,6 +83,19 @@ type MeetingItem = {
   attendanceCount: number | null
   attendanceEmails: string[]
   attendeeEmails: string[]
+}
+type AgendaItem = {
+  Type: string
+  Title: string
+  Owner: string
+  'Owner Email': string
+  'Start Date': string
+  'End Date'?: string
+  Priority: string
+  Status: string
+  Preview: string
+  Link: string
+  'Mission Reason': string
 }
 
 type WorkReportDay = {
@@ -1414,6 +1428,18 @@ export default function App() {
     Record<string, { updatedAt: string; meetings: MeetingItem[] }>
   >({})
   const [meetingClientMappings, setMeetingClientMappings] = useState<Record<string, string>>({})
+  const [agendaToken, setAgendaToken] = useState('')
+  const [agendaLoading, setAgendaLoading] = useState(false)
+  const [agendaError, setAgendaError] = useState<string | null>(null)
+  const [agendaProgress, setAgendaProgress] = useState<string | null>(null)
+  const [agendaItems, setAgendaItems] = useState<AgendaItem[]>([])
+  const [agendaSummary, setAgendaSummary] = useState<{
+    mailWindow: string
+    meetingWindow: string
+    unansweredEmails: number
+    meetingsThisWeek: number
+    outputDir: string
+  } | null>(null)
   const [meetingMappingOpen, setMeetingMappingOpen] = useState(false)
   const [meetingMappingMeeting, setMeetingMappingMeeting] = useState<MeetingItem | null>(null)
   const [meetingMappingKey, setMeetingMappingKey] = useState<string | null>(null)
@@ -1454,7 +1480,7 @@ export default function App() {
   const [trayEnterAnimating, setTrayEnterAnimating] = useState(false)
   const [trayClosingAnimating, setTrayClosingAnimating] = useState(false)
   const [trayPanel, setTrayPanel] = useState<
-    'log' | 'clockify' | 'meetings' | 'reports' | 'settings'
+    'log' | 'clockify' | 'meetings' | 'agenda' | 'reports' | 'settings'
   >('log')
   const [trayReportExpandedEpic, setTrayReportExpandedEpic] = useState<string | null>(null)
   const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'mapping' | 'updates'>('access')
@@ -1523,6 +1549,34 @@ export default function App() {
       unsubscribe?.()
     }
   }, [])
+  useEffect(() => {
+    if (!window?.hrs?.onAgendaProgress) return
+    const unsubscribe = window.hrs.onAgendaProgress(message => setAgendaProgress(message))
+    return () => unsubscribe?.()
+  }, [])
+
+  async function fetchAgenda() {
+    setAgendaLoading(true)
+    setAgendaError(null)
+    setAgendaProgress('Running agenda export…')
+    try {
+      const result = await window.hrs.getAgenda({ token: agendaToken.trim() || null })
+      setAgendaItems(result.missions || [])
+      setAgendaSummary({
+        mailWindow: result.mailWindow,
+        meetingWindow: result.meetingWindow,
+        unansweredEmails: result.unansweredEmails,
+        meetingsThisWeek: result.meetingsThisWeek,
+        outputDir: result.outputDir
+      })
+      setAgendaProgress('Agenda ready.')
+    } catch (err) {
+      setAgendaError(err instanceof Error ? err.message : String(err))
+      setAgendaProgress('Agenda fetch failed.')
+    } finally {
+      setAgendaLoading(false)
+    }
+  }
 
   useEffect(() => {
     if (!window?.hrs) return
@@ -1949,7 +2003,9 @@ export default function App() {
     await checkSession()
   }
 
-  function switchTrayPanel(nextPanel: 'log' | 'clockify' | 'meetings' | 'reports' | 'settings') {
+  function switchTrayPanel(
+    nextPanel: 'log' | 'clockify' | 'meetings' | 'agenda' | 'reports' | 'settings'
+  ) {
     if (nextPanel === trayPanel) return
     setTrayPanel(nextPanel)
   }
@@ -8422,6 +8478,19 @@ export default function App() {
                     className="tray-nav-icon-btn"
                     size={38}
                     radius="md"
+                    variant={trayPanel === 'agenda' ? 'light' : 'subtle'}
+                    onClick={() => switchTrayPanel('agenda')}
+                    aria-label="Agenda"
+                    title="Agenda"
+                  >
+                    <IconListDetails size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Reports" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
                     variant={trayPanel === 'reports' ? 'light' : 'subtle'}
                     onClick={() => {
                       switchTrayPanel('reports')
@@ -9071,6 +9140,55 @@ export default function App() {
                         {meetingsLoading ? 'Fetching meetings…' : 'No meetings found for this month.'}
                       </Text>
                     ) : null}
+                  </Stack>
+                ) : trayPanel === 'agenda' ? (
+                  <Stack gap="xs">
+                    <Card radius="md" withBorder>
+                      <Stack gap="xs">
+                        <Group justify="space-between">
+                          <Text fw={700} size="sm">
+                            Agenda (Microsoft Graph)
+                          </Text>
+                          <Badge variant="light">{meetingsSummary.totalMeetings} meetings loaded</Badge>
+                        </Group>
+                        <PasswordInput
+                          label="Graph access token"
+                          placeholder="Paste Graph token (optional if set in env)"
+                          value={agendaToken}
+                          onChange={event => setAgendaToken(event.currentTarget.value)}
+                          size="xs"
+                        />
+                        <Button size="xs" variant="light" onClick={() => void fetchAgenda()} loading={agendaLoading}>
+                          Fetch agenda
+                        </Button>
+                        {agendaProgress && <Text size="xs" c="dimmed">{agendaProgress}</Text>}
+                        {agendaError && <Alert color="red" variant="light">{agendaError}</Alert>}
+                        {agendaSummary && (
+                          <Text size="xs" c="dimmed">
+                            Unanswered emails: {agendaSummary.unansweredEmails} · Meetings this week:{' '}
+                            {agendaSummary.meetingsThisWeek}
+                          </Text>
+                        )}
+                        {agendaItems.length ? (
+                          <Stack gap={6}>
+                            {agendaItems.slice(0, 12).map((item, index) => (
+                              <Group key={`${item.Title}-${index}`} justify="space-between" wrap="nowrap">
+                                <Text size="xs" fw={600} lineClamp={1}>
+                                  {item.Title || 'Untitled'}
+                                </Text>
+                                <Text size="xs" c="dimmed">
+                                  {item['Start Date']}
+                                </Text>
+                              </Group>
+                            ))}
+                          </Stack>
+                        ) : (
+                          <Text size="xs" c="dimmed">
+                            No agenda items yet.
+                          </Text>
+                        )}
+                      </Stack>
+                    </Card>
                   </Stack>
                 ) : trayPanel === 'reports' ? (
                   <Stack gap="xs" className="tray-reports-panel">

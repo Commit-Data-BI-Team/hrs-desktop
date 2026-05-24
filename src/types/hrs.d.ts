@@ -103,6 +103,27 @@ type MeetingsResult = {
   count: number
   meetings: MeetingItem[]
 }
+type AgendaItem = {
+  Type: string
+  Title: string
+  Owner: string
+  'Owner Email': string
+  'Start Date': string
+  'End Date'?: string
+  Priority: string
+  Status: string
+  Preview: string
+  Link: string
+  'Mission Reason': string
+}
+type AgendaResult = {
+  mailWindow: string
+  meetingWindow: string
+  unansweredEmails: number
+  meetingsThisWeek: number
+  outputDir: string
+  missions: AgendaItem[]
+}
 
 type MeetingsCacheEntry = {
   updatedAt: string
@@ -306,6 +327,8 @@ type HrsApi = {
     password?: string | null
   }) => Promise<MeetingsResult>
   onMeetingsProgress: (handler: (message: string) => void) => () => void
+  getAgenda: (options: { token?: string | null }) => Promise<AgendaResult>
+  onAgendaProgress: (handler: (message: string) => void) => () => void
   openFloatingTimer: () => Promise<boolean>
   closeFloatingTimer: () => Promise<boolean>
   setFloatingCollapsed: (collapsed: boolean) => Promise<boolean>

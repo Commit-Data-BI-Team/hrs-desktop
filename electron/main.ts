@@ -10,6 +10,7 @@ import { registerPreferencesIpc } from './ipc/preferences'
 import { registerExportIpc } from './ipc/export'
 import { registerNotificationIpc } from './ipc/notifications'
 import { registerMeetingsIpc } from './ipc/meetings'
+import { registerAgendaIpc } from './ipc/agenda'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const nodeRequire = createRequire(import.meta.url)
@@ -1035,6 +1036,7 @@ app.whenReady().then(() => {
   registerExportIpc()
   registerNotificationIpc()
   registerMeetingsIpc()
+  registerAgendaIpc()
   void setupAutoUpdater()
   ipcMain.handle('app:openMainWindow', () => {
     showMainWindow()

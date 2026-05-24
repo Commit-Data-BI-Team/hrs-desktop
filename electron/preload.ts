@@ -157,6 +157,14 @@ contextBridge.exposeInMainWorld('hrs', {
       ipcRenderer.removeListener('meetings:progress', listener)
     }
   },
+  getAgenda: (options: { token?: string | null }) => ipcRenderer.invoke('agenda:run', options),
+  onAgendaProgress: (handler: (message: string) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, message: string) => handler(message)
+    ipcRenderer.on('agenda:progress', listener)
+    return () => {
+      ipcRenderer.removeListener('agenda:progress', listener)
+    }
+  },
   openFloatingTimer: () => ipcRenderer.invoke('app:openFloatingTimer'),
   closeFloatingTimer: () => ipcRenderer.invoke('app:closeFloatingTimer'),
   setFloatingCollapsed: (collapsed: boolean) =>

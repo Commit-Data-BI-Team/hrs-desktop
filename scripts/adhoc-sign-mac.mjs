@@ -34,8 +34,10 @@ export default async function afterPack(context) {
   const appPath = path.join(context.appOutDir, `${productFilename}.app`)
   const entitlementsPath = path.join(context.packager.projectDir, 'build', 'entitlements.mac.plist')
 
+  const signingIdentity = process.env.HRS_MAC_SIGN_IDENTITY?.trim() || '-'
+
   console.log(
-    `${PREFIX} start platform=${context.electronPlatformName} arch=${context.arch} ci=${process.env.CI || 'false'} appPath=${appPath}`
+    `${PREFIX} start platform=${context.electronPlatformName} arch=${context.arch} ci=${process.env.CI || 'false'} identity=${signingIdentity} appPath=${appPath}`
   )
 
   if (!fs.existsSync(appPath)) {
@@ -50,7 +52,7 @@ export default async function afterPack(context) {
     '--force',
     '--deep',
     '--sign',
-    '-',
+    signingIdentity,
     '--options',
     'runtime',
     '--entitlements',

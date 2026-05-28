@@ -32,9 +32,11 @@
     "@mantine/notifications": "^8.3.11",
     "@tabler/icons-react": "^3.36.1",
     "dayjs": "^1.11.19",
+    "electron-liquid-glass": "1.1.1",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.3.9",
     "keytar": "^7.9.0",
+    "liquid-glass-react": "1.1.1",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-window": "^1.8.10",
@@ -77,7 +79,9 @@
       "package.json"
     ],
     "asarUnpack": [
-      "scripts/**"
+      "scripts/**",
+      "node_modules/electron-liquid-glass/prebuilds/**",
+      "node_modules/**/*.node"
     ],
     "publish": [
       {

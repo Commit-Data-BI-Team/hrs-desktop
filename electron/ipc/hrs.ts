@@ -11,11 +11,73 @@ import {
 
 const HRS_ORIGIN = 'https://hrs.comm-it.co.il'
 const ADMIN_KEY_URL = `${HRS_ORIGIN}/admin/reactuserreporting/`
+const EMPLOYEE_ADMIN_URL = `${HRS_ORIGIN}/admin/sysmanage/employee/`
 const HRS_CACHE_TTL_MS = 5 * 60 * 1000
 const HRS_E2E = process.env.HRS_E2E === '1'
 const TIME_HHMM_REGEX = /^(?:[01]?\d|2[0-3]):[0-5]\d$/
 const HOURS_HHMM_REGEX = /^\d{1,2}:[0-5]\d$/
 const MAX_SAFE_ENTITY_ID = 1_000_000_000
+
+type EmployeeAdminItem = {
+  id: string
+  priorityId: string
+  fullName: string
+  role: string
+  internalId: string
+  username: string
+  email: string
+  phone: string
+  pnl: string
+  nextPnl: string
+  userRoles: string
+  reportsTo: string
+  positionType: string
+  maximumHours: string
+  isSubContractor: boolean
+  isActive: boolean
+  href: string
+}
+
+type EmployeeAccessResult = {
+  hasAccess: boolean
+  hasEmployees: boolean
+  currentEmployeeName: string | null
+  employees: EmployeeAdminItem[]
+  allEmployeesCount: number
+  source: 'directReports' | 'accessibleRows' | 'none'
+}
+
+type EmployeeHoursEntry = {
+  date: string
+  employee: string
+  customer: string
+  task: string
+  milestone: string
+  hoursHHMM: string
+  minutes: number
+  rawValue: string
+  taskId: string | null
+}
+
+type EmployeeHoursDay = {
+  date: string
+  totalMinutes: number
+  entries: EmployeeHoursEntry[]
+}
+
+type EmployeeHoursReport = {
+  employeeId: string
+  employeeName: string
+  fromDate: string
+  toDate: string
+  customerId: string
+  customerOptions: Array<{ value: string; label: string }>
+  dateColumns: string[]
+  days: EmployeeHoursDay[]
+  entries: EmployeeHoursEntry[]
+  totalMinutes: number
+  sourceUrl: string
+}
 
 const E2E_TASKS = [
   {
@@ -197,6 +259,379 @@ function validateLogWorkPayload(payload: unknown) {
   return { date, workLogs }
 }
 
+function decodeHtml(value: string): string {
+  return value
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+}
+
+function stripHtml(value: string): string {
+  return decodeHtml(value.replace(/<[^>]*>/g, ' '))
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function extractFirstMatch(html: string, pattern: RegExp): string {
+  const match = html.match(pattern)
+  return match?.[1] ? stripHtml(match[1]) : ''
+}
+
+function extractBooleanIcon(rowHtml: string, className: string): boolean {
+  const cellPattern = new RegExp(`<td[^>]*class=["'][^"']*${className}[^"']*["'][^>]*>([\\s\\S]*?)<\\/td>`, 'i')
+  const cell = rowHtml.match(cellPattern)?.[1] ?? ''
+  return /alt=["']True["']/i.test(cell) || /icon-yes/i.test(cell)
+}
+
+function normalizeEmployeeIdentity(value: string | null | undefined): string {
+  return (value ?? '')
+    .toLowerCase()
+    .replace(/@.*$/, '')
+    .replace(/[^a-z0-9א-ת]+/gi, '')
+    .trim()
+}
+
+function parseEmployeeRows(html: string): EmployeeAdminItem[] {
+  const tbody = html.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i)?.[1] ?? ''
+  const rows = Array.from(tbody.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)).map(match => match[1])
+  return rows
+    .map(rowHtml => {
+      const href = decodeHtml(
+        rowHtml.match(/<th[^>]*class=["'][^"']*field-id[^"']*["'][^>]*>[\s\S]*?<a[^>]*href=["']([^"']+)["']/i)?.[1] ?? ''
+      )
+      return {
+        id: extractFirstMatch(rowHtml, /<th[^>]*class=["'][^"']*field-id[^"']*["'][^>]*>([\s\S]*?)<\/th>/i),
+        priorityId: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-priority_id[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        fullName: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-full_name[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        role: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-job_title[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        internalId: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-internal_id[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        username: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-username[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        email: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-email[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        phone: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-phone[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        pnl: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-pnl[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        nextPnl: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-next_pnl[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        userRoles: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-user_roles_to_display[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        reportsTo: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-reports_to[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        positionType: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-partial_position_type[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        maximumHours: extractFirstMatch(rowHtml, /<td[^>]*class=["'][^"']*field-Maximum_hours[^"']*["'][^>]*>([\s\S]*?)<\/td>/i),
+        isSubContractor: extractBooleanIcon(rowHtml, 'field-is_sub_contractor'),
+        isActive: extractBooleanIcon(rowHtml, 'field-is_active'),
+        href: href.startsWith('http') ? href : `${HRS_ORIGIN}${href}`
+      }
+    })
+    .filter(employee => employee.id && employee.fullName)
+}
+
+function ddmmyyyyToIso(value: string): string | null {
+  const match = value.trim().match(/^(\d{2})\/(\d{2})\/(\d{4})$/)
+  if (!match) return null
+  return `${match[3]}-${match[2]}-${match[1]}`
+}
+
+function parseHoursToMinutes(value: string): number | null {
+  const clean = stripHtml(value).trim()
+  if (!clean || clean === '-' || clean === '–') return null
+  const hhmm = clean.match(/^(\d{1,3}):([0-5]\d)$/)
+  if (hhmm) {
+    return Number(hhmm[1]) * 60 + Number(hhmm[2])
+  }
+  const decimal = clean.replace(',', '.').match(/^(\d+(?:\.\d+)?)$/)
+  if (decimal) {
+    return Math.round(Number(decimal[1]) * 60)
+  }
+  return null
+}
+
+function formatMinutesHHMM(totalMinutes: number): string {
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = Math.abs(totalMinutes % 60)
+  return `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`
+}
+
+function parseSelectOptions(html: string, selectId: string): Array<{ value: string; label: string }> {
+  const select = html.match(
+    new RegExp(`<select[^>]*id=["']${selectId}["'][^>]*>([\\s\\S]*?)<\\/select>`, 'i')
+  )?.[1]
+  if (!select) return []
+  return Array.from(select.matchAll(/<option[^>]*value=["']([^"']*)["'][^>]*>([\s\S]*?)<\/option>/gi))
+    .map(match => ({
+      value: decodeHtml(match[1] ?? ''),
+      label: stripHtml(match[2] ?? '')
+    }))
+    .filter(option => option.label || option.value)
+}
+
+function parseNestedMetaCells(leftCellHtml: string): string[] {
+  const innerRow =
+    leftCellHtml.match(/<table[^>]*>[\s\S]*?<tr[^>]*>([\s\S]*?)<\/tr>[\s\S]*?<\/table>/i)?.[1] ??
+    leftCellHtml
+  return Array.from(innerRow.matchAll(/<td[^>]*>([\s\S]*?)<\/td>/gi))
+    .map(match => stripHtml(match[1] ?? ''))
+}
+
+function extractElementInner(html: string, tagName: string, openPattern: RegExp): string | null {
+  const openMatch = openPattern.exec(html)
+  if (!openMatch) return null
+  const tokenPattern = new RegExp(`<\\/?${tagName}\\b[^>]*>`, 'gi')
+  tokenPattern.lastIndex = openMatch.index
+  let depth = 0
+  let openEnd = -1
+  let tokenMatch: RegExpExecArray | null
+  while ((tokenMatch = tokenPattern.exec(html))) {
+    const token = tokenMatch[0]
+    if (token.startsWith('</')) {
+      depth -= 1
+      if (depth === 0 && openEnd >= 0) {
+        return html.slice(openEnd, tokenMatch.index)
+      }
+    } else {
+      depth += 1
+      if (depth === 1 && openEnd < 0) {
+        openEnd = tokenPattern.lastIndex
+      }
+    }
+  }
+  return null
+}
+
+function extractTopLevelElementInners(html: string, tagName: string): string[] {
+  const tokenPattern = new RegExp(`<\\/?${tagName}\\b[^>]*>`, 'gi')
+  const items: string[] = []
+  let depth = 0
+  let openEnd = -1
+  let tokenMatch: RegExpExecArray | null
+  while ((tokenMatch = tokenPattern.exec(html))) {
+    const token = tokenMatch[0]
+    if (token.startsWith('</')) {
+      depth -= 1
+      if (depth === 0 && openEnd >= 0) {
+        items.push(html.slice(openEnd, tokenMatch.index))
+        openEnd = -1
+      }
+    } else {
+      if (depth === 0) {
+        openEnd = tokenPattern.lastIndex
+      }
+      depth += 1
+    }
+  }
+  return items
+}
+
+function parseEmployeeHoursReportHtml(
+  html: string,
+  options: { employeeId: string; fromDate: string; toDate: string; customerId: string; sourceUrl: string }
+): EmployeeHoursReport {
+  const table = extractElementInner(html, 'table', /<table[^>]*id=["']result_list["'][^>]*>/i)
+  if (!table) {
+    throw new Error('Employee hours table not found')
+  }
+
+  const header = extractElementInner(table, 'thead', /<thead[^>]*>/i) ?? ''
+  const dateColumns = Array.from(header.matchAll(/<th[^>]*>([\s\S]*?)<\/th>/gi))
+    .map(match => ddmmyyyyToIso(stripHtml(match[1] ?? '')))
+    .filter((date): date is string => Boolean(date))
+
+  const tbody = extractElementInner(table, 'tbody', /<tbody[^>]*>/i) ?? ''
+  const rows = extractTopLevelElementInners(tbody, 'tr')
+  const entries: EmployeeHoursEntry[] = []
+  let employeeName = ''
+
+  for (const rowHtml of rows) {
+    if (/>\s*Total\s*</i.test(rowHtml)) continue
+    const leftMatch = rowHtml.match(/<td[^>]*colspan=["']5["'][^>]*>([\s\S]*?<\/table>)\s*<\/td>/i)
+    if (!leftMatch?.[0]) continue
+    const [employee = '', customer = '', task = '', milestone = ''] = parseNestedMetaCells(leftMatch[1])
+    if (!employeeName && employee) employeeName = employee
+    const taskId =
+      rowHtml.match(/date_click\(["']?[^,"']+,([^,"']+),/i)?.[1] ??
+      rowHtml.match(/task_move_all\(["']?[^,"']+,([^,"']+)/i)?.[1] ??
+      null
+    const remainder = rowHtml.slice((leftMatch.index ?? 0) + leftMatch[0].length)
+    const cells = Array.from(remainder.matchAll(/<td[^>]*?(?:title=["']([^"']*)["'])?[^>]*>([\s\S]*?)<\/td>/gi))
+
+    dateColumns.forEach((date, index) => {
+      const cell = cells[index]
+      if (!cell) return
+      const rawValue = stripHtml(cell[1] || cell[2] || '')
+      const minutes = parseHoursToMinutes(rawValue)
+      if (minutes === null || minutes <= 0) return
+      entries.push({
+        date,
+        employee,
+        customer,
+        task,
+        milestone,
+        hoursHHMM: formatMinutesHHMM(minutes),
+        minutes,
+        rawValue,
+        taskId
+      })
+    })
+  }
+
+  const days = dateColumns.map(date => {
+    const dayEntries = entries.filter(entry => entry.date === date)
+    const totalMinutes = dayEntries.reduce((sum, entry) => sum + entry.minutes, 0)
+    return { date, totalMinutes, entries: dayEntries }
+  })
+
+  return {
+    employeeId: options.employeeId,
+    employeeName,
+    fromDate: options.fromDate,
+    toDate: options.toDate,
+    customerId: options.customerId,
+    customerOptions: parseSelectOptions(html, 'customer_select'),
+    dateColumns,
+    days,
+    entries,
+    totalMinutes: entries.reduce((sum, entry) => sum + entry.minutes, 0),
+    sourceUrl: options.sourceUrl
+  }
+}
+
+function validateEmployeeHoursPayload(payload: unknown) {
+  const safe = validateExactObject<{
+    employeeId?: unknown
+    fromDate?: unknown
+    toDate?: unknown
+    customerId?: unknown
+  }>(payload ?? {}, ['employeeId', 'fromDate', 'toDate', 'customerId'], 'employee hours payload')
+  const employeeId = validateStringLength(safe.employeeId, 1, 40)
+  if (!/^\d+$/.test(employeeId)) {
+    throw new Error('Invalid employeeId')
+  }
+  const fromDate = validateDate(safe.fromDate)
+  const toDate = validateDate(safe.toDate)
+  if (toDate < fromDate) {
+    throw new Error('Invalid period: toDate is before fromDate')
+  }
+  const customerIdRaw = safe.customerId === undefined || safe.customerId === null ? '' : validateStringLength(safe.customerId, 0, 40)
+  if (customerIdRaw && !/^\d+$/.test(customerIdRaw)) {
+    throw new Error('Invalid customerId')
+  }
+  return { employeeId, fromDate, toDate, customerId: customerIdRaw }
+}
+
+async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccessResult> {
+  console.log('[EMPLOYEES ACCESS DEBUG] probing employee admin page')
+  const res = await fetch(EMPLOYEE_ADMIN_URL, {
+    headers: {
+      Cookie: cookieHeader,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      Referer: EMPLOYEE_ADMIN_URL,
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache'
+    }
+  })
+  if (res.status === 401 || res.status === 403 || res.redirected || res.url.includes('/admin/login/')) {
+    console.log(
+      `[EMPLOYEES ACCESS DEBUG] no employee access status=${res.status} redirected=${res.redirected} url=${res.url}`
+    )
+    return {
+      hasAccess: false,
+      hasEmployees: false,
+      currentEmployeeName: null,
+      employees: [],
+      allEmployeesCount: 0,
+      source: 'none'
+    }
+  }
+  if (!res.ok) {
+    throw new Error(`employee admin ${res.status}`)
+  }
+
+  const html = await res.text()
+  const looksLikeEmployeeAdmin =
+    /Select employee to change/i.test(html) &&
+    /id=["']result_list["']/i.test(html) &&
+    /field-full_name/i.test(html)
+  if (!looksLikeEmployeeAdmin) {
+    console.log('[EMPLOYEES ACCESS DEBUG] employee admin markers missing')
+    return {
+      hasAccess: false,
+      hasEmployees: false,
+      currentEmployeeName: null,
+      employees: [],
+      allEmployeesCount: 0,
+      source: 'none'
+    }
+  }
+
+  const employees = parseEmployeeRows(html)
+  const creds = await getHrsCredentials()
+  const loginIdentity = normalizeEmployeeIdentity(creds.username)
+  const currentEmployee =
+    employees.find(employee => normalizeEmployeeIdentity(employee.username) === loginIdentity) ??
+    employees.find(employee => normalizeEmployeeIdentity(employee.email) === loginIdentity)
+  const currentEmployeeName = currentEmployee?.fullName ?? null
+  const directReports = currentEmployeeName
+    ? employees.filter(employee => employee.id !== currentEmployee.id && employee.reportsTo === currentEmployeeName)
+    : []
+  const visibleEmployees = directReports.length
+    ? directReports
+    : employees.filter(employee => employee.id !== currentEmployee?.id)
+
+  console.log(
+    `[EMPLOYEES ACCESS DEBUG] parsed rows=${employees.length} current=${currentEmployeeName ?? 'unknown'} directReports=${directReports.length} visible=${visibleEmployees.length}`
+  )
+
+  return {
+    hasAccess: true,
+    hasEmployees: visibleEmployees.length > 0,
+    currentEmployeeName,
+    employees: visibleEmployees,
+    allEmployeesCount: employees.length,
+    source: directReports.length ? 'directReports' : visibleEmployees.length ? 'accessibleRows' : 'none'
+  }
+}
+
+async function fetchEmployeeHoursReport(
+  cookieHeader: string,
+  payload: { employeeId: string; fromDate: string; toDate: string; customerId: string }
+): Promise<EmployeeHoursReport> {
+  const url = new URL(`${HRS_ORIGIN}/admin/edithoursreport/`)
+  url.searchParams.set('from_date', payload.fromDate)
+  url.searchParams.set('to_date', payload.toDate)
+  url.searchParams.set('employee_id', payload.employeeId)
+  url.searchParams.set('customer_select', payload.customerId)
+
+  console.log(
+    `[EMPLOYEE HOURS DEBUG] fetching employee=${payload.employeeId} from=${payload.fromDate} to=${payload.toDate} customer=${payload.customerId || 'all'}`
+  )
+  const res = await fetch(url.toString(), {
+    headers: {
+      Cookie: cookieHeader,
+      Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+      Referer: `${HRS_ORIGIN}/admin/hoursreport/`,
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache'
+    }
+  })
+  if (res.status === 401 || res.status === 403 || res.redirected || res.url.includes('/admin/login/')) {
+    console.log(
+      `[EMPLOYEE HOURS DEBUG] auth required status=${res.status} redirected=${res.redirected} url=${res.url}`
+    )
+    throw new Error('AUTH_REQUIRED')
+  }
+  if (!res.ok) {
+    throw new Error(`employee hours ${res.status}`)
+  }
+  const html = await res.text()
+  const report = parseEmployeeHoursReportHtml(html, {
+    ...payload,
+    sourceUrl: url.toString()
+  })
+  console.log(
+    `[EMPLOYEE HOURS DEBUG] parsed employee=${report.employeeName || payload.employeeId} dates=${report.dateColumns.length} entries=${report.entries.length} totalMinutes=${report.totalMinutes}`
+  )
+  return report
+}
+
 function invalidateHrsCache(date?: string) {
   if (!date) {
     hrsCache.clear()
@@ -238,6 +673,80 @@ export function registerHrsIpc(
     ipcMain.handle('hrs:getReports', async (_event, startDate: string, endDate: string) =>
       buildE2EReport(startDate, endDate)
     )
+    ipcMain.handle('hrs:getEmployees', async () => ({
+      hasAccess: true,
+      hasEmployees: true,
+      currentEmployeeName: 'E2E Manager',
+      allEmployeesCount: 2,
+      source: 'directReports',
+      employees: [
+        {
+          id: '1001',
+          priorityId: '1001',
+          fullName: 'E2E Employee',
+          role: 'Engineer',
+          internalId: 'E2E-1',
+          username: 'e2e.employee',
+          email: 'employee@hrs.local',
+          phone: '',
+          pnl: 'E2E',
+          nextPnl: '',
+          userRoles: 'Employee',
+          reportsTo: 'E2E Manager',
+          positionType: 'Full position',
+          maximumHours: '0',
+          isSubContractor: false,
+          isActive: true,
+          href: `${HRS_ORIGIN}/admin/sysmanage/employee/1001/change/`
+        }
+      ]
+    }))
+    ipcMain.handle('hrs:getEmployeeHoursReport', async (_event, payload: unknown) => {
+      const safe = validateEmployeeHoursPayload(payload)
+      const dateColumns = []
+      let cursor = dayjs(safe.fromDate)
+      const end = dayjs(safe.toDate)
+      while (cursor.isSame(end, 'day') || cursor.isBefore(end, 'day')) {
+        dateColumns.push(cursor.format('YYYY-MM-DD'))
+        cursor = cursor.add(1, 'day')
+      }
+      const entries: EmployeeHoursEntry[] = [
+        {
+          date: dateColumns[0] ?? safe.fromDate,
+          employee: 'E2E Employee',
+          customer: 'Acme Labs',
+          task: 'Design sync',
+          milestone: 'Implementation',
+          hoursHHMM: '02:30',
+          minutes: 150,
+          rawValue: '2:30',
+          taskId: '101'
+        }
+      ]
+      return {
+        employeeId: safe.employeeId,
+        employeeName: 'E2E Employee',
+        fromDate: safe.fromDate,
+        toDate: safe.toDate,
+        customerId: safe.customerId,
+        customerOptions: [
+          { value: '', label: 'All' },
+          { value: '1', label: 'Acme Labs' }
+        ],
+        dateColumns,
+        days: dateColumns.map(date => {
+          const dayEntries = entries.filter(entry => entry.date === date)
+          return {
+            date,
+            entries: dayEntries,
+            totalMinutes: dayEntries.reduce((sum, entry) => sum + entry.minutes, 0)
+          }
+        }),
+        entries,
+        totalMinutes: entries.reduce((sum, entry) => sum + entry.minutes, 0),
+        sourceUrl: `${HRS_ORIGIN}/admin/edithoursreport/`
+      }
+    })
     ipcMain.handle('hrs:logWork', async () => true)
     ipcMain.handle('hrs:deleteLog', async () => true)
     return
@@ -383,6 +892,26 @@ export function registerHrsIpc(
     const payload = await res.json()
     setCachedValue(cacheKey, payload)
     return payload
+  })
+
+  ipcMain.handle('hrs:getEmployees', async () => {
+    const cookieHeader = await getCookieHeader(getLoginSession())
+    const cached = getCachedValue<EmployeeAccessResult>('employees:access')
+    if (cached) return cached
+    const result = await fetchEmployeeAccess(cookieHeader)
+    setCachedValue('employees:access', result)
+    return result
+  })
+
+  ipcMain.handle('hrs:getEmployeeHoursReport', async (_event, payload: unknown) => {
+    const safePayload = validateEmployeeHoursPayload(payload)
+    const cookieHeader = await getCookieHeader(getLoginSession())
+    const cacheKey = `employee-hours:${safePayload.employeeId}:${safePayload.fromDate}:${safePayload.toDate}:${safePayload.customerId}`
+    const cached = getCachedValue<EmployeeHoursReport>(cacheKey)
+    if (cached) return cached
+    const result = await fetchEmployeeHoursReport(cookieHeader, safePayload)
+    setCachedValue(cacheKey, result)
+    return result
   })
 
   ipcMain.handle('hrs:logWork', async (_event, payload: unknown) => {

@@ -67,6 +67,7 @@ type AppPreferences = {
     }
   >
   meetingClientMappings: Record<string, string>
+  meetingExcludedSubjects: Record<string, string[]>
   reportWorkLogsCache: Record<
     string,
     Array<{
@@ -137,6 +138,7 @@ const defaultPreferences: AppPreferences = {
   meetingsCollapsed: false,
   meetingsCache: {},
   meetingClientMappings: {},
+  meetingExcludedSubjects: {},
   reportWorkLogsCache: {},
   smartDefaults: {
     lastTaskByWeekday: {},
@@ -191,6 +193,8 @@ export function getPreferences(): AppPreferences {
     meetingsCache: stored?.meetingsCache ?? defaultPreferences.meetingsCache,
     meetingClientMappings:
       stored?.meetingClientMappings ?? defaultPreferences.meetingClientMappings,
+    meetingExcludedSubjects:
+      stored?.meetingExcludedSubjects ?? defaultPreferences.meetingExcludedSubjects,
     reportWorkLogsCache: stored?.reportWorkLogsCache ?? defaultPreferences.reportWorkLogsCache,
     smartDefaults: stored?.smartDefaults ?? defaultPreferences.smartDefaults
   }

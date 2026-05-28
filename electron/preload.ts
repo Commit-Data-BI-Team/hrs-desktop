@@ -14,6 +14,9 @@ contextBridge.exposeInMainWorld('hrs', {
   getWorkLogs: (date?: string) => ipcRenderer.invoke('hrs:getWorkLogs', date),
   getReports: (startDate: string, endDate: string) =>
     ipcRenderer.invoke('hrs:getReports', startDate, endDate),
+  getEmployees: () => ipcRenderer.invoke('hrs:getEmployees'),
+  getEmployeeHoursReport: (payload: unknown) =>
+    ipcRenderer.invoke('hrs:getEmployeeHoursReport', payload),
   logWork: (payload: unknown) => ipcRenderer.invoke('hrs:logWork', payload),
   deleteLog: (date: string) => ipcRenderer.invoke('hrs:deleteLog', date),
   getJiraStatus: () => ipcRenderer.invoke('jira:getStatus'),
@@ -111,6 +114,7 @@ contextBridge.exposeInMainWorld('hrs', {
       }
     >
     meetingClientMappings?: Record<string, string>
+    meetingExcludedSubjects?: Record<string, string[]>
     reportWorkLogsCache?: Record<
       string,
       Array<{
@@ -157,7 +161,22 @@ contextBridge.exposeInMainWorld('hrs', {
       ipcRenderer.removeListener('meetings:progress', listener)
     }
   },
-  getAgenda: (options: { token?: string | null }) => ipcRenderer.invoke('agenda:run', options),
+  getAgenda: (options: {
+    token?: string | null
+    username?: string | null
+    password?: string | null
+    personNames?: string[]
+    personTags?: string[]
+    tuning?: {
+      hiddenThreads?: string[]
+      hiddenSenders?: string[]
+      importantTerms?: string[]
+    }
+  }) => ipcRenderer.invoke('agenda:run', options),
+  getAgendaAiConfig: () => ipcRenderer.invoke('agenda:getAiConfig'),
+  setAgendaAiConfig: (payload: { apiKey?: string | null; model?: string | null }) =>
+    ipcRenderer.invoke('agenda:setAiConfig', payload),
+  clearAgendaAiConfig: () => ipcRenderer.invoke('agenda:clearAiConfig'),
   onAgendaProgress: (handler: (message: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, message: string) => handler(message)
     ipcRenderer.on('agenda:progress', listener)
@@ -173,6 +192,8 @@ contextBridge.exposeInMainWorld('hrs', {
   openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
+  setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid') =>
+    ipcRenderer.invoke('app:setNativeThemeMode', mode),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getUpdateState: () => ipcRenderer.invoke('app:getUpdateState'),
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),

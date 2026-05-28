@@ -53,6 +53,7 @@ const PREF_PATCH_KEYS = [
   'meetingsCollapsed',
   'meetingsCache',
   'meetingClientMappings',
+  'meetingExcludedSubjects',
   'reportWorkLogsCache',
   'smartDefaults'
 ] as const
@@ -145,6 +146,19 @@ function validatePreferencesPatch(payload: unknown) {
       case 'meetingClientMappings':
         out[key] = validateStringRecord(value, key)
         break
+      case 'meetingExcludedSubjects': {
+        const root = validateNoPrototypeObject(value, key)
+        const result: Record<string, string[]> = {}
+        for (const [month, subjects] of Object.entries(root)) {
+          if (!Array.isArray(subjects)) continue
+          result[validateStringLength(month, 1, 20)] = subjects
+            .slice(0, 300)
+            .map(subject => validateStringLength(subject, 0, 500).trim().toLowerCase())
+            .filter(Boolean)
+        }
+        out[key] = result
+        break
+      }
       case 'commentRules': {
         if (!Array.isArray(value)) throw new Error('Invalid commentRules: expected array')
         if (value.length > 300) throw new Error('Invalid commentRules: too many entries')
@@ -445,6 +459,7 @@ export function registerPreferencesIpc() {
           }
         >
         meetingClientMappings: Record<string, string>
+        meetingExcludedSubjects: Record<string, string[]>
         reportWorkLogsCache: Record<
           string,
           Array<{

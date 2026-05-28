@@ -38,6 +38,67 @@ type MonthlyReport = {
   weekend: string
 }
 
+type EmployeeAdminItem = {
+  id: string
+  priorityId: string
+  fullName: string
+  role: string
+  internalId: string
+  username: string
+  email: string
+  phone: string
+  pnl: string
+  nextPnl: string
+  userRoles: string
+  reportsTo: string
+  positionType: string
+  maximumHours: string
+  isSubContractor: boolean
+  isActive: boolean
+  href: string
+}
+
+type EmployeeAccessResult = {
+  hasAccess: boolean
+  hasEmployees: boolean
+  currentEmployeeName: string | null
+  employees: EmployeeAdminItem[]
+  allEmployeesCount: number
+  source: 'directReports' | 'accessibleRows' | 'none'
+}
+
+type EmployeeHoursEntry = {
+  date: string
+  employee: string
+  customer: string
+  task: string
+  milestone: string
+  hoursHHMM: string
+  minutes: number
+  rawValue: string
+  taskId: string | null
+}
+
+type EmployeeHoursDay = {
+  date: string
+  totalMinutes: number
+  entries: EmployeeHoursEntry[]
+}
+
+type EmployeeHoursReport = {
+  employeeId: string
+  employeeName: string
+  fromDate: string
+  toDate: string
+  customerId: string
+  customerOptions: Array<{ value: string; label: string }>
+  dateColumns: string[]
+  days: EmployeeHoursDay[]
+  entries: EmployeeHoursEntry[]
+  totalMinutes: number
+  sourceUrl: string
+}
+
 type JiraStatus = {
   configured: boolean
   email: string | null
@@ -104,17 +165,41 @@ type MeetingsResult = {
   meetings: MeetingItem[]
 }
 type AgendaItem = {
-  Type: string
-  Title: string
-  Owner: string
-  'Owner Email': string
-  'Start Date': string
+  id?: string
+  kind?: string
+  title?: string
+  summary?: string
+  priority?: string
+  reason?: string
+  owner?: string
+  ownerEmail?: string
+  threadKey?: string
+  link?: string
+  sourceIds?: string[]
+  Type?: string
+  Title?: string
+  Owner?: string
+  'Owner Email'?: string
+  'Start Date'?: string
   'End Date'?: string
-  Priority: string
-  Status: string
-  Preview: string
-  Link: string
-  'Mission Reason': string
+  Priority?: string
+  Status?: string
+  Preview?: string
+  Link?: string
+  'Mission Reason'?: string
+  category?: string
+  categoryLabel?: string
+  actionTitle?: string
+  brief?: string
+  suggestedAction?: string
+  whenLabel?: string
+  sourceTitle?: string
+  project?: string
+  customer?: string
+  sourceSender?: string
+  sourceSenderEmail?: string
+  relevanceScore?: number
+  aiSource?: string
 }
 type AgendaResult = {
   mailWindow: string
@@ -122,6 +207,17 @@ type AgendaResult = {
   unansweredEmails: number
   meetingsThisWeek: number
   outputDir: string
+  brief?: string
+  focus?: string[]
+  aiProvider?: string
+  sections?: {
+    tasks: AgendaItem[]
+    emailSummaries: AgendaItem[]
+    needReply: AgendaItem[]
+    followUps: AgendaItem[]
+    projectSignals: AgendaItem[]
+    meetingPrep: AgendaItem[]
+  }
   missions: AgendaItem[]
 }
 
@@ -201,6 +297,7 @@ type AppPreferences = {
   meetingsCollapsed: boolean
   meetingsCache: Record<string, MeetingsCacheEntry>
   meetingClientMappings: Record<string, string>
+  meetingExcludedSubjects: Record<string, string[]>
   reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
   smartDefaults: SmartDefaults
 }
@@ -225,6 +322,13 @@ type HrsApi = {
   checkSession: () => Promise<boolean>
   getWorkLogs: (date?: string) => Promise<unknown[]>
   getReports: (startDate: string, endDate: string) => Promise<MonthlyReport>
+  getEmployees: () => Promise<EmployeeAccessResult>
+  getEmployeeHoursReport: (payload: {
+    employeeId: string
+    fromDate: string
+    toDate: string
+    customerId?: string
+  }) => Promise<EmployeeHoursReport>
   logWork: (payload: LogWorkPayload) => Promise<boolean>
   deleteLog: (date: string) => Promise<boolean>
   getJiraStatus: () => Promise<JiraStatus>
@@ -300,9 +404,10 @@ type HrsApi = {
 	    meetingsHeadless?: boolean
 	    trayMeetingsSettingsOpen?: boolean
 	    meetingsCollapsed?: boolean
-    meetingsCache?: Record<string, MeetingsCacheEntry>
-    meetingClientMappings?: Record<string, string>
-    reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
+	    meetingsCache?: Record<string, MeetingsCacheEntry>
+	    meetingClientMappings?: Record<string, string>
+	    meetingExcludedSubjects?: Record<string, string[]>
+	    reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
     smartDefaults?: SmartDefaults
   }) => Promise<AppPreferences>
   saveExport: (payload: {
@@ -327,7 +432,24 @@ type HrsApi = {
     password?: string | null
   }) => Promise<MeetingsResult>
   onMeetingsProgress: (handler: (message: string) => void) => () => void
-  getAgenda: (options: { token?: string | null }) => Promise<AgendaResult>
+  getAgenda: (options: {
+    token?: string | null
+    username?: string | null
+    password?: string | null
+    personNames?: string[]
+    personTags?: string[]
+    tuning?: {
+      hiddenThreads?: string[]
+      hiddenSenders?: string[]
+      importantTerms?: string[]
+    }
+  }) => Promise<AgendaResult>
+  getAgendaAiConfig: () => Promise<{ hasApiKey: boolean; model: string }>
+  setAgendaAiConfig: (payload: {
+    apiKey?: string | null
+    model?: string | null
+  }) => Promise<{ hasApiKey: boolean; model: string }>
+  clearAgendaAiConfig: () => Promise<{ hasApiKey: boolean; model: string }>
   onAgendaProgress: (handler: (message: string) => void) => () => void
   openFloatingTimer: () => Promise<boolean>
   closeFloatingTimer: () => Promise<boolean>
@@ -336,6 +458,10 @@ type HrsApi = {
   openReportsWindow: () => Promise<boolean>
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
+  setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid') => Promise<{
+    nativeLiquidGlass: boolean
+    supported: boolean
+  }>
   getAppVersion: () => Promise<string>
   getUpdateState: () => Promise<AppUpdateState>
   checkForUpdates: () => Promise<boolean>

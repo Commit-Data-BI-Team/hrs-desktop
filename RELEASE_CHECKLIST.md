@@ -1,17 +1,19 @@
 # HRS Desktop Release Checklist
 
 ## 1. Freeze + tag
+- Read `docs/FUTURE_UPGRADES.md` before every updater release.
 - Ensure working tree is clean: `git status`
 - Run tests/build:
   - `npm run build`
   - `npm run test:e2e`
 - Create release commit and tag:
   - `git add -A`
-  - `git commit -m "release: <version>"`
+  - `git commit -m "Release HRS Desktop v<version>"`
   - `git tag -a v<version> -m "HRS Desktop v<version>"`
+- Use full semantic tags such as `v1.0.0`; do not use short updater tags like `v1`.
 
 ## 2. Build artifacts
-- macOS: `npm run dist:mac`
+- macOS: follow the signing rules in `docs/FUTURE_UPGRADES.md`
 - Windows: `npm run dist:win` (recommended on Windows CI runner)
 
 ## 3. Cross-platform parity smoke (macOS + Windows)
@@ -53,4 +55,3 @@
   - `git push`
   - `git push --tags`
 - Attach `dist/` artifacts to release notes.
-

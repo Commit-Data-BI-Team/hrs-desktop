@@ -19,11 +19,11 @@ export default defineConfig(({ command }) => ({
         vite: {
           build: {
             rollupOptions: {
-              external: ['keytar'],
+              external: ['keytar', 'electron-liquid-glass', 'node-gyp-build'],
             },
           },
           optimizeDeps: {
-            exclude: ['keytar'],
+            exclude: ['keytar', 'electron-liquid-glass', 'node-gyp-build'],
           },
         },
       },

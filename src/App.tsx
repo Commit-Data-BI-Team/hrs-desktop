@@ -38,16 +38,21 @@ import {
   IconClipboardText,
   IconListDetails,
   IconChartBar,
-  IconSettings
+  IconSettings,
+  IconUsers,
+  IconTrash,
+  IconChevronDown,
+  IconChevronRight
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { MouseEvent as ReactMouseEvent, CSSProperties } from 'react'
+import type { MouseEvent as ReactMouseEvent, CSSProperties, ReactNode } from 'react'
 import { useDebouncedValue } from '@mantine/hooks'
 import { FixedSizeList, type ListChildComponentProps } from 'react-window'
 import * as XLSX from 'xlsx'
+import LiquidGlass from 'liquid-glass-react'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -85,17 +90,50 @@ type MeetingItem = {
   attendeeEmails: string[]
 }
 type AgendaItem = {
-  Type: string
-  Title: string
-  Owner: string
-  'Owner Email': string
-  'Start Date': string
+  id?: string
+  kind?: string
+  title?: string
+  summary?: string
+  priority?: string
+  reason?: string
+  owner?: string
+  ownerEmail?: string
+  threadKey?: string
+  link?: string
+  sourceIds?: string[]
+  Type?: string
+  Title?: string
+  Owner?: string
+  'Owner Email'?: string
+  'Start Date'?: string
   'End Date'?: string
-  Priority: string
-  Status: string
-  Preview: string
-  Link: string
-  'Mission Reason': string
+  Priority?: string
+  Status?: string
+  Preview?: string
+  Link?: string
+  'Mission Reason'?: string
+  category?: 'reply' | 'task' | 'meeting' | 'followup' | 'info' | string
+  categoryLabel?: string
+  actionTitle?: string
+  brief?: string
+  suggestedAction?: string
+  whenLabel?: string
+  sourceTitle?: string
+  project?: string
+  customer?: string
+  sourceSender?: string
+  sourceSenderEmail?: string
+  relevanceScore?: number
+  aiSource?: 'openai' | 'local' | string
+}
+
+type AgendaSections = {
+  tasks: AgendaItem[]
+  emailSummaries: AgendaItem[]
+  needReply: AgendaItem[]
+  followUps: AgendaItem[]
+  projectSignals: AgendaItem[]
+  meetingPrep: AgendaItem[]
 }
 
 type WorkReportDay = {
@@ -112,6 +150,67 @@ type MonthlyReport = {
   totalDays: number
   days: WorkReportDay[]
   weekend: string
+}
+
+type EmployeeAdminItem = {
+  id: string
+  priorityId: string
+  fullName: string
+  role: string
+  internalId: string
+  username: string
+  email: string
+  phone: string
+  pnl: string
+  nextPnl: string
+  userRoles: string
+  reportsTo: string
+  positionType: string
+  maximumHours: string
+  isSubContractor: boolean
+  isActive: boolean
+  href: string
+}
+
+type EmployeeAccessResult = {
+  hasAccess: boolean
+  hasEmployees: boolean
+  currentEmployeeName: string | null
+  employees: EmployeeAdminItem[]
+  allEmployeesCount: number
+  source: 'directReports' | 'accessibleRows' | 'none'
+}
+
+type EmployeeHoursEntry = {
+  date: string
+  employee: string
+  customer: string
+  task: string
+  milestone: string
+  hoursHHMM: string
+  minutes: number
+  rawValue: string
+  taskId: string | null
+}
+
+type EmployeeHoursDay = {
+  date: string
+  totalMinutes: number
+  entries: EmployeeHoursEntry[]
+}
+
+type EmployeeHoursReport = {
+  employeeId: string
+  employeeName: string
+  fromDate: string
+  toDate: string
+  customerId: string
+  customerOptions: Array<{ value: string; label: string }>
+  dateColumns: string[]
+  days: EmployeeHoursDay[]
+  entries: EmployeeHoursEntry[]
+  totalMinutes: number
+  sourceUrl: string
 }
 
 type JiraStatus = {
@@ -251,6 +350,7 @@ type AppPreferences = {
   meetingsCollapsed: boolean
   meetingsCache: Record<string, { updatedAt: string; meetings: MeetingItem[] }>
   meetingClientMappings: Record<string, string>
+  meetingExcludedSubjects: Record<string, string[]>
   reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
   smartDefaults: {
     lastTaskByWeekday: Record<string, number>
@@ -269,6 +369,7 @@ type AppUpdateState = {
 }
 
 type MeetingsFetchPhase = 'idle' | 'init' | 'auth' | 'query' | 'finalize' | 'done' | 'error'
+type AgendaFetchPhase = 'idle' | 'init' | 'auth' | 'query' | 'ai' | 'finalize' | 'done' | 'error'
 
 const MEETINGS_FETCH_PHASE_WEIGHT: Record<MeetingsFetchPhase, number> = {
   idle: 0,
@@ -289,6 +390,30 @@ function advanceMeetingsFetchPhase(
   if (next === 'done') return 'done'
   if (current === 'done') return current
   return MEETINGS_FETCH_PHASE_WEIGHT[next] > MEETINGS_FETCH_PHASE_WEIGHT[current]
+    ? next
+    : current
+}
+
+const AGENDA_FETCH_PHASE_WEIGHT: Record<AgendaFetchPhase, number> = {
+  idle: 0,
+  init: 1,
+  auth: 2,
+  query: 3,
+  ai: 4,
+  finalize: 5,
+  done: 6,
+  error: 7
+}
+
+function advanceAgendaFetchPhase(
+  current: AgendaFetchPhase,
+  next: AgendaFetchPhase
+): AgendaFetchPhase {
+  if (next === 'error') return 'error'
+  if (current === 'error') return current
+  if (next === 'done') return 'done'
+  if (current === 'done') return current
+  return AGENDA_FETCH_PHASE_WEIGHT[next] > AGENDA_FETCH_PHASE_WEIGHT[current]
     ? next
     : current
 }
@@ -362,6 +487,158 @@ function safeGetLocalStorageFlag(key: string): boolean {
   } catch {
     return false
   }
+}
+
+const AGENDA_RESOLVED_STORAGE_KEY = 'hrs-agenda-resolved'
+const AGENDA_PERSON_ENGLISH_STORAGE_KEY = 'hrs-agenda-person-english'
+const AGENDA_PERSON_HEBREW_STORAGE_KEY = 'hrs-agenda-person-hebrew'
+const AGENDA_PERSON_TAGS_STORAGE_KEY = 'hrs-agenda-person-tags'
+const AGENDA_HIDDEN_THREADS_STORAGE_KEY = 'hrs-agenda-hidden-threads'
+const AGENDA_HIDDEN_ITEMS_STORAGE_KEY = 'hrs-agenda-hidden-items'
+const AGENDA_HIDDEN_SENDERS_STORAGE_KEY = 'hrs-agenda-hidden-senders'
+const AGENDA_IMPORTANT_STORAGE_KEY = 'hrs-agenda-important'
+const AGENDA_CONVERTED_TASKS_STORAGE_KEY = 'hrs-agenda-converted-tasks'
+const AGENDA_CACHE_STORAGE_KEY = 'hrs-agenda-cache-v1'
+const HRS_CREDENTIAL_RESET_REQUEST_KEY = 'hrs-credential-reset-request'
+const EMPLOYEE_REPORT_ALL_VALUE = '__all_employees__'
+const EXCLUDED_EMPLOYEE_NAMES = new Set(['ronen amsalem'])
+const THEME_MODE_STORAGE_KEY = 'hrs-theme-mode'
+
+type ThemeMode = 'dark' | 'oled' | 'liquid'
+
+const THEME_MODE_OPTIONS: Array<{ value: ThemeMode; label: string; description: string }> = [
+  {
+    value: 'dark',
+    label: 'Dark',
+    description: 'Balanced dark interface for normal desktop use.'
+  },
+  {
+    value: 'oled',
+    label: 'OLED Black',
+    description: 'Pure black surfaces with restrained contrast.'
+  },
+  {
+    value: 'liquid',
+    label: 'Liquid Glass',
+    description: 'Layered translucent surfaces with stronger depth.'
+  }
+]
+
+const AGENDA_LOADING_MESSAGES = [
+  'Sorting the signal from the inbox noise.',
+  'Looking for threads where you own the next move.',
+  'Separating FYI updates from real project work.',
+  'Finding replies, blockers, decisions, and follow-ups.',
+  'Letting OpenAI compress the messy parts into action.',
+  'Removing passive CC threads and stale notifications.'
+]
+
+function readThemeMode(): ThemeMode {
+  try {
+    const storedMode = localStorage.getItem(THEME_MODE_STORAGE_KEY)
+    if (storedMode === 'dark' || storedMode === 'oled' || storedMode === 'liquid') {
+      return storedMode
+    }
+    return localStorage.getItem('hrs-oled') === '1' ? 'oled' : 'dark'
+  } catch {
+    return 'dark'
+  }
+}
+
+function safeGetLocalStorageString(key: string): string {
+  try {
+    return localStorage.getItem(key) || ''
+  } catch {
+    return ''
+  }
+}
+
+function safeGetLocalStorageRecord(key: string): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed).filter((entry): entry is [string, boolean] => {
+        return typeof entry[0] === 'string' && entry[1] === true
+      })
+    )
+  } catch {
+    return {}
+  }
+}
+
+function getAgendaItemKey(item: AgendaItem): string {
+  return [
+    item.kind || item.category || item.Type || 'agenda',
+    item.id || '',
+    item.threadKey || '',
+    item.title || item.actionTitle || item.Title || '',
+    item.summary || item.brief || item.Preview || '',
+    item.suggestedAction || '',
+    item.ownerEmail || item['Owner Email'] || item.owner || item.Owner || '',
+    Array.isArray(item.sourceIds) ? item.sourceIds.join(',') : '',
+    item.whenLabel || item['Start Date'] || ''
+  ]
+    .map(value => normalizeText(String(value || '')).slice(0, 160))
+    .join('|')
+}
+
+function getAgendaThreadKey(item: AgendaItem): string {
+  return normalizeText(item.threadKey || item.id || item.Title || item.title || '')
+}
+
+function getAgendaSenderKey(item: AgendaItem): string {
+  return normalizeText(
+    item.sourceSenderEmail ||
+      item.ownerEmail ||
+      item['Owner Email'] ||
+      item.sourceSender ||
+      item.owner ||
+      item.Owner ||
+      ''
+  )
+}
+
+function getAgendaProjectLabel(item: AgendaItem): string {
+  const label =
+    item.project ||
+    item.customer ||
+    item.sourceTitle?.split('|')[0] ||
+    item.Title?.split('|')[0] ||
+    item.title?.split('|')[0] ||
+    'General'
+  return label.trim() || 'General'
+}
+
+function agendaCategoryColor(category: string | undefined): string {
+  switch (category) {
+    case 'reply':
+      return 'blue'
+    case 'task':
+      return 'orange'
+    case 'followup':
+      return 'yellow'
+    case 'meetingPrep':
+      return 'teal'
+    case 'projectSignal':
+    case 'summary':
+      return 'grape'
+    case 'meeting':
+      return 'teal'
+    case 'info':
+      return 'gray'
+    default:
+      return 'cyan'
+  }
+}
+
+function splitAgendaTerms(value: string): string[] {
+  return value
+    .split(/[,;\n]+/)
+    .map(term => term.trim())
+    .filter(Boolean)
 }
 
 function buildDurationFromTimes(from: string, to: string): Duration | null {
@@ -500,6 +777,16 @@ function getMonthRange(date: Date) {
   return { start, end }
 }
 
+function getEmployeeMonthRange(date: Date) {
+  const month = dayjs(date)
+  const today = dayjs()
+  const start = month.startOf('month').format('YYYY-MM-DD')
+  const end = month.isSame(today, 'month')
+    ? today.format('YYYY-MM-DD')
+    : month.endOf('month').format('YYYY-MM-DD')
+  return { start, end }
+}
+
 function normalizeReportDateKey(value: string) {
   const parsed = dayjs(value)
   if (parsed.isValid()) {
@@ -550,6 +837,18 @@ function formatMinutesToLabel(minutes: number): string {
   const hours = minutes / 60
   if (hours >= 1) return `${hours.toFixed(1)}h`
   return `${minutes}m`
+}
+
+function isNonBillableEmployeeCustomer(customer: string): boolean {
+  const normalized = customer
+    .toLowerCase()
+    .replace(/[^a-z0-9א-ת]+/gi, '')
+    .trim()
+  return normalized.includes('valinor') || normalized.includes('commit')
+}
+
+function isExcludedEmployeeName(name: string) {
+  return EXCLUDED_EMPLOYEE_NAMES.has(normalizeText(name))
 }
 
 function formatReportingFromLabel(value: string): string {
@@ -792,6 +1091,10 @@ function getMeetingKey(meeting: MeetingItem) {
 
 function normalizeText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function getMeetingSubjectKey(subject: string) {
+  return normalizeText(subject || 'Meeting')
 }
 
 function formatJiraBudgetValue(
@@ -1195,13 +1498,39 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 
 export default function App() {
   const { colorScheme, setColorScheme } = useMantineColorScheme()
-  const [oledEnabled, setOledEnabled] = useState(() => {
-    try {
-      return localStorage.getItem('hrs-oled') === '1'
-    } catch {
-      return false
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode())
+  const oledEnabled = themeMode === 'oled'
+  const liquidGlassEnabled = themeMode === 'liquid'
+  const liquidGlassSceneRef = useRef<HTMLDivElement>(null)
+  const renderLiquidGlassFrame = (content: ReactNode) => {
+    if (!liquidGlassEnabled) {
+      return content
     }
-  })
+
+    return (
+      <div ref={liquidGlassSceneRef} className="liquid-glass-scene">
+        <div className="liquid-glass-scene-art" aria-hidden="true" />
+        <LiquidGlass
+          displacementScale={72}
+          blurAmount={0.22}
+          saturation={155}
+          aberrationIntensity={2.8}
+          elasticity={0.24}
+          cornerRadius={34}
+          padding="0"
+          mouseContainer={liquidGlassSceneRef}
+          className="liquid-glass-card"
+          mode="prominent"
+          style={{
+            position: 'relative',
+            width: 'min(100%, var(--liquid-glass-width, 860px))'
+          }}
+        >
+          <div className="liquid-glass-content">{content}</div>
+        </LiquidGlass>
+      </div>
+    )
+  }
 
   useEffect(() => {
     if (colorScheme !== 'dark') {
@@ -1211,18 +1540,67 @@ export default function App() {
 
   useEffect(() => {
     if (typeof document !== 'undefined') {
-      if (oledEnabled) {
-        document.documentElement.setAttribute('data-oled', 'true')
-      } else {
-        document.documentElement.removeAttribute('data-oled')
-      }
+      document.documentElement.setAttribute('data-theme-mode', themeMode)
+      document.documentElement.toggleAttribute('data-oled', oledEnabled)
+      document.documentElement.toggleAttribute('data-liquid-glass', liquidGlassEnabled)
     }
     try {
+      localStorage.setItem(THEME_MODE_STORAGE_KEY, themeMode)
       localStorage.setItem('hrs-oled', oledEnabled ? '1' : '0')
+      void window.hrs?.setNativeThemeMode?.(themeMode).catch(error => {
+        console.warn('[theme] failed to apply native theme mode', error)
+      })
+      window.dispatchEvent(new CustomEvent('hrs-theme-mode-change', { detail: themeMode }))
     } catch {
       // Ignore storage errors to keep UI responsive.
     }
-  }, [oledEnabled])
+  }, [liquidGlassEnabled, oledEnabled, themeMode])
+
+  useEffect(() => {
+    const handleThemeStorage = (event: StorageEvent) => {
+      if (event.key !== THEME_MODE_STORAGE_KEY && event.key !== 'hrs-oled') return
+      setThemeMode(readThemeMode())
+    }
+    const handleThemeEvent = () => {
+      setThemeMode(readThemeMode())
+    }
+    window.addEventListener('storage', handleThemeStorage)
+    window.addEventListener('hrs-theme-mode-change', handleThemeEvent)
+    return () => {
+      window.removeEventListener('storage', handleThemeStorage)
+      window.removeEventListener('hrs-theme-mode-change', handleThemeEvent)
+    }
+  }, [])
+
+  function cycleThemeMode() {
+    setThemeMode(current => {
+      if (current === 'dark') return 'oled'
+      if (current === 'oled') return 'liquid'
+      return 'dark'
+    })
+  }
+
+  function renderThemeModeToggle(size: 'default' | 'sm' = 'default') {
+    return (
+      <div
+        className={`theme-toggle${size === 'sm' ? ' theme-toggle-sm' : ''}`}
+        role="group"
+        aria-label="Theme"
+      >
+        {THEME_MODE_OPTIONS.map(option => (
+          <button
+            key={option.value}
+            type="button"
+            className={`theme-toggle-option theme-toggle-option-${option.value}${themeMode === option.value ? ' is-active' : ''}`}
+            aria-pressed={themeMode === option.value}
+            onClick={() => setThemeMode(option.value)}
+          >
+            {option.label}
+          </button>
+        ))}
+      </div>
+    )
+  }
 
   const [jiraTokenGuideCopied, setJiraTokenGuideCopied] = useState(false)
 
@@ -1423,30 +1801,90 @@ export default function App() {
   const [meetingsFetchPhase, setMeetingsFetchPhase] = useState<MeetingsFetchPhase>('idle')
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
+  const [trayMeetingsProgressOpen, setTrayMeetingsProgressOpen] = useState(false)
   const [meetingsCredentialsOpen, setMeetingsCredentialsOpen] = useState(false)
   const [meetingsCache, setMeetingsCache] = useState<
     Record<string, { updatedAt: string; meetings: MeetingItem[] }>
   >({})
   const [meetingClientMappings, setMeetingClientMappings] = useState<Record<string, string>>({})
-  const [agendaToken, setAgendaToken] = useState('')
+  const [meetingExcludedSubjects, setMeetingExcludedSubjects] = useState<Record<string, string[]>>({})
+  const [meetingDomainFilter, setMeetingDomainFilter] = useState<string | null>(null)
+  const [agendaSettingsOpen, setAgendaSettingsOpen] = useState(false)
   const [agendaLoading, setAgendaLoading] = useState(false)
   const [agendaError, setAgendaError] = useState<string | null>(null)
   const [agendaProgress, setAgendaProgress] = useState<string | null>(null)
+  const [agendaFetchPhase, setAgendaFetchPhase] = useState<AgendaFetchPhase>('idle')
+  const [trayAgendaProgressOpen, setTrayAgendaProgressOpen] = useState(true)
   const [agendaItems, setAgendaItems] = useState<AgendaItem[]>([])
+  const [agendaSections, setAgendaSections] = useState<AgendaSections>({
+    tasks: [],
+    emailSummaries: [],
+    needReply: [],
+    followUps: [],
+    projectSignals: [],
+    meetingPrep: []
+  })
+  const [agendaPersonEnglish, setAgendaPersonEnglish] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return safeGetLocalStorageString(AGENDA_PERSON_ENGLISH_STORAGE_KEY)
+  })
+  const [agendaPersonHebrew, setAgendaPersonHebrew] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return safeGetLocalStorageString(AGENDA_PERSON_HEBREW_STORAGE_KEY)
+  })
+  const [agendaPersonTags, setAgendaPersonTags] = useState(() => {
+    if (typeof window === 'undefined') return ''
+    return safeGetLocalStorageString(AGENDA_PERSON_TAGS_STORAGE_KEY)
+  })
+  const [agendaAiApiKey, setAgendaAiApiKey] = useState('')
+  const [agendaAiModel, setAgendaAiModel] = useState('gpt-4o-mini')
+  const [agendaAiHasApiKey, setAgendaAiHasApiKey] = useState(false)
+  const [agendaAiSaving, setAgendaAiSaving] = useState(false)
+  const [agendaResolvedKeys, setAgendaResolvedKeys] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    return safeGetLocalStorageRecord(AGENDA_RESOLVED_STORAGE_KEY)
+  })
+  const [agendaHiddenThreads, setAgendaHiddenThreads] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    return safeGetLocalStorageRecord(AGENDA_HIDDEN_THREADS_STORAGE_KEY)
+  })
+  const [agendaHiddenItems, setAgendaHiddenItems] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    return safeGetLocalStorageRecord(AGENDA_HIDDEN_ITEMS_STORAGE_KEY)
+  })
+  const [agendaHiddenSenders, setAgendaHiddenSenders] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    return safeGetLocalStorageRecord(AGENDA_HIDDEN_SENDERS_STORAGE_KEY)
+  })
+  const [agendaImportantKeys, setAgendaImportantKeys] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    return safeGetLocalStorageRecord(AGENDA_IMPORTANT_STORAGE_KEY)
+  })
+  const [agendaConvertedTaskKeys, setAgendaConvertedTaskKeys] = useState<Record<string, boolean>>(() => {
+    if (typeof window === 'undefined') return {}
+    return safeGetLocalStorageRecord(AGENDA_CONVERTED_TASKS_STORAGE_KEY)
+  })
+  const [agendaShowResolved, setAgendaShowResolved] = useState(false)
+  const [agendaLoadingMessageIndex, setAgendaLoadingMessageIndex] = useState(0)
   const [agendaSummary, setAgendaSummary] = useState<{
     mailWindow: string
     meetingWindow: string
     unansweredEmails: number
     meetingsThisWeek: number
     outputDir: string
+    brief?: string
+    focus?: string[]
+    aiProvider?: string
   } | null>(null)
   const [meetingMappingOpen, setMeetingMappingOpen] = useState(false)
   const [meetingMappingMeeting, setMeetingMappingMeeting] = useState<MeetingItem | null>(null)
+  const [meetingMappingMeetings, setMeetingMappingMeetings] = useState<MeetingItem[]>([])
   const [meetingMappingKey, setMeetingMappingKey] = useState<string | null>(null)
   const [meetingMappingProject, setMeetingMappingProject] = useState<string | null>(null)
   const [meetingMappingClient, setMeetingMappingClient] = useState<string | null>(null)
   const [meetingMappingCustomKey, setMeetingMappingCustomKey] = useState('')
   const [meetingMappingError, setMeetingMappingError] = useState<string | null>(null)
+  const [meetingMappingSaving, setMeetingMappingSaving] = useState(false)
   const [meetingLogToJira, setMeetingLogToJira] = useState(false)
   const [meetingLogIssues, setMeetingLogIssues] = useState<JiraWorkItem[]>([])
   const [meetingLogIssueKey, setMeetingLogIssueKey] = useState<string | null>(null)
@@ -1458,6 +1896,8 @@ export default function App() {
   const meetingMappingPrefillRef = useRef<{
     client?: string | null
     logToJira?: boolean
+    matchKey?: string | null
+    customKey?: string | null
   } | null>(null)
   const meetingsAutoFetchRef = useRef(false)
   const [activeClientTrendLoading, setActiveClientTrendLoading] = useState(false)
@@ -1480,8 +1920,22 @@ export default function App() {
   const [trayEnterAnimating, setTrayEnterAnimating] = useState(false)
   const [trayClosingAnimating, setTrayClosingAnimating] = useState(false)
   const [trayPanel, setTrayPanel] = useState<
-    'log' | 'clockify' | 'meetings' | 'agenda' | 'reports' | 'settings'
+    'log' | 'clockify' | 'meetings' | 'agenda' | 'employees' | 'reports' | 'settings'
   >('log')
+  const [employeesAccessChecked, setEmployeesAccessChecked] = useState(false)
+  const [employeesLoading, setEmployeesLoading] = useState(false)
+  const [employeesError, setEmployeesError] = useState<string | null>(null)
+  const [employeesResult, setEmployeesResult] = useState<EmployeeAccessResult | null>(null)
+  const [employeeReportMonth, setEmployeeReportMonth] = useState<Date>(() => new Date())
+  const [employeeReportFrom, setEmployeeReportFrom] = useState(() => getEmployeeMonthRange(new Date()).start)
+  const [employeeReportTo, setEmployeeReportTo] = useState(() => getEmployeeMonthRange(new Date()).end)
+  const [employeeReportEmployeeId, setEmployeeReportEmployeeId] = useState<string | null>(null)
+  const [employeeReportCustomerId, setEmployeeReportCustomerId] = useState('')
+  const [employeeReportTask, setEmployeeReportTask] = useState<string | null>(null)
+  const [employeeReport, setEmployeeReport] = useState<EmployeeHoursReport | null>(null)
+  const [employeeReportLoading, setEmployeeReportLoading] = useState(false)
+  const [employeeReportError, setEmployeeReportError] = useState<string | null>(null)
+  const [employeeReportSelectedDate, setEmployeeReportSelectedDate] = useState(() => dayjs().format('YYYY-MM-DD'))
   const [trayReportExpandedEpic, setTrayReportExpandedEpic] = useState<string | null>(null)
   const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'mapping' | 'updates'>('access')
   const [appVersion, setAppVersion] = useState('')
@@ -1520,6 +1974,326 @@ export default function App() {
   }, [jiraBudgetCollapsed])
 
   useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_RESOLVED_STORAGE_KEY, JSON.stringify(agendaResolvedKeys))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaResolvedKeys])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_HIDDEN_THREADS_STORAGE_KEY, JSON.stringify(agendaHiddenThreads))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaHiddenThreads])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_HIDDEN_ITEMS_STORAGE_KEY, JSON.stringify(agendaHiddenItems))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaHiddenItems])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_HIDDEN_SENDERS_STORAGE_KEY, JSON.stringify(agendaHiddenSenders))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaHiddenSenders])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_IMPORTANT_STORAGE_KEY, JSON.stringify(agendaImportantKeys))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaImportantKeys])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_CONVERTED_TASKS_STORAGE_KEY, JSON.stringify(agendaConvertedTaskKeys))
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaConvertedTaskKeys])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(AGENDA_PERSON_ENGLISH_STORAGE_KEY, agendaPersonEnglish)
+      localStorage.setItem(AGENDA_PERSON_HEBREW_STORAGE_KEY, agendaPersonHebrew)
+      localStorage.setItem(AGENDA_PERSON_TAGS_STORAGE_KEY, agendaPersonTags)
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaPersonEnglish, agendaPersonHebrew, agendaPersonTags])
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(AGENDA_CACHE_STORAGE_KEY)
+      if (!raw) return
+      const cached = JSON.parse(raw) as {
+        summary?: typeof agendaSummary
+        sections?: Partial<AgendaSections>
+        items?: AgendaItem[]
+      }
+      if (!cached || typeof cached !== 'object') return
+      const nextSections: AgendaSections = {
+        tasks: cached.sections?.tasks ?? [],
+        emailSummaries: cached.sections?.emailSummaries ?? [],
+        needReply: cached.sections?.needReply ?? [],
+        followUps: cached.sections?.followUps ?? [],
+        projectSignals: cached.sections?.projectSignals ?? [],
+        meetingPrep: cached.sections?.meetingPrep ?? []
+      }
+      setAgendaSections(nextSections)
+      setAgendaItems(
+        cached.items ?? [
+          ...nextSections.tasks,
+          ...nextSections.needReply,
+          ...nextSections.followUps,
+          ...nextSections.meetingPrep,
+          ...nextSections.projectSignals,
+          ...nextSections.emailSummaries
+        ]
+      )
+      if (cached.summary) {
+        setAgendaSummary(cached.summary)
+        setAgendaFetchPhase('done')
+        setAgendaProgress('Agenda loaded from cache.')
+      }
+    } catch {
+      // Ignore malformed agenda cache.
+    }
+  }, [])
+
+  const enhancedAgendaSections = useMemo<AgendaSections>(() => {
+    const enhance = (item: AgendaItem, forcedKind?: string): AgendaItem => {
+      const itemKey = getAgendaItemKey(item)
+      const important = agendaImportantKeys[itemKey] === true
+      const kind = forcedKind || item.kind || item.category
+      return {
+        ...item,
+        kind,
+        category: kind,
+        priority: important ? 'High' : item.priority,
+        categoryLabel:
+          kind === 'task'
+            ? 'Task'
+            : kind === 'reply'
+              ? 'Need reply'
+              : kind === 'followup'
+                ? 'Follow up'
+                : kind === 'meetingPrep'
+                  ? 'Meeting prep'
+                  : kind === 'projectSignal' || kind === 'summary'
+                    ? 'Project signal'
+                    : item.categoryLabel
+      }
+    }
+    const convertedSourceItems = [
+      ...agendaSections.needReply,
+      ...agendaSections.followUps,
+      ...agendaSections.meetingPrep,
+      ...agendaSections.projectSignals,
+      ...agendaSections.emailSummaries
+    ].filter(item => agendaConvertedTaskKeys[getAgendaItemKey(item)])
+    const removeConverted = (items: AgendaItem[]) =>
+      items.filter(item => !agendaConvertedTaskKeys[getAgendaItemKey(item)])
+    return {
+      tasks: [...agendaSections.tasks.map(item => enhance(item, 'task')), ...convertedSourceItems.map(item => enhance(item, 'task'))],
+      needReply: removeConverted(agendaSections.needReply).map(item => enhance(item, 'reply')),
+      followUps: removeConverted(agendaSections.followUps).map(item => enhance(item, 'followup')),
+      meetingPrep: removeConverted(agendaSections.meetingPrep).map(item => enhance(item, 'meetingPrep')),
+      projectSignals: removeConverted(
+        agendaSections.projectSignals.length ? agendaSections.projectSignals : agendaSections.emailSummaries
+      ).map(item => enhance(item, 'projectSignal')),
+      emailSummaries: removeConverted(agendaSections.emailSummaries).map(item => enhance(item, 'projectSignal'))
+    }
+  }, [agendaConvertedTaskKeys, agendaImportantKeys, agendaSections])
+
+  const agendaItemIsHidden = (item: AgendaItem) => {
+    const itemKey = getAgendaItemKey(item)
+    const threadKey = getAgendaThreadKey(item)
+    const senderKey = getAgendaSenderKey(item)
+    return Boolean(
+      (itemKey && agendaHiddenItems[itemKey]) ||
+        (threadKey && agendaHiddenThreads[threadKey]) ||
+        (senderKey && agendaHiddenSenders[senderKey])
+    )
+  }
+
+  const visibleAgendaItems = useMemo(() => {
+    const items = [
+      ...enhancedAgendaSections.tasks,
+      ...enhancedAgendaSections.needReply,
+      ...enhancedAgendaSections.followUps,
+      ...enhancedAgendaSections.meetingPrep,
+      ...enhancedAgendaSections.projectSignals
+    ]
+    return items.filter(item => {
+      if (agendaItemIsHidden(item)) return false
+      if (!agendaShowResolved && agendaResolvedKeys[getAgendaItemKey(item)]) return false
+      return true
+    })
+  }, [
+    agendaHiddenSenders,
+    agendaHiddenItems,
+    agendaHiddenThreads,
+    agendaResolvedKeys,
+    agendaShowResolved,
+    enhancedAgendaSections
+  ])
+
+  const visibleAgendaSections = useMemo<AgendaSections>(() => {
+    const filterItems = (items: AgendaItem[]) =>
+      items.filter(item => {
+        if (agendaItemIsHidden(item)) return false
+        if (!agendaShowResolved && agendaResolvedKeys[getAgendaItemKey(item)]) return false
+        return true
+      })
+    return {
+      tasks: filterItems(enhancedAgendaSections.tasks),
+      emailSummaries: filterItems(enhancedAgendaSections.emailSummaries),
+      needReply: filterItems(enhancedAgendaSections.needReply),
+      followUps: filterItems(enhancedAgendaSections.followUps),
+      projectSignals: filterItems(enhancedAgendaSections.projectSignals),
+      meetingPrep: filterItems(enhancedAgendaSections.meetingPrep)
+    }
+  }, [
+    agendaHiddenSenders,
+    agendaHiddenItems,
+    agendaHiddenThreads,
+    agendaResolvedKeys,
+    agendaShowResolved,
+    enhancedAgendaSections
+  ])
+
+  const agendaResolvedCount = useMemo(
+    () => agendaItems.filter(item => agendaResolvedKeys[getAgendaItemKey(item)]).length,
+    [agendaItems, agendaResolvedKeys]
+  )
+
+  const agendaHiddenCount = useMemo(
+    () => agendaItems.filter(item => agendaItemIsHidden(item)).length,
+    [agendaHiddenItems, agendaHiddenSenders, agendaHiddenThreads, agendaItems]
+  )
+
+  const agendaCategoryCounts = useMemo(() => {
+    return {
+      task: visibleAgendaSections.tasks.length,
+      reply: visibleAgendaSections.needReply.length,
+      followup: visibleAgendaSections.followUps.length,
+      meetingPrep: visibleAgendaSections.meetingPrep.length,
+      signal: visibleAgendaSections.projectSignals.length
+    }
+  }, [visibleAgendaSections])
+
+  const agendaProjectGroups = useMemo(() => {
+    const groups = new Map<string, AgendaItem[]>()
+    for (const item of visibleAgendaItems) {
+      const label = getAgendaProjectLabel(item)
+      groups.set(label, [...(groups.get(label) || []), item])
+    }
+    return Array.from(groups.entries())
+      .map(([label, items]) => ({
+        label,
+        items: [...items].sort((a, b) => {
+          const importantA = agendaImportantKeys[getAgendaItemKey(a)] ? 0 : 1
+          const importantB = agendaImportantKeys[getAgendaItemKey(b)] ? 0 : 1
+          return (
+            importantA - importantB ||
+            ['High', 'Medium', 'Low'].indexOf(a.priority || 'Low') -
+              ['High', 'Medium', 'Low'].indexOf(b.priority || 'Low')
+          )
+        })
+      }))
+      .sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label))
+  }, [agendaImportantKeys, visibleAgendaItems])
+
+  const agendaFetchSteps = useMemo(
+    () => [
+      {
+        key: 'init',
+        title: 'Start browser session',
+        detail: 'Chrome runs in background mode.'
+      },
+      {
+        key: 'auth',
+        title: 'Authenticate Microsoft account',
+        detail: 'Approve DUO if prompted.'
+      },
+      {
+        key: 'query',
+        title: 'Fetch Outlook data',
+        detail: 'Load recent mail threads and this week calendar.'
+      },
+      {
+        key: 'ai',
+        title: 'Analyze with OpenAI',
+        detail: 'Extract only relevant tasks, summaries, and replies.'
+      },
+      {
+        key: 'finalize',
+        title: 'Build agenda',
+        detail: 'Deduplicate, filter resolved items, and format sections.'
+      }
+    ],
+    []
+  )
+
+  const agendaStepStatuses = useMemo(() => {
+    const phaseIndexMap: Record<AgendaFetchPhase, number> = {
+      idle: -1,
+      init: 0,
+      auth: 1,
+      query: 2,
+      ai: 3,
+      finalize: 4,
+      done: 5,
+      error: 4
+    }
+    const phaseIndex = phaseIndexMap[agendaFetchPhase]
+    const completedIndex = agendaFetchPhase === 'done' ? 4 : Math.max(-1, phaseIndex - 1)
+    const activeIndex =
+      agendaFetchPhase === 'error'
+        ? Math.max(0, Math.min(4, phaseIndex))
+        : agendaLoading
+          ? Math.max(0, Math.min(4, phaseIndex))
+          : -1
+
+    return agendaFetchSteps.map((_, index) => {
+      if (agendaFetchPhase === 'error' && index === activeIndex) return 'error' as const
+      if (agendaFetchPhase === 'done' || index <= completedIndex) return 'done' as const
+      if (index === activeIndex) return 'active' as const
+      return 'pending' as const
+    })
+  }, [agendaFetchPhase, agendaFetchSteps, agendaLoading])
+
+  const showAgendaProgressTracker = useMemo(
+    () => agendaLoading || agendaFetchPhase === 'error' || agendaFetchPhase === 'done',
+    [agendaFetchPhase, agendaLoading]
+  )
+
+  const agendaLoadingMessage = useMemo(() => {
+    return AGENDA_LOADING_MESSAGES[agendaLoadingMessageIndex % AGENDA_LOADING_MESSAGES.length]
+  }, [agendaLoadingMessageIndex])
+
+  useEffect(() => {
+    if (!agendaLoading) {
+      setAgendaLoadingMessageIndex(0)
+      return
+    }
+    const intervalId = window.setInterval(() => {
+      setAgendaLoadingMessageIndex(prev => prev + 1)
+    }, 2600)
+    return () => window.clearInterval(intervalId)
+  }, [agendaLoading])
+
+  useEffect(() => {
     if (!window?.hrs?.onMeetingsProgress) return
     const unsubscribe = window.hrs.onMeetingsProgress(message => {
       setMeetingsProgress(message)
@@ -1551,27 +2325,225 @@ export default function App() {
   }, [])
   useEffect(() => {
     if (!window?.hrs?.onAgendaProgress) return
-    const unsubscribe = window.hrs.onAgendaProgress(message => setAgendaProgress(message))
+    const unsubscribe = window.hrs.onAgendaProgress(message => {
+      const normalized = message.toLowerCase()
+      if (
+        normalized.includes('opening chrome') ||
+        normalized.includes('background mode') ||
+        normalized.includes('graph explorer loaded')
+      ) {
+        setAgendaFetchPhase(prev => advanceAgendaFetchPhase(prev, 'auth'))
+        setAgendaProgress('Browser session ready.')
+        return
+      }
+      if (
+        normalized.includes('sign-in') ||
+        normalized.includes('sign in') ||
+        normalized.includes('duo') ||
+        normalized.includes('authorization')
+      ) {
+        setAgendaFetchPhase(prev => advanceAgendaFetchPhase(prev, 'auth'))
+        setAgendaProgress('Authenticating Microsoft account...')
+        return
+      }
+      if (
+        normalized.includes('graph token') ||
+        normalized.includes('access token') ||
+        normalized.includes('outlook') ||
+        normalized.includes('identity terms')
+      ) {
+        setAgendaFetchPhase(prev => advanceAgendaFetchPhase(prev, 'query'))
+        setAgendaProgress('Fetching Outlook data...')
+        return
+      }
+      if (
+        normalized.includes('openai') ||
+        normalized.includes('ai batch') ||
+        normalized.includes('agenda ai') ||
+        normalized.includes('person-relevant agenda threads')
+      ) {
+        setAgendaFetchPhase(prev => advanceAgendaFetchPhase(prev, 'ai'))
+        setAgendaProgress('Analyzing relevant threads...')
+        return
+      }
+      setAgendaProgress(message)
+    })
     return () => unsubscribe?.()
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    async function loadAgendaAiConfig() {
+      if (!window?.hrs?.getAgendaAiConfig) return
+      try {
+        const config = await window.hrs.getAgendaAiConfig()
+        if (!cancelled) {
+          setAgendaAiHasApiKey(config.hasApiKey)
+          setAgendaAiModel(config.model || 'gpt-4o-mini')
+        }
+      } catch {
+        // Keep the agenda usable without AI config.
+      }
+    }
+    void loadAgendaAiConfig()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  async function saveAgendaAiConfig() {
+    setAgendaAiSaving(true)
+    try {
+      const config = await window.hrs.setAgendaAiConfig({
+        apiKey: agendaAiApiKey.trim() || null,
+        model: agendaAiModel.trim() || null
+      })
+      setAgendaAiHasApiKey(config.hasApiKey)
+      setAgendaAiModel(config.model || 'gpt-4o-mini')
+      setAgendaAiApiKey('')
+    } finally {
+      setAgendaAiSaving(false)
+    }
+  }
+
+  function hideAgendaItem(item: AgendaItem, options: { hideThread?: boolean; hideSender?: boolean } = {}) {
+    const itemKey = getAgendaItemKey(item)
+    const threadKey = getAgendaThreadKey(item)
+    const senderKey = getAgendaSenderKey(item)
+
+    if (itemKey) {
+      setAgendaHiddenItems(prev => ({ ...prev, [itemKey]: true }))
+    }
+    if (options.hideThread && threadKey) {
+      setAgendaHiddenThreads(prev => ({ ...prev, [threadKey]: true }))
+    }
+    if (options.hideSender && senderKey) {
+      setAgendaHiddenSenders(prev => ({ ...prev, [senderKey]: true }))
+    }
+  }
+
+  function resolveAgendaItem(item: AgendaItem, checked: boolean) {
+    const itemKey = getAgendaItemKey(item)
+    if (!itemKey) return
+    setAgendaResolvedKeys(prev => {
+      const next = { ...prev }
+      if (checked) {
+        next[itemKey] = true
+      } else {
+        delete next[itemKey]
+      }
+      return next
+    })
+  }
+
+  function toggleAgendaImportant(item: AgendaItem) {
+    const itemKey = getAgendaItemKey(item)
+    if (!itemKey) return
+    setAgendaImportantKeys(prev => {
+      const next = { ...prev }
+      if (next[itemKey]) {
+        delete next[itemKey]
+      } else {
+        next[itemKey] = true
+      }
+      return next
+    })
+  }
 
   async function fetchAgenda() {
     setAgendaLoading(true)
     setAgendaError(null)
-    setAgendaProgress('Running agenda export…')
+    setAgendaFetchPhase('init')
+    setTrayAgendaProgressOpen(true)
+    setAgendaProgress('Preparing browser session...')
     try {
-      const result = await window.hrs.getAgenda({ token: agendaToken.trim() || null })
-      setAgendaItems(result.missions || [])
+      const result = await window.hrs.getAgenda({
+        token: null,
+        username: meetingsUsername.trim() || null,
+        password: meetingsPassword || null,
+        personNames: [agendaPersonEnglish, agendaPersonHebrew].map(value => value.trim()).filter(Boolean),
+        personTags: splitAgendaTerms(agendaPersonTags),
+        tuning: {
+          hiddenThreads: Object.keys(agendaHiddenThreads),
+          hiddenSenders: Object.keys(agendaHiddenSenders),
+          importantTerms: agendaItems
+            .filter(item => agendaImportantKeys[getAgendaItemKey(item)])
+            .map(item => item.title || item.actionTitle || item.Title || item.summary || item.Preview || '')
+            .filter(Boolean)
+            .slice(0, 40)
+        }
+      })
+      const nextSections = result.sections || {
+        tasks: [],
+        emailSummaries: [],
+        needReply: [],
+        followUps: [],
+        projectSignals: [],
+        meetingPrep: []
+      }
+      const normalizedSections: AgendaSections = {
+        tasks: nextSections.tasks || [],
+        emailSummaries: nextSections.emailSummaries || [],
+        needReply: nextSections.needReply || [],
+        followUps: nextSections.followUps || [],
+        projectSignals: nextSections.projectSignals || [],
+        meetingPrep: nextSections.meetingPrep || []
+      }
+      setAgendaSections(normalizedSections)
+      setAgendaItems(result.missions || [
+        ...normalizedSections.tasks,
+        ...normalizedSections.needReply,
+        ...normalizedSections.followUps,
+        ...normalizedSections.meetingPrep,
+        ...normalizedSections.projectSignals,
+        ...normalizedSections.emailSummaries
+      ])
       setAgendaSummary({
         mailWindow: result.mailWindow,
         meetingWindow: result.meetingWindow,
         unansweredEmails: result.unansweredEmails,
         meetingsThisWeek: result.meetingsThisWeek,
-        outputDir: result.outputDir
+        outputDir: result.outputDir,
+        brief: result.brief,
+        focus: result.focus,
+        aiProvider: result.aiProvider
       })
+      try {
+        localStorage.setItem(
+          AGENDA_CACHE_STORAGE_KEY,
+          JSON.stringify({
+            savedAt: new Date().toISOString(),
+            summary: {
+              mailWindow: result.mailWindow,
+              meetingWindow: result.meetingWindow,
+              unansweredEmails: result.unansweredEmails,
+              meetingsThisWeek: result.meetingsThisWeek,
+              outputDir: result.outputDir,
+              brief: result.brief,
+              focus: result.focus,
+              aiProvider: result.aiProvider
+            },
+            sections: normalizedSections,
+            items: result.missions || [
+              ...normalizedSections.tasks,
+              ...normalizedSections.needReply,
+              ...normalizedSections.followUps,
+              ...normalizedSections.meetingPrep,
+              ...normalizedSections.projectSignals,
+              ...normalizedSections.emailSummaries
+            ]
+          })
+        )
+      } catch {
+        // Ignore cache write errors.
+      }
+      setAgendaFetchPhase('done')
+      setTrayAgendaProgressOpen(false)
       setAgendaProgress('Agenda ready.')
     } catch (err) {
       setAgendaError(err instanceof Error ? err.message : String(err))
+      setAgendaFetchPhase('error')
+      setTrayAgendaProgressOpen(true)
       setAgendaProgress('Agenda fetch failed.')
     } finally {
       setAgendaLoading(false)
@@ -1804,6 +2776,17 @@ export default function App() {
   }, [isMeetingsWindow, preferencesLoaded, reportMonth, meetingsCache])
 
   useEffect(() => {
+    if (!preferencesLoaded) return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    const cached = meetingsCache[monthKey]
+    if (!cached) return
+    setMeetings(cached.meetings ?? [])
+    setMeetingsMonth(monthKey)
+    setMeetingsUpdatedAt(cached.updatedAt ?? null)
+    setMeetingsProgress('Meetings loaded from cache.')
+  }, [preferencesLoaded, reportMonth, meetingsCache])
+
+  useEffect(() => {
     if (!isFloating) return
     void window.hrs.setFloatingCollapsed(floatingCollapsed)
   }, [isFloating, floatingCollapsed])
@@ -2004,10 +2987,125 @@ export default function App() {
   }
 
   function switchTrayPanel(
-    nextPanel: 'log' | 'clockify' | 'meetings' | 'agenda' | 'reports' | 'settings'
+    nextPanel: 'log' | 'clockify' | 'meetings' | 'agenda' | 'employees' | 'reports' | 'settings'
   ) {
     if (nextPanel === trayPanel) return
     setTrayPanel(nextPanel)
+  }
+
+  async function loadEmployees(options: { silent?: boolean } = {}) {
+    if (!window.hrs?.getEmployees) return
+    if (!options.silent) setEmployeesError(null)
+    setEmployeesLoading(true)
+    try {
+      const result = await window.hrs.getEmployees()
+      setEmployeesResult(result)
+      setEmployeesAccessChecked(true)
+      if (!result.hasAccess || !result.hasEmployees) {
+        if (trayPanel === 'employees') setTrayPanel('log')
+      }
+    } catch (err) {
+      setEmployeesAccessChecked(true)
+      setEmployeesResult(null)
+      const message = err instanceof Error ? err.message : String(err)
+      setEmployeesError(message)
+      if (trayPanel === 'employees') setTrayPanel('log')
+    } finally {
+      setEmployeesLoading(false)
+    }
+  }
+
+  function setEmployeeReportPeriod(month: Date) {
+    const range = getEmployeeMonthRange(month)
+    setEmployeeReportMonth(month)
+    setEmployeeReportFrom(range.start)
+    setEmployeeReportTo(range.end)
+    setEmployeeReportSelectedDate(range.end)
+    setEmployeeReport(null)
+    setEmployeeReportTask(null)
+    setEmployeeReportCustomerId('')
+  }
+
+  function shiftEmployeeReportMonth(delta: number) {
+    setEmployeeReportPeriod(dayjs(employeeReportMonth).add(delta, 'month').toDate())
+  }
+
+  function mergeEmployeeReports(reports: EmployeeHoursReport[]): EmployeeHoursReport {
+    const dateColumns = Array.from(new Set(reports.flatMap(report => report.dateColumns))).sort()
+    const entries = reports
+      .flatMap(report => report.entries)
+      .filter(entry => !isExcludedEmployeeName(entry.employee))
+    const days = dateColumns.map(date => {
+      const dayEntries = entries.filter(entry => entry.date === date)
+      return {
+        date,
+        entries: dayEntries,
+        totalMinutes: dayEntries.reduce((sum, entry) => sum + entry.minutes, 0)
+      }
+    })
+    return {
+      employeeId: EMPLOYEE_REPORT_ALL_VALUE,
+      employeeName: 'All employees',
+      fromDate: employeeReportFrom,
+      toDate: employeeReportTo,
+      customerId: '',
+      customerOptions: [],
+      dateColumns,
+      days,
+      entries,
+      totalMinutes: entries.reduce((sum, entry) => sum + entry.minutes, 0),
+      sourceUrl: reports.map(report => report.sourceUrl).filter(Boolean).join('\n')
+    }
+  }
+
+  async function loadEmployeeHoursReport() {
+    if (!window.hrs?.getEmployeeHoursReport || !employeeReportEmployeeId) return
+    setEmployeeReportLoading(true)
+    setEmployeeReportError(null)
+    try {
+      const employees = (employeesResult?.employees ?? []).filter(
+        employee => !isExcludedEmployeeName(employee.fullName)
+      )
+      let result: EmployeeHoursReport
+      if (employeeReportEmployeeId === EMPLOYEE_REPORT_ALL_VALUE) {
+        const reports: EmployeeHoursReport[] = []
+        for (const employee of employees) {
+          reports.push(
+            await window.hrs.getEmployeeHoursReport({
+              employeeId: employee.id,
+              fromDate: employeeReportFrom,
+              toDate: employeeReportTo,
+              customerId: ''
+            })
+          )
+        }
+        result = mergeEmployeeReports(reports)
+      } else {
+        result = await window.hrs.getEmployeeHoursReport({
+          employeeId: employeeReportEmployeeId,
+          fromDate: employeeReportFrom,
+          toDate: employeeReportTo,
+          customerId: ''
+        })
+      }
+      setEmployeeReport(result)
+      setEmployeeReportTask(null)
+      const todayKey = dayjs().format('YYYY-MM-DD')
+      const preferredDate =
+        todayKey >= employeeReportFrom && todayKey <= employeeReportTo ? todayKey : employeeReportTo
+      const selected = result.days.some(day => day.date === preferredDate)
+        ? preferredDate
+        : result.days.find(day => day.entries.length)?.date ?? result.days[0]?.date ?? employeeReportFrom
+      setEmployeeReportSelectedDate(selected)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setEmployeeReportError(message)
+      if (message === 'AUTH_REQUIRED') {
+        setSessionError('Session expired. Login again, then reload the employee report.')
+      }
+    } finally {
+      setEmployeeReportLoading(false)
+    }
   }
 
   useEffect(() => {
@@ -2274,6 +3372,20 @@ export default function App() {
         ])
       )
       setMeetingClientMappings(normalizedMeetingMappings)
+      const rawExcludedSubjects = prefs.meetingExcludedSubjects ?? {}
+      const normalizedExcludedSubjects = Object.fromEntries(
+        Object.entries(rawExcludedSubjects).map(([monthKey, subjects]) => [
+          monthKey,
+          Array.from(
+            new Set(
+              (Array.isArray(subjects) ? subjects : [])
+                .map(subject => getMeetingSubjectKey(String(subject)))
+                .filter(Boolean)
+            )
+          )
+        ])
+      )
+      setMeetingExcludedSubjects(normalizedExcludedSubjects)
       if (prefs.reportWorkLogsCache && typeof prefs.reportWorkLogsCache === 'object') {
         const normalizedWorkLogs = Object.fromEntries(
           Object.entries(prefs.reportWorkLogsCache).map(([key, entries]) => {
@@ -2337,6 +3449,27 @@ export default function App() {
     } catch {}
   }
 
+  async function resetHrsCredentialsAndOpenLogin() {
+    try {
+      await clearHrsCredentials()
+      autoLoginAttemptedRef.current = false
+      setLoggedIn(false)
+      setDuoPending(false)
+      setSessionError('Saved HRS credentials were reset. Enter and save credentials on the login page.')
+      if (isTray) {
+        try {
+          localStorage.setItem(HRS_CREDENTIAL_RESET_REQUEST_KEY, String(Date.now()))
+        } catch {}
+        await window.hrs.openMainWindow()
+      } else {
+        setCredentialsModalOpen(true)
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setSessionError(message)
+    }
+  }
+
   async function loadJiraLoggedEntries() {
     try {
       const entries = await withTimeout(
@@ -2356,6 +3489,7 @@ export default function App() {
     setMeetingsFetchPhase('init')
     if (!background) {
       setMeetingsProgressLog(['Preparing browser session…'])
+      setTrayMeetingsProgressOpen(true)
     }
     if (!background) {
       setMeetingsProgress('Preparing browser session…')
@@ -2399,11 +3533,13 @@ export default function App() {
         return next.length > 80 ? next.slice(next.length - 80) : next
       })
       setMeetingsFetchPhase('done')
+      setTrayMeetingsProgressOpen(false)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setMeetingsError(message)
       setMeetingsProgress('Fetch failed.')
       setMeetingsFetchPhase('error')
+      setTrayMeetingsProgressOpen(true)
     } finally {
       setMeetingsLoading(false)
     }
@@ -2442,6 +3578,9 @@ export default function App() {
     }
     return Array.from(domains)
   }
+
+  const meetingHasDomain = (meeting: MeetingItem, domain: string) =>
+    getMeetingDomains(getMeetingEmails(meeting)).includes(normalizeMeetingKey(domain))
 
   const getMeetingNames = (meeting: MeetingItem) => {
     if (!meeting.participants) return []
@@ -2491,6 +3630,7 @@ export default function App() {
   ) => {
     meetingMappingPrefillRef.current = prefill ?? null
     setMeetingMappingMeeting(meeting)
+    setMeetingMappingMeetings([])
     setMeetingMappingError(null)
     setMeetingMappingOpen(true)
   }
@@ -2541,10 +3681,10 @@ export default function App() {
   useEffect(() => {
     if (!meetingMappingOpen) return
     const prefill = meetingMappingPrefillRef.current
-    setMeetingMappingKey(meetingMappingOptions[0]?.value ?? null)
+    setMeetingMappingKey(prefill?.matchKey ?? meetingMappingOptions[0]?.value ?? null)
     setMeetingMappingProject(null)
     setMeetingMappingClient(prefill?.client ?? null)
-    setMeetingMappingCustomKey('')
+    setMeetingMappingCustomKey(prefill?.customKey ?? '')
     setMeetingMappingError(null)
     setMeetingLogToJira(prefill?.logToJira ?? false)
     setMeetingLogIssues([])
@@ -2552,6 +3692,7 @@ export default function App() {
     setMeetingLogTaskId(null)
     setMeetingLogLoading(false)
     setMeetingLogError(null)
+    setMeetingMappingSaving(false)
     meetingMappingPrefillRef.current = null
   }, [meetingMappingOpen, meetingMappingOptions])
 
@@ -2700,6 +3841,317 @@ export default function App() {
     return `name:${normalizeMeetingKey(trimmed)}`
   }
 
+  async function logMeetingBatch(
+    meetingsToLog: MeetingItem[],
+    taskId: number,
+    options: {
+      logToJira?: boolean
+      jiraIssueKey?: string | null
+      onError?: (message: string) => void
+    } = {}
+  ) {
+    const prepared = meetingsToLog
+      .map(meeting => {
+        const start = dayjs(meeting.startTime.replace(' ', 'T'))
+        const end = dayjs(meeting.endTime.replace(' ', 'T'))
+        if (!start.isValid() || !end.isValid()) return null
+        const from = start.format('HH:mm')
+        const to = end.format('HH:mm')
+        const duration = buildDurationFromTimes(from, to)
+        if (!duration) return null
+        return {
+          meeting,
+          dateKey: start.format('YYYY-MM-DD'),
+          date: start.toDate(),
+          from,
+          to,
+          duration,
+          title: (meeting.subject || 'Meeting').trim() || 'Meeting'
+        }
+      })
+      .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+
+    if (!prepared.length) {
+      options.onError?.('No valid meetings to log.')
+      return false
+    }
+
+    const effectiveTask = taskMetaById.get(taskId) ?? selectedTask
+    const effectiveCustomerName = effectiveTask?.customerName ?? meetingMappingClient ?? customerName
+    const mappedEpicForLog = effectiveCustomerName
+      ? jiraMappings[effectiveCustomerName] ?? null
+      : null
+    const effectiveJiraIssueKey = options.jiraIssueKey ?? mappedEpicForLog
+    const shouldLogToJira = Boolean(options.logToJira && effectiveJiraIssueKey && jiraStatus?.configured)
+
+    setLogLoading(true)
+    setLogError(null)
+    setLogSuccess(null)
+
+    try {
+      const byDate = new Map<string, typeof prepared>()
+      for (const item of prepared) {
+        const list = byDate.get(item.dateKey) ?? []
+        list.push(item)
+        byDate.set(item.dateKey, list)
+      }
+
+      for (const [dateKey, dayMeetings] of byDate.entries()) {
+        let existingReports: WorkReportEntry[] = []
+        const sampleDate = dayMeetings[0].date
+        if (monthlyReport && dayjs(sampleDate).isSame(reportMonth, 'month')) {
+          existingReports = reportsByDate.get(dateKey)?.day.reports ?? []
+        } else {
+          const { start, end } = getMonthRange(sampleDate)
+          const data = await window.hrs.getReports(start, end)
+          const month = data as MonthlyReport
+          existingReports = month.days.find(day => day.date === dateKey)?.reports ?? []
+        }
+
+        let existingDetailed: ReportLogEntry[] = reportWorkLogsByDate[dateKey] ?? []
+        if (!existingDetailed.length && existingReports.length) {
+          try {
+            const data = await withTimeout(
+              window.hrs.getWorkLogs(dateKey),
+              BOOT_TIMEOUT_MS,
+              'Loading work logs'
+            )
+            existingDetailed = Array.isArray(data)
+              ? data
+                  .map(item => normalizeReportLogEntry(item))
+                  .filter((item): item is ReportLogEntry => Boolean(item))
+              : []
+            setReportWorkLogsByDate(prev => ({ ...prev, [dateKey]: existingDetailed }))
+          } catch {
+            existingDetailed = []
+          }
+        }
+
+        const rangeKeyToRange = new Map<string, { from: string; to: string }>()
+        const rangeByTaskId = new Map<
+          number,
+          Array<{ from: string; to: string; hours: string; comment: string }>
+        >()
+        for (const entry of existingDetailed) {
+          if (!entry.from || !entry.to) continue
+          const hours = entry.hours_HHMM || buildDurationFromTimes(entry.from, entry.to)?.hoursHHMM || ''
+          if (!hours) continue
+          const comment = entry.comment || ''
+          const normalizedKeys = buildReportEntryKeys(
+            {
+              taskId: entry.taskId,
+              hours_HHMM: hours,
+              comment,
+              reporting_from: entry.reporting_from,
+              projectInstance: entry.projectInstance
+            },
+            dateKey
+          )
+          for (const key of normalizedKeys) {
+            if (!rangeKeyToRange.has(key)) {
+              rangeKeyToRange.set(key, { from: entry.from, to: entry.to })
+            }
+          }
+          const list = rangeByTaskId.get(entry.taskId) ?? []
+          list.push({ from: entry.from, to: entry.to, hours, comment })
+          rangeByTaskId.set(entry.taskId, list)
+        }
+
+        const reservedRanges: Array<{ start: number; end: number }> = []
+        const resolvedRanges: Array<{ from: string; to: string } | null> = []
+
+        for (const item of dayMeetings) {
+          const startMinutes = parseTimeToMinutes(item.from)
+          const endMinutes = parseTimeToMinutes(item.to)
+          if (startMinutes !== null && endMinutes !== null && endMinutes > startMinutes) {
+            reservedRanges.push({ start: startMinutes, end: endMinutes })
+          }
+        }
+
+        for (const report of existingReports) {
+          const directRange = extractTimeRangeFromRecord(report as unknown as Record<string, unknown>)
+          let from = directRange?.from ?? null
+          let to = directRange?.to ?? null
+          if (!from || !to) {
+            const keys = buildReportEntryKeys(report, dateKey)
+            for (const key of keys) {
+              const found = rangeKeyToRange.get(key)
+              if (found) {
+                from = found.from
+                to = found.to
+                break
+              }
+            }
+          }
+          if ((!from || !to) && rangeByTaskId.has(report.taskId)) {
+            const candidates = rangeByTaskId.get(report.taskId) ?? []
+            if (candidates.length === 1) {
+              from = candidates[0].from
+              to = candidates[0].to
+            }
+          }
+          const fromMinutes = from ? parseTimeToMinutes(from) : null
+          const toMinutes = to ? parseTimeToMinutes(to) : null
+          if (fromMinutes !== null && toMinutes !== null && toMinutes > fromMinutes) {
+            reservedRanges.push({ start: fromMinutes, end: toMinutes })
+            resolvedRanges.push({ from, to })
+          } else {
+            resolvedRanges.push(null)
+          }
+        }
+
+        const findEarliestGap = (durationMinutes: number) => {
+          const sorted = [...reservedRanges].sort((a, b) => a.start - b.start)
+          let cursor = 0
+          for (const range of sorted) {
+            if (cursor + durationMinutes <= range.start) return cursor
+            if (cursor < range.end) cursor = range.end
+          }
+          const endOfDay = 24 * 60
+          if (cursor + durationMinutes <= endOfDay) return cursor
+          return Math.max(0, endOfDay - durationMinutes)
+        }
+
+        for (let index = 0; index < existingReports.length; index += 1) {
+          if (resolvedRanges[index]) continue
+          const report = existingReports[index]
+          const minutes = parseHoursHHMMToMinutes(report.hours_HHMM) || 1
+          const startMinutes = findEarliestGap(minutes)
+          const endMinutes = Math.min(24 * 60, startMinutes + minutes)
+          const from = minutesToHHMM(startMinutes)
+          const to = minutesToHHMM(endMinutes)
+          resolvedRanges[index] = { from, to }
+          reservedRanges.push({ start: startMinutes, end: endMinutes })
+        }
+
+        const workLogs = existingReports.map((report, index) => {
+          const range = resolvedRanges[index]
+          return toLogWorkItem(
+            {
+              taskId: report.taskId,
+              hours_HHMM: report.hours_HHMM,
+              comment: report.comment,
+              reporting_from: report.reporting_from,
+              from: range?.from ?? undefined,
+              to: range?.to ?? undefined
+            },
+            index
+          )
+        })
+
+        dayMeetings.forEach((item, index) => {
+          workLogs.push({
+            id: existingReports.length + index + 1,
+            from: item.from,
+            to: item.to,
+            hours_HHMM: item.duration.hoursHHMM,
+            hours: item.duration.hours,
+            comment: item.title,
+            notSaved: true,
+            reporting_from: reportingFrom,
+            taskId
+          })
+        })
+
+        await window.hrs.logWork({ date: dateKey, workLogs })
+
+        setReportWorkLogsByDate(prev => {
+          const existing = prev[dateKey] ?? []
+          const projectInstance =
+            effectiveTask?.projectInstance || effectiveTask?.projectName || undefined
+          const nextEntries = dayMeetings.map(item => ({
+            taskId,
+            from: item.from,
+            to: item.to,
+            hours_HHMM: item.duration.hoursHHMM,
+            comment: item.title,
+            reporting_from: reportingFrom,
+            projectInstance
+          }))
+          return {
+            ...prev,
+            [dateKey]: [...existing, ...nextEntries]
+          }
+        })
+      }
+
+      if (shouldLogToJira && effectiveJiraIssueKey) {
+        for (const item of prepared) {
+          try {
+            const createdWorklog = await window.hrs.addJiraWorklog({
+              issueKey: effectiveJiraIssueKey,
+              started: buildJiraStarted(item.date, item.from),
+              seconds: Math.max(1, Math.round(item.duration.minutes * 60)),
+              comment: item.title
+            })
+            const entryKey = getReportEntryKey(
+              {
+                taskId,
+                hours_HHMM: item.duration.hoursHHMM,
+                comment: item.title,
+                reporting_from: reportingFrom,
+                projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
+              },
+              item.dateKey
+            )
+            persistJiraLoggedEntries({
+              ...jiraLoggedEntries,
+              [entryKey]: {
+                issueKey: effectiveJiraIssueKey,
+                loggedAt: new Date().toISOString(),
+                worklogId:
+                  createdWorklog && typeof createdWorklog === 'object'
+                    ? (createdWorklog as JiraWorklogEntry).id
+                    : undefined
+              }
+            })
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err)
+            setLogError(`HRS saved, Jira failed: ${message}`)
+            if (isJiraAuthError(message)) handleJiraAuthError(message)
+          }
+        }
+      }
+
+      const affectedMonths = new Set(prepared.map(item => dayjs(item.date).format('YYYY-MM')))
+      for (const monthKey of affectedMonths) reportsCacheRef.current.delete(monthKey)
+      if (currentMonthKey && affectedMonths.has(currentMonthKey)) {
+        setCurrentMonthReport(null)
+        setCurrentMonthKey(null)
+      }
+      const firstDate = prepared[0].date
+      setReportMonth(firstDate)
+      setSelectedReportDate(firstDate)
+      loadReportsForMonth(firstDate)
+      const weekdayKey = dayjs(firstDate).day().toString()
+      setSmartDefaults(prev => ({
+        lastTaskByWeekday: {
+          ...prev.lastTaskByWeekday,
+          [weekdayKey]: taskId
+        },
+        lastTaskId: taskId
+      }))
+      setLogSuccess(
+        prepared.length === 1
+          ? 'Meeting logged.'
+          : `Logged ${prepared.length} meetings.`
+      )
+      return true
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      options.onError?.(message)
+      if (message === 'AUTH_REQUIRED') {
+        setLoggedIn(false)
+        setLogError('Session expired. Please login again.')
+      } else {
+        setLogError(message)
+      }
+      return false
+    } finally {
+      setLogLoading(false)
+    }
+  }
+
   const saveMeetingMapping = async () => {
     if (!meetingMappingMeeting) return
     const rawKey = meetingMappingCustomKey || meetingMappingKey || ''
@@ -2725,41 +4177,31 @@ export default function App() {
       setMeetingMappingError('Map this client to a Jira epic first.')
       return
     }
+    const meetingsToLog = meetingMappingMeetings.length
+      ? meetingMappingMeetings
+      : [meetingMappingMeeting]
+    setMeetingMappingSaving(true)
     setMeetingClientMappings(prev => ({
       ...prev,
       [normalizedKey]: meetingMappingClient
     }))
-    const start = dayjs(meetingMappingMeeting.startTime.replace(' ', 'T'))
-    const end = dayjs(meetingMappingMeeting.endTime.replace(' ', 'T'))
-    if (!start.isValid() || !end.isValid()) {
-      setMeetingMappingError('Meeting time is invalid.')
-      return
-    }
-    const from = start.format('HH:mm')
-    const to = end.format('HH:mm')
-    const duration = buildDurationFromTimes(from, to)
-    if (!duration) {
-      setMeetingMappingError('Meeting duration is invalid.')
-      return
-    }
-    const meetingTitle = (meetingMappingMeeting.subject || 'Meeting').trim() || 'Meeting'
-	    const success = await submitLogWork(taskId, duration, {
-	      date: start.toDate(),
-	      fromTime: from,
-	      toTime: to,
-	      comment: meetingTitle,
-	      skipCommentRules: true,
-	      reportingFrom,
-	      logToJira: meetingLogToJira && Boolean(meetingMappedEpicKey),
-	      jiraIssueKey: meetingLogIssueKey,
-	      jiraCommentOverride: meetingTitle,
-	      onError: message => setMeetingMappingError(message)
-	    })
+    const success = await logMeetingBatch(meetingsToLog, taskId, {
+      logToJira: meetingLogToJira && Boolean(meetingMappedEpicKey),
+      jiraIssueKey: meetingLogIssueKey,
+      onError: message => setMeetingMappingError(message)
+    })
+    setMeetingMappingSaving(false)
     if (success) {
-      const meetingKey = getMeetingKey(meetingMappingMeeting)
-      setMeetingLoggedKeys(prev => ({ ...prev, [meetingKey]: true }))
+      setMeetingLoggedKeys(prev => {
+        const next = { ...prev }
+        for (const meeting of meetingsToLog) {
+          next[getMeetingKey(meeting)] = true
+        }
+        return next
+      })
       setMeetingMappingOpen(false)
       setMeetingMappingMeeting(null)
+      setMeetingMappingMeetings([])
     } else {
       setMeetingMappingError('Failed to log meeting. Check the log form for errors.')
     }
@@ -2992,6 +4434,23 @@ export default function App() {
       delete next[customer]
       return next
     })
+  }
+
+  async function removeJiraBudgetMapping(customer: string) {
+    const displayName = getCustomerDisplayName(customer)
+    const epicKey = jiraManualBudgets[customer] ?? jiraMappings[customer] ?? null
+    if (!window.confirm(`Remove Jira mapping for ${displayName}?`)) return
+
+    if (jiraManualBudgets[customer]) {
+      removeManualBudget(customer)
+    }
+    if (jiraMappings[customer]) {
+      await updateJiraMapping(customer, null)
+    }
+    setBudgetExpandedCustomer(prev => (prev === customer ? null : prev))
+    if (epicKey) {
+      setTrayReportExpandedEpic(prev => (prev === epicKey ? null : prev))
+    }
   }
 
   function setProjectStartDate(epicKey: string, date: Date | null) {
@@ -5578,6 +7037,38 @@ export default function App() {
   }, [autoLoginEnabled, hasStoredPassword, isTray])
 
   useEffect(() => {
+    if (isTray) return
+    const applyCredentialResetRequest = (event?: StorageEvent) => {
+      if (event && event.key !== HRS_CREDENTIAL_RESET_REQUEST_KEY) return
+      let requested = false
+      try {
+        requested = Boolean(localStorage.getItem(HRS_CREDENTIAL_RESET_REQUEST_KEY))
+        if (requested) localStorage.removeItem(HRS_CREDENTIAL_RESET_REQUEST_KEY)
+      } catch {
+        requested = false
+      }
+      if (!requested) return
+      autoLoginAttemptedRef.current = false
+      autoLoginInFlightRef.current = false
+      setLoggedIn(false)
+      setCheckingSession(false)
+      setDuoPending(false)
+      setDuoHint(false)
+      setSessionError('Saved HRS credentials were reset. Enter and save credentials again.')
+      setStoredUsername(null)
+      setHasStoredPassword(false)
+      setCredentialsUsername('')
+      setCredentialsPassword('')
+      setAutoLoginEnabled(false)
+      setCredentialsModalOpen(true)
+    }
+
+    applyCredentialResetRequest()
+    window.addEventListener('storage', applyCredentialResetRequest)
+    return () => window.removeEventListener('storage', applyCredentialResetRequest)
+  }, [isTray])
+
+  useEffect(() => {
     if (!(hasStoredPassword && (autoLoginEnabled || isTray))) {
       sessionRetryErrorRef.current = null
       autoLoginAttemptedRef.current = false
@@ -5746,6 +7237,39 @@ export default function App() {
     setMeetingsMonth(monthKey)
     setMeetingsUpdatedAt(null)
   }, [isTray, loggedIn, trayPanel, reportMonth, meetingsCache])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn || employeesAccessChecked || employeesLoading) return
+    void loadEmployees({ silent: true })
+  }, [isTray, loggedIn, employeesAccessChecked, employeesLoading])
+
+  useEffect(() => {
+    const hasEmployeeTab = Boolean(employeesResult?.hasAccess && employeesResult.hasEmployees)
+    if (trayPanel === 'employees' && !hasEmployeeTab && employeesAccessChecked) {
+      setTrayPanel('log')
+    }
+  }, [trayPanel, employeesResult, employeesAccessChecked])
+
+  useEffect(() => {
+    const employees = (employeesResult?.employees ?? []).filter(
+      employee => !isExcludedEmployeeName(employee.fullName)
+    )
+    if (!employees.length) {
+      setEmployeeReportEmployeeId(null)
+      return
+    }
+    const validEmployeeIds = new Set([EMPLOYEE_REPORT_ALL_VALUE, ...employees.map(employee => employee.id)])
+    if (employeeReportEmployeeId && validEmployeeIds.has(employeeReportEmployeeId)) {
+      return
+    }
+    setEmployeeReportEmployeeId(EMPLOYEE_REPORT_ALL_VALUE)
+  }, [employeesResult, employeeReportEmployeeId])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn || trayPanel !== 'employees') return
+    if (!employeeReportEmployeeId || employeeReport || employeeReportLoading) return
+    void loadEmployeeHoursReport()
+  }, [isTray, loggedIn, trayPanel, employeeReportEmployeeId, employeeReport, employeeReportLoading])
 
   useEffect(() => {
     if (!isTray || !loggedIn || trayPanel !== 'reports') return
@@ -6132,6 +7656,7 @@ export default function App() {
       meetingsCollapsed,
       meetingsCache,
       meetingClientMappings,
+      meetingExcludedSubjects,
       smartDefaults
     })
   }, [
@@ -6172,6 +7697,7 @@ export default function App() {
     meetingsCollapsed,
     meetingsCache,
     meetingClientMappings,
+    meetingExcludedSubjects,
     smartDefaults,
     preferencesLoaded
   ])
@@ -6337,10 +7863,140 @@ export default function App() {
     }))
   }, [monthlyReport, reportingFrom])
 
+  const meetingsFilterMonthKey = useMemo(() => dayjs(reportMonth).format('YYYY-MM'), [reportMonth])
+
+  const meetingSubjectOptions = useMemo(() => {
+    const options = new Map<string, { key: string; label: string; count: number }>()
+    for (const meeting of meetings) {
+      const label = (meeting.subject || 'Meeting').trim() || 'Meeting'
+      const key = getMeetingSubjectKey(label)
+      const existing = options.get(key)
+      if (existing) {
+        existing.count += 1
+      } else {
+        options.set(key, { key, label, count: 1 })
+      }
+    }
+    return Array.from(options.values()).sort((a, b) =>
+      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    )
+  }, [meetings])
+
+  const excludedMeetingSubjectSet = useMemo(
+    () => new Set(meetingExcludedSubjects[meetingsFilterMonthKey] ?? []),
+    [meetingExcludedSubjects, meetingsFilterMonthKey]
+  )
+
+  const meetingsVisible = useMemo(
+    () =>
+      meetings.filter(
+        meeting => !excludedMeetingSubjectSet.has(getMeetingSubjectKey(meeting.subject || 'Meeting'))
+      ),
+    [meetings, excludedMeetingSubjectSet]
+  )
+
+  const hiddenMeetingCount = meetings.length - meetingsVisible.length
+
+  const meetingDomainOptions = useMemo(() => {
+    const counts = new Map<string, number>()
+    for (const meeting of meetingsVisible) {
+      for (const domain of getMeetingDomains(getMeetingEmails(meeting))) {
+        counts.set(domain, (counts.get(domain) ?? 0) + 1)
+      }
+    }
+    return Array.from(counts.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([domain, count]) => ({
+        value: domain,
+        label: `@${domain} · ${count}`
+      }))
+  }, [meetingsVisible])
+
+  useEffect(() => {
+    if (!meetingDomainFilter) return
+    if (!meetingDomainOptions.some(option => option.value === meetingDomainFilter)) {
+      setMeetingDomainFilter(null)
+    }
+  }, [meetingDomainFilter, meetingDomainOptions])
+
+  const meetingsDomainFiltered = useMemo(() => {
+    if (!meetingDomainFilter) return meetingsVisible
+    return meetingsVisible.filter(meeting => meetingHasDomain(meeting, meetingDomainFilter))
+  }, [meetingsVisible, meetingDomainFilter])
+
+  function updateMeetingSubjectVisibility(subjectKey: string, visible: boolean) {
+    setMeetingExcludedSubjects(prev => {
+      const nextSet = new Set(prev[meetingsFilterMonthKey] ?? [])
+      if (visible) {
+        nextSet.delete(subjectKey)
+      } else {
+        nextSet.add(subjectKey)
+      }
+      const next = { ...prev }
+      if (nextSet.size) {
+        next[meetingsFilterMonthKey] = Array.from(nextSet)
+      } else {
+        delete next[meetingsFilterMonthKey]
+      }
+      return next
+    })
+  }
+
+  function showAllMeetingSubjects() {
+    setMeetingExcludedSubjects(prev => {
+      if (!prev[meetingsFilterMonthKey]) return prev
+      const next = { ...prev }
+      delete next[meetingsFilterMonthKey]
+      return next
+    })
+  }
+
+  function hideAllMeetingSubjects() {
+    setMeetingExcludedSubjects(prev => ({
+      ...prev,
+      [meetingsFilterMonthKey]: meetingSubjectOptions.map(option => option.key)
+    }))
+  }
+
+  const meetingSubjectFilterMenu = meetingSubjectOptions.length ? (
+    <Menu closeOnItemClick={false} width={360} position="bottom-end" shadow="md">
+      <Menu.Target>
+        <Button size="xs" variant={hiddenMeetingCount ? 'light' : 'subtle'}>
+          Meeting filter{hiddenMeetingCount ? ` · ${hiddenMeetingCount} hidden` : ''}
+        </Button>
+      </Menu.Target>
+      <Menu.Dropdown>
+        <Menu.Label>Show meeting names</Menu.Label>
+        <div className="meeting-subject-filter-list">
+          {meetingSubjectOptions.map(option => (
+            <Checkbox
+              key={option.key}
+              size="xs"
+              checked={!excludedMeetingSubjectSet.has(option.key)}
+              onChange={event =>
+                updateMeetingSubjectVisibility(option.key, event.currentTarget.checked)
+              }
+              label={`${option.label} (${option.count})`}
+            />
+          ))}
+        </div>
+        <Menu.Divider />
+        <Group justify="space-between" gap="xs" p="xs">
+          <Button size="compact-xs" variant="subtle" onClick={showAllMeetingSubjects}>
+            Show all
+          </Button>
+          <Button size="compact-xs" variant="subtle" color="red" onClick={hideAllMeetingSubjects}>
+            Hide all
+          </Button>
+        </Group>
+      </Menu.Dropdown>
+    </Menu>
+  ) : null
+
   const meetingsSummary = useMemo(() => {
     const clientCounts = new Map<string, number>()
     let totalMinutes = 0
-    for (const meeting of meetings) {
+    for (const meeting of meetingsDomainFiltered) {
       const start = dayjs(meeting.startTime.replace(' ', 'T'))
       const end = dayjs(meeting.endTime.replace(' ', 'T'))
       if (start.isValid() && end.isValid()) {
@@ -6356,12 +8012,12 @@ export default function App() {
       .sort((a, b) => b[1] - a[1])
       .map(([client, count]) => ({ client, count }))
     return {
-      totalMeetings: meetings.length,
+      totalMeetings: meetingsDomainFiltered.length,
       totalMinutes,
       mappedClients: clientCounts.size,
       topClients
     }
-  }, [meetings, meetingClientMappings])
+  }, [meetingsDomainFiltered, meetingClientMappings])
 
   const meetingsHasFetchedOnce = useMemo(
     () => Object.keys(meetingsCache).length > 0,
@@ -6435,7 +8091,7 @@ export default function App() {
   const trayMeetingsNeedsBootstrap = isTray && trayPanel === 'meetings' && !meetingsHasFetchedOnce
 
   const meetingsSorted = useMemo(() => {
-    const entries = meetings.map((meeting, index) => {
+    const entries = meetingsDomainFiltered.map((meeting, index) => {
       const started = dayjs(meeting.startTime.replace(' ', 'T'))
       return {
         meeting,
@@ -6448,7 +8104,7 @@ export default function App() {
       return a.index - b.index
     })
     return entries.map(entry => entry.meeting)
-  }, [meetings])
+  }, [meetingsDomainFiltered])
 
   const meetingLoggedKeysFromHrs = useMemo(() => {
     const result: Record<string, boolean> = {}
@@ -6497,6 +8153,65 @@ export default function App() {
     }
     return result
   }, [meetings, monthlyReport, currentMonthReport])
+
+  const domainMeetingsToLog = useMemo(
+    () =>
+      meetingDomainFilter
+        ? meetingsDomainFiltered.filter(meeting => {
+            const key = getMeetingKey(meeting)
+            return !meetingLoggedKeys[key] && !meetingLoggedKeysFromHrs[key]
+          })
+        : [],
+    [meetingDomainFilter, meetingsDomainFiltered, meetingLoggedKeys, meetingLoggedKeysFromHrs]
+  )
+
+  function openMeetingDomainMapping() {
+    if (!meetingDomainFilter || !domainMeetingsToLog.length) return
+    const domainKey = `domain:${normalizeMeetingKey(meetingDomainFilter)}`
+    meetingMappingPrefillRef.current = {
+      client: meetingClientMappings[domainKey] ?? null,
+      matchKey: domainKey,
+      customKey: domainKey
+    }
+    setMeetingMappingMeeting(domainMeetingsToLog[0])
+    setMeetingMappingMeetings(domainMeetingsToLog)
+    setMeetingMappingError(null)
+    setMeetingMappingOpen(true)
+  }
+
+  const meetingDomainControls = meetingDomainOptions.length ? (
+    <Card radius="md" withBorder className="meeting-domain-controls">
+      <Group justify="space-between" align="flex-end" wrap="wrap" gap="sm">
+        <Select
+          label="Domain"
+          placeholder="All domains"
+          data={meetingDomainOptions}
+          value={meetingDomainFilter}
+          onChange={setMeetingDomainFilter}
+          searchable
+          clearable
+          nothingFoundMessage="No domain found"
+          className="meeting-domain-select"
+        />
+        <Group gap="xs" align="center" wrap="wrap">
+          {meetingDomainFilter && (
+            <Badge variant="light" color="blue" className="meeting-domain-count">
+              @{meetingDomainFilter} · {meetingsDomainFiltered.length}
+            </Badge>
+          )}
+          <Button
+            size="sm"
+            variant="light"
+            disabled={!meetingDomainFilter || !domainMeetingsToLog.length || meetingMappingSaving}
+            onClick={openMeetingDomainMapping}
+          >
+            Log domain meetings
+            {meetingDomainFilter ? ` (${domainMeetingsToLog.length})` : ''}
+          </Button>
+        </Group>
+      </Group>
+    </Card>
+  ) : null
 
   const taskMetaById = useMemo(() => {
     const map = new Map<number, WorkLog>()
@@ -6602,6 +8317,122 @@ export default function App() {
     }
     return map
   }, [monthlyReport])
+
+  const employeeReportEmployeeOptions = useMemo(
+    () => {
+      const employees = (employeesResult?.employees ?? [])
+        .filter(employee => !isExcludedEmployeeName(employee.fullName))
+        .map(employee => ({
+          value: employee.id,
+          label: `${employee.fullName}${employee.role ? ` · ${employee.role}` : ''}`
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label))
+      return employees.length
+        ? [{ value: EMPLOYEE_REPORT_ALL_VALUE, label: `All employees (${employees.length})` }, ...employees]
+        : []
+    },
+    [employeesResult]
+  )
+
+  const employeeReportCustomerOptions = useMemo(() => {
+    if (!employeeReport) return [{ value: '__all__', label: 'All customers' }]
+    const totals = new Map<string, number>()
+    for (const entry of employeeReport.entries) {
+      const customer = entry.customer?.trim()
+      if (!customer || entry.minutes <= 0) continue
+      totals.set(customer, (totals.get(customer) ?? 0) + entry.minutes)
+    }
+    const mapped = Array.from(totals.entries())
+      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+      .map(([customer, minutes]) => ({
+        value: customer,
+        label: `${customer} · ${minutesToHHMM(minutes)}`
+      }))
+    return [{ value: '__all__', label: 'All customers' }, ...mapped]
+  }, [employeeReport])
+
+  useEffect(() => {
+    if (!employeeReportCustomerId) return
+    if (!employeeReportCustomerOptions.some(option => option.value === employeeReportCustomerId)) {
+      setEmployeeReportCustomerId('')
+      setEmployeeReportTask(null)
+    }
+  }, [employeeReportCustomerId, employeeReportCustomerOptions])
+
+  const employeeReportTaskOptions = useMemo(() => {
+    if (!employeeReport) return []
+    const values = new Map<string, number>()
+    for (const entry of employeeReport.entries) {
+      if (employeeReportCustomerId && entry.customer !== employeeReportCustomerId) continue
+      const task = entry.task.trim()
+      if (!task) continue
+      values.set(task, (values.get(task) ?? 0) + 1)
+    }
+    return Array.from(values.entries())
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([value, count]) => ({ value, label: `${value} (${count})` }))
+  }, [employeeReport, employeeReportCustomerId])
+
+  const employeeReportFilteredEntries = useMemo(() => {
+    if (!employeeReport) return []
+    return employeeReport.entries.filter(entry => {
+      if (employeeReportCustomerId && entry.customer !== employeeReportCustomerId) return false
+      if (employeeReportTask && entry.task !== employeeReportTask) return false
+      return true
+    })
+  }, [employeeReport, employeeReportCustomerId, employeeReportTask])
+
+  const employeeReportDaysByDate = useMemo(() => {
+    const map = new Map<string, EmployeeHoursDay>()
+    if (!employeeReport) return map
+    for (const date of employeeReport.dateColumns) {
+      const entries = employeeReportFilteredEntries.filter(entry => entry.date === date)
+      map.set(date, {
+        date,
+        entries,
+        totalMinutes: entries.reduce((sum, entry) => sum + entry.minutes, 0)
+      })
+    }
+    return map
+  }, [employeeReport, employeeReportFilteredEntries])
+
+  const employeeSelectedDay = employeeReportDaysByDate.get(employeeReportSelectedDate) ?? null
+  const employeeReportIsAllEmployees = employeeReportEmployeeId === EMPLOYEE_REPORT_ALL_VALUE
+  const employeeReportFilteredTotalMinutes = employeeReportFilteredEntries.reduce(
+    (sum, entry) => sum + entry.minutes,
+    0
+  )
+  const employeeReportNonBillableMinutes = employeeReportFilteredEntries.reduce((sum, entry) => {
+    return isNonBillableEmployeeCustomer(entry.customer) ? sum + entry.minutes : sum
+  }, 0)
+  const employeeReportBillablePercent = employeeReportFilteredTotalMinutes
+    ? Math.round(
+        ((employeeReportFilteredTotalMinutes - employeeReportNonBillableMinutes) /
+          employeeReportFilteredTotalMinutes) *
+          1000
+      ) / 10
+    : 0
+  const employeeReportCustomerTotals = useMemo(() => {
+    const totals = new Map<string, number>()
+    for (const entry of employeeReportFilteredEntries) {
+      const customer = entry.customer?.trim() || 'No customer'
+      totals.set(customer, (totals.get(customer) ?? 0) + entry.minutes)
+    }
+    return Array.from(totals.entries())
+      .map(([customer, totalMinutes]) => ({ customer, totalMinutes }))
+      .sort((a, b) => b.totalMinutes - a.totalMinutes || a.customer.localeCompare(b.customer))
+  }, [employeeReportFilteredEntries])
+  const employeeReportDistinctCustomerCount = employeeReportCustomerTotals.length
+  const employeeReportMissingDays = useMemo(() => {
+    if (!employeeReport) return 0
+    const reportWeekendDays = parseWeekendDays(monthlyReport?.weekend ?? 'Fri-Sat')
+    return employeeReport.dateColumns.filter(date => {
+      const day = dayjs(date).day() as DayOfWeek
+      if (reportWeekendDays.includes(day)) return false
+      const info = employeeReportDaysByDate.get(date)
+      return !info || !info.entries.length
+    }).length
+  }, [employeeReport, employeeReportDaysByDate, monthlyReport])
 
   const weekendDays = useMemo(
     () => parseWeekendDays(monthlyReport?.weekend ?? 'Fri-Sat'),
@@ -7243,9 +9074,9 @@ export default function App() {
       },
       {
         id: 'toggle-theme',
-        label: oledEnabled ? 'Switch to DARK' : 'Switch to OLED',
-        keywords: 'theme oled dark',
-        run: () => setOledEnabled(prev => !prev)
+        label: `Switch theme (${THEME_MODE_OPTIONS.find(option => option.value === themeMode)?.label ?? 'Dark'})`,
+        keywords: 'theme oled dark liquid glass appearance',
+        run: cycleThemeMode
       },
       {
         id: 'toggle-jira',
@@ -7299,7 +9130,7 @@ export default function App() {
       }
     ],
     [
-      oledEnabled,
+      themeMode,
       jiraSectionOpen,
       filtersOpen,
       reportsOpen,
@@ -7967,12 +9798,18 @@ export default function App() {
       onClose={() => {
         setMeetingMappingOpen(false)
         setMeetingMappingMeeting(null)
+        setMeetingMappingMeetings([])
       }}
-      title="Map meeting to client"
+      title={meetingMappingMeetings.length ? 'Map domain meetings to client' : 'Map meeting to client'}
       centered
       radius="md"
     >
       <Stack gap="md">
+        {meetingMappingMeetings.length > 1 && (
+          <Badge variant="light" color="blue" w="fit-content">
+            {meetingMappingMeetings.length} meetings selected
+          </Badge>
+        )}
         {meetingMappingMeeting && (
           <Stack gap={4}>
             <Text size="sm" fw={600}>
@@ -8123,10 +9960,20 @@ export default function App() {
         )}
 
         <Group justify="space-between" align="center">
-          <Button variant="subtle" onClick={() => setMeetingMappingOpen(false)}>
+          <Button
+            variant="subtle"
+            onClick={() => {
+              setMeetingMappingOpen(false)
+              setMeetingMappingMeetings([])
+            }}
+          >
             Cancel
           </Button>
-          <Button onClick={saveMeetingMapping}>Save &amp; log</Button>
+          <Button onClick={saveMeetingMapping} loading={meetingMappingSaving}>
+            {meetingMappingMeetings.length > 1
+              ? `Save & log ${meetingMappingMeetings.length}`
+              : 'Save & log'}
+          </Button>
         </Group>
       </Stack>
     </Modal>
@@ -8407,17 +10254,18 @@ export default function App() {
                 </Alert>
               )}
               <Text size="xs" c="dimmed">
-                If you already approved DUO, press login below.
+                Reset saved credentials and enter them again from the main login page.
               </Text>
               <Button
                 size="xs"
                 variant="light"
-                loading={checkingSession || duoPending}
+                color="red"
+                loading={checkingSession}
                 onClick={() => {
-                  void retryTrayLogin()
+                  void resetHrsCredentialsAndOpenLogin()
                 }}
               >
-                Login now
+                Reset credentials
               </Button>
             </Stack>
           )}
@@ -8473,7 +10321,7 @@ export default function App() {
                     <IconCalendar size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
-                <Tooltip label="Reports" withArrow openDelay={120} withinPortal>
+                <Tooltip label="Agenda" withArrow openDelay={120} withinPortal>
                   <ActionIcon
                     className="tray-nav-icon-btn"
                     size={38}
@@ -8486,6 +10334,21 @@ export default function App() {
                     <IconListDetails size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
+                {employeesResult?.hasAccess && employeesResult.hasEmployees && (
+                  <Tooltip label="Employees" withArrow openDelay={120} withinPortal>
+                    <ActionIcon
+                      className="tray-nav-icon-btn"
+                      size={38}
+                      radius="md"
+                      variant={trayPanel === 'employees' ? 'light' : 'subtle'}
+                      onClick={() => switchTrayPanel('employees')}
+                      aria-label="Employees"
+                      title="Employees"
+                    >
+                      <IconUsers size={18} stroke={2.2} />
+                    </ActionIcon>
+                  </Tooltip>
+                )}
                 <Tooltip label="Reports" withArrow openDelay={120} withinPortal>
                   <ActionIcon
                     className="tray-nav-icon-btn"
@@ -9015,60 +10878,85 @@ export default function App() {
                         </Stack>
                       </Card>
                     ) : (
-                      <Group justify="space-between" align="center">
-                        <Button
-                          size="xs"
-                          variant="light"
-                          onClick={() => {
-                            void fetchMeetings()
-                          }}
-                          loading={meetingsLoading}
-                        >
-                          Refresh meetings
-                        </Button>
-                        <Badge variant="light" color="gray">
-                          {meetingsSummary.totalMeetings} meetings
-                        </Badge>
-                      </Group>
+	                      <Group justify="space-between" align="center">
+	                        <Group gap="xs">
+	                          <Button
+	                            size="xs"
+	                            variant="light"
+	                            onClick={() => {
+	                              void fetchMeetings()
+	                            }}
+	                            loading={meetingsLoading}
+	                          >
+	                            Refresh meetings
+	                          </Button>
+	                          {meetingSubjectFilterMenu}
+	                        </Group>
+	                        <Badge variant="light" color="gray">
+	                          {meetingsSummary.totalMeetings} meetings
+	                        </Badge>
+	                      </Group>
                     )}
 
                     {showMeetingsProgressTracker && (
                       <Card radius="md" withBorder className="tray-meetings-progress">
                         <Stack gap={6}>
-                          {meetingsFetchSteps.map((step, index) => (
-                            <Group
-                              key={step.key}
-                              align="flex-start"
-                              gap="xs"
-                              wrap="nowrap"
-                              className={`tray-meetings-step tray-meetings-step-${meetingsStepStatuses[index]}`}
-                            >
-                              <span className="tray-meetings-step-dot">
-                                {meetingsStepStatuses[index] === 'done' ? (
-                                  <IconCheck size={12} />
-                                ) : meetingsStepStatuses[index] === 'active' ? (
-                                  <Loader size={12} />
-                                ) : meetingsStepStatuses[index] === 'error' ? (
-                                  <IconAlertTriangle size={12} />
-                                ) : (
-                                  index + 1
-                                )}
-                              </span>
-                              <div className="tray-meetings-step-copy">
-                                <Text size="xs" fw={600}>
-                                  {step.title}
-                                </Text>
-                                <Text size="xs" c="dimmed">
-                                  {step.detail}
-                                </Text>
-                              </div>
-                            </Group>
-                          ))}
-                          {meetingsProgress && (
-                            <Text size="xs" c="dimmed">
-                              Current: {meetingsProgress}
+                          <Group justify="space-between" align="center" wrap="nowrap">
+                            <Text size="xs" fw={700}>
+                              {meetingsFetchPhase === 'done' ? 'Meeting sync complete' : 'Meeting sync progress'}
                             </Text>
-                          )}
+                            <ActionIcon
+                              size="sm"
+                              variant="subtle"
+                              aria-label={trayMeetingsProgressOpen ? 'Collapse meeting sync progress' : 'Expand meeting sync progress'}
+                              onClick={() => setTrayMeetingsProgressOpen(prev => !prev)}
+                              className="tray-progress-toggle"
+                            >
+                              {trayMeetingsProgressOpen ? (
+                                <IconChevronDown size={16} />
+                              ) : (
+                                <IconChevronRight size={16} />
+                              )}
+                            </ActionIcon>
+                          </Group>
+                          <Collapse in={trayMeetingsProgressOpen} transitionDuration={160}>
+                            <Stack gap={6}>
+                              {meetingsFetchSteps.map((step, index) => (
+                                <Group
+                                  key={step.key}
+                                  align="flex-start"
+                                  gap="xs"
+                                  wrap="nowrap"
+                                  className={`tray-meetings-step tray-meetings-step-${meetingsStepStatuses[index]}`}
+                                >
+                                  <span className="tray-meetings-step-dot">
+                                    {meetingsStepStatuses[index] === 'done' ? (
+                                      <IconCheck size={12} />
+                                    ) : meetingsStepStatuses[index] === 'active' ? (
+                                      <Loader size={12} />
+                                    ) : meetingsStepStatuses[index] === 'error' ? (
+                                      <IconAlertTriangle size={12} />
+                                    ) : (
+                                      index + 1
+                                    )}
+                                  </span>
+                                  <div className="tray-meetings-step-copy">
+                                    <Text size="xs" fw={600}>
+                                      {step.title}
+                                    </Text>
+                                    <Text size="xs" c="dimmed">
+                                      {step.detail}
+                                    </Text>
+                                  </div>
+                                </Group>
+                              ))}
+                              {meetingsProgress && (
+                                <Text size="xs" c="dimmed">
+                                  Current: {meetingsProgress}
+                                </Text>
+                              )}
+                            </Stack>
+                          </Collapse>
                         </Stack>
                       </Card>
                     )}
@@ -9085,8 +10973,10 @@ export default function App() {
                       </Text>
                     )}
 
-                    {!trayMeetingsNeedsBootstrap && meetingsSorted.length ? (
-                      <Stack gap="xs" className="tray-meetings-list">
+                    {!trayMeetingsNeedsBootstrap && meetingDomainControls}
+
+	                    {!trayMeetingsNeedsBootstrap && meetingsSorted.length ? (
+	                      <Stack gap="xs" className="tray-meetings-list">
                         {meetingsSorted.map((meeting, index) => {
                           const meetingKey = getMeetingKey(meeting)
                           const isLogged = Boolean(
@@ -9135,56 +11025,812 @@ export default function App() {
                           )
                         })}
                       </Stack>
-                    ) : !trayMeetingsNeedsBootstrap ? (
-                      <Text size="sm" c="dimmed">
-                        {meetingsLoading ? 'Fetching meetings…' : 'No meetings found for this month.'}
-                      </Text>
-                    ) : null}
+	                    ) : !trayMeetingsNeedsBootstrap ? (
+	                      <Text size="sm" c="dimmed">
+	                        {meetingsLoading
+	                          ? 'Fetching meetings…'
+                            : meetingDomainFilter
+                              ? `No meetings for @${meetingDomainFilter}.`
+	                          : meetings.length && hiddenMeetingCount
+	                            ? 'All meetings are hidden by the meeting filter.'
+	                            : 'No meetings found for this month.'}
+	                      </Text>
+	                    ) : null}
                   </Stack>
                 ) : trayPanel === 'agenda' ? (
                   <Stack gap="xs">
                     <Card radius="md" withBorder>
                       <Stack gap="xs">
-                        <Group justify="space-between">
-                          <Text fw={700} size="sm">
-                            Agenda (Microsoft Graph)
-                          </Text>
-                          <Badge variant="light">{meetingsSummary.totalMeetings} meetings loaded</Badge>
+                        <Group justify="center">
+                          <Badge variant="light" className="tray-agenda-date-pill">
+                            Agenda for {dayjs().format('DD/MM')}
+                          </Badge>
                         </Group>
-                        <PasswordInput
-                          label="Graph access token"
-                          placeholder="Paste Graph token (optional if set in env)"
-                          value={agendaToken}
-                          onChange={event => setAgendaToken(event.currentTarget.value)}
+                        <Card radius="md" withBorder className="tray-meetings-controls">
+                          <Stack gap="xs">
+                            <Group justify="space-between" align="center">
+                              <Text size="xs" fw={600}>
+                                Microsoft account
+                              </Text>
+                              <Badge size="xs" variant="light" color="blue">
+                                Chrome background
+                              </Badge>
+                              <Button
+                                size="xs"
+                                variant="subtle"
+                                onClick={() => setAgendaSettingsOpen(prev => !prev)}
+                              >
+                                {agendaSettingsOpen ? 'Hide' : 'Show'}
+                              </Button>
+                            </Group>
+                            <Collapse in={agendaSettingsOpen} transitionDuration={160}>
+                              <Stack gap="xs">
+                                <SimpleGrid cols={2} spacing="xs">
+                                  <TextInput
+                                    label="Domain user"
+                                    placeholder="you@company.com"
+                                    value={meetingsUsername}
+                                    onChange={event => setMeetingsUsername(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                  <PasswordInput
+                                    label="Domain password"
+                                    placeholder="••••••••"
+                                    value={meetingsPassword}
+                                    onChange={event => setMeetingsPassword(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                </SimpleGrid>
+                                <SimpleGrid cols={2} spacing="xs">
+                                  <TextInput
+                                    label="Your name (English)"
+                                    placeholder="English display name"
+                                    value={agendaPersonEnglish}
+                                    onChange={event => setAgendaPersonEnglish(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                  <TextInput
+                                    label="Your name (Hebrew)"
+                                    placeholder="Hebrew display name"
+                                    value={agendaPersonHebrew}
+                                    onChange={event => setAgendaPersonHebrew(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                </SimpleGrid>
+                                <TextInput
+                                  label="Task tags / aliases"
+                                  placeholder="comma-separated names, project tags, team aliases"
+                                  value={agendaPersonTags}
+                                  onChange={event => setAgendaPersonTags(event.currentTarget.value)}
+                                  size="xs"
+                                />
+                                <SimpleGrid cols={2} spacing="xs">
+                                  <PasswordInput
+                                    label="OpenAI API key"
+                                    placeholder={agendaAiHasApiKey ? 'Saved' : 'sk-...'}
+                                    value={agendaAiApiKey}
+                                    onChange={event => setAgendaAiApiKey(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                  <TextInput
+                                    label="AI model"
+                                    placeholder="gpt-4o-mini"
+                                    value={agendaAiModel}
+                                    onChange={event => setAgendaAiModel(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                </SimpleGrid>
+                                <Group justify="space-between" gap="xs">
+                                  <Badge size="xs" variant="light" color={agendaAiHasApiKey ? 'teal' : 'red'}>
+                                    {agendaAiHasApiKey ? 'OpenAI configured' : 'OpenAI not configured'}
+                                  </Badge>
+                                  <Button
+                                    size="compact-xs"
+                                    variant="light"
+                                    loading={agendaAiSaving}
+                                    onClick={() => void saveAgendaAiConfig()}
+                                  >
+                                    Save AI
+                                  </Button>
+                                </Group>
+                              </Stack>
+                            </Collapse>
+                          </Stack>
+                        </Card>
+                        <Button
                           size="xs"
-                        />
-                        <Button size="xs" variant="light" onClick={() => void fetchAgenda()} loading={agendaLoading}>
-                          Fetch agenda
+                          variant="light"
+                          onClick={() => void fetchAgenda()}
+                          disabled={agendaLoading}
+                        >
+                          {agendaLoading ? 'Building agenda...' : 'Fetch agenda'}
                         </Button>
-                        {agendaProgress && <Text size="xs" c="dimmed">{agendaProgress}</Text>}
+                        {agendaLoading && (
+                          <Card radius="md" withBorder className="tray-agenda-ai-orb-card">
+                            <div className="tray-agenda-ai-orb" aria-hidden="true">
+                              <span />
+                            </div>
+                            <Text size="xs" fw={700} ta="center">
+                              {agendaLoadingMessage}
+                            </Text>
+                          </Card>
+                        )}
+                        {showAgendaProgressTracker && (
+                          <Card radius="md" withBorder className="tray-meetings-progress">
+                            <Stack gap={6}>
+                              <Group justify="space-between" align="center" wrap="nowrap">
+                                <Text size="xs" fw={700}>
+                                  {agendaFetchPhase === 'done' ? 'Agenda sync complete' : 'Agenda sync progress'}
+                                </Text>
+                                {agendaFetchPhase === 'done' && (
+                                  <Button
+                                    size="compact-xs"
+                                    variant="subtle"
+                                    onClick={() => setTrayAgendaProgressOpen(prev => !prev)}
+                                  >
+                                    {trayAgendaProgressOpen ? 'Hide' : 'Show'}
+                                  </Button>
+                                )}
+                              </Group>
+                              <Collapse in={trayAgendaProgressOpen || agendaFetchPhase !== 'done'} transitionDuration={160}>
+                                <Stack gap={6}>
+                                  {agendaFetchSteps.map((step, index) => (
+                                    <Group
+                                      key={step.key}
+                                      align="center"
+                                      gap="xs"
+                                      wrap="nowrap"
+                                      className={`tray-meetings-step tray-meetings-step-${agendaStepStatuses[index]}`}
+                                    >
+                                      <span className="tray-meetings-step-dot">
+                                        {agendaStepStatuses[index] === 'done' ? (
+                                          <IconCheck size={12} />
+                                        ) : agendaStepStatuses[index] === 'active' ? (
+                                          <Loader size={12} />
+                                        ) : agendaStepStatuses[index] === 'error' ? (
+                                          <IconAlertTriangle size={12} />
+                                        ) : (
+                                          index + 1
+                                        )}
+                                      </span>
+                                      <div className="tray-meetings-step-copy">
+                                        <Text size="xs" fw={600}>
+                                          {step.title}
+                                        </Text>
+                                      </div>
+                                    </Group>
+                                  ))}
+                                </Stack>
+                              </Collapse>
+                            </Stack>
+                          </Card>
+                        )}
                         {agendaError && <Alert color="red" variant="light">{agendaError}</Alert>}
                         {agendaSummary && (
-                          <Text size="xs" c="dimmed">
-                            Unanswered emails: {agendaSummary.unansweredEmails} · Meetings this week:{' '}
-                            {agendaSummary.meetingsThisWeek}
-                          </Text>
-                        )}
-                        {agendaItems.length ? (
-                          <Stack gap={6}>
-                            {agendaItems.slice(0, 12).map((item, index) => (
-                              <Group key={`${item.Title}-${index}`} justify="space-between" wrap="nowrap">
-                                <Text size="xs" fw={600} lineClamp={1}>
-                                  {item.Title || 'Untitled'}
+                          <Stack gap={8} className="tray-agenda-summary">
+                            <Group justify="space-between" align="flex-start" gap="xs">
+                              <Stack gap={2} style={{ flex: 1 }}>
+                                <Text size="xs" fw={700}>
+                                  Agenda brief
                                 </Text>
                                 <Text size="xs" c="dimmed">
-                                  {item['Start Date']}
+                                  {agendaSummary.brief ||
+                                    `Unanswered emails: ${agendaSummary.unansweredEmails} · Meetings this week: ${agendaSummary.meetingsThisWeek}`}
                                 </Text>
+                              </Stack>
+                              <Badge
+                                size="xs"
+                                variant="light"
+                                color={agendaSummary.aiProvider === 'openai' ? 'teal' : 'red'}
+                              >
+                                {agendaSummary.aiProvider === 'openai' ? 'OpenAI' : 'AI off'}
+                              </Badge>
+                            </Group>
+                            {agendaSummary.focus?.length ? (
+                              <Stack gap={4}>
+                                {agendaSummary.focus.slice(0, 3).map(focus => (
+                                  <Text key={focus} size="xs" c="dimmed" className="tray-agenda-focus">
+                                    {focus}
+                                  </Text>
+                                ))}
+                              </Stack>
+                            ) : null}
+                            <Group gap={6}>
+                              <Badge size="xs" variant="outline" color="orange">
+                                Tasks {agendaCategoryCounts.task || 0}
+                              </Badge>
+                              <Badge size="xs" variant="outline" color="blue">
+                                Need Reply {agendaCategoryCounts.reply || 0}
+                              </Badge>
+                              <Badge size="xs" variant="outline" color="yellow">
+                                Follow up {agendaCategoryCounts.followup || 0}
+                              </Badge>
+                              <Badge size="xs" variant="outline" color="teal">
+                                Prep {agendaCategoryCounts.meetingPrep || 0}
+                              </Badge>
+                              <Badge size="xs" variant="outline" color="grape">
+                                Signals {agendaCategoryCounts.signal || 0}
+                              </Badge>
+                            </Group>
+                          </Stack>
+                        )}
+                        {agendaItems.length ? (
+                          <Stack gap={8}>
+                            <Group justify="space-between" className="tray-agenda-toolbar">
+                              <Text size="xs" c="dimmed">
+                                {visibleAgendaItems.length} open · {agendaResolvedCount} resolved · {agendaHiddenCount} hidden
+                              </Text>
+                              <Group gap="xs">
+                                {agendaHiddenCount ? (
+                                  <Button
+                                    size="compact-xs"
+                                    variant="subtle"
+                                    onClick={() => {
+                                      setAgendaHiddenItems({})
+                                      setAgendaHiddenThreads({})
+                                      setAgendaHiddenSenders({})
+                                    }}
+                                  >
+                                    Clear hidden
+                                  </Button>
+                                ) : null}
+                                <Checkbox
+                                  size="xs"
+                                  label="Show resolved"
+                                  checked={agendaShowResolved}
+                                  onChange={event => setAgendaShowResolved(event.currentTarget.checked)}
+                                />
                               </Group>
+                            </Group>
+                            {[
+                              {
+                                key: 'tasks',
+                                title: 'Top tasks',
+                                items: visibleAgendaSections.tasks,
+                                color: 'orange'
+                              },
+                              {
+                                key: 'needReply',
+                                title: 'Need Reply',
+                                items: visibleAgendaSections.needReply,
+                                color: 'blue'
+                              },
+                              {
+                                key: 'followUps',
+                                title: 'Follow ups',
+                                items: visibleAgendaSections.followUps,
+                                color: 'yellow'
+                              },
+                              {
+                                key: 'meetingPrep',
+                                title: 'Meeting prep',
+                                items: visibleAgendaSections.meetingPrep,
+                                color: 'teal'
+                              },
+                              {
+                                key: 'projectSignals',
+                                title: 'Project signals',
+                                items: visibleAgendaSections.projectSignals,
+                                color: 'grape'
+                              }
+                            ].map(section => (
+                              <Card key={section.key} radius="md" withBorder className="tray-agenda-section-card">
+                                <Stack gap={7}>
+                                  <Group justify="space-between" align="flex-start" gap="xs">
+                                    <Group gap={6} style={{ flex: 1 }}>
+                                      <ThemeIcon size="sm" radius="xl" color={section.color} variant="light">
+                                        {section.key === 'needReply' ? (
+                                          <IconClipboardText size={13} />
+                                        ) : section.key === 'followUps' ? (
+                                          <IconHistory size={13} />
+                                        ) : section.key === 'meetingPrep' ? (
+                                          <IconCalendar size={13} />
+                                        ) : section.key === 'projectSignals' ? (
+                                          <IconChartBar size={13} />
+                                        ) : (
+                                          <IconListDetails size={13} />
+                                        )}
+                                      </ThemeIcon>
+                                      <Text size="xs" fw={800} className="tray-agenda-section-title">
+                                        {section.title}
+                                      </Text>
+                                    </Group>
+                                    <Badge size="xs" variant="light" color={section.color}>
+                                      {section.items.length}
+                                    </Badge>
+                                  </Group>
+                                  {section.items.length ? (
+                                    <Stack gap={7}>
+                                      {section.items.slice(0, 12).map(item => {
+                                        const itemKey = getAgendaItemKey(item)
+                                        const resolved = agendaResolvedKeys[itemKey] === true
+                                        const category = item.category || item.kind || 'task'
+                                        const threadKey = getAgendaThreadKey(item)
+                                        const senderKey = getAgendaSenderKey(item)
+                                        const important = agendaImportantKeys[itemKey] === true
+                                        const converted = agendaConvertedTaskKeys[itemKey] === true
+                                        return (
+                                          <Card
+                                            key={itemKey}
+                                            radius="md"
+                                            withBorder
+                                            className={`tray-agenda-card${resolved ? ' is-resolved' : ''}`}
+                                          >
+                                            <Group align="flex-start" wrap="nowrap" gap="xs">
+                                              <Checkbox
+                                                size="sm"
+                                                checked={resolved}
+                                                onClick={event => event.stopPropagation()}
+                                                onChange={event => {
+                                                  resolveAgendaItem(item, event.currentTarget.checked)
+                                                }}
+                                                aria-label={`Resolve ${item.title || item.actionTitle || item.Title || 'agenda item'}`}
+                                              />
+                                              <Stack gap={5} style={{ flex: 1, minWidth: 0 }}>
+                                                <Group justify="space-between" gap="xs" wrap="nowrap">
+                                                  <Group gap={5}>
+                                                    <Badge size="xs" variant="light" color={agendaCategoryColor(category)}>
+                                                      {item.priority || item.categoryLabel || category}
+                                                    </Badge>
+                                                  </Group>
+                                                  <Text size="xs" c="dimmed" className="tray-agenda-meta" lineClamp={1}>
+                                                    {item.whenLabel || item['Start Date']}
+                                                  </Text>
+                                                </Group>
+                                                <Text size="xs" fw={700} className="tray-agenda-action">
+                                                  {item.title || item.actionTitle || item.Title || 'Untitled agenda item'}
+                                                </Text>
+                                                <Text size="xs" c="dimmed" className="tray-agenda-brief" lineClamp={3}>
+                                                  {item.summary || item.brief || item.Preview || 'No summary available.'}
+                                                </Text>
+                                                {item.suggestedAction ? (
+                                                  <Text size="xs" className="tray-agenda-next" lineClamp={2}>
+                                                    {item.suggestedAction}
+                                                  </Text>
+                                                ) : null}
+                                                {(item.owner || item.ownerEmail) && (
+                                                  <Text size="xs" c="dimmed" className="tray-agenda-owner" lineClamp={1}>
+                                                    Owner: {item.owner || item.ownerEmail}
+                                                  </Text>
+                                                )}
+                                                {item.reason ? (
+                                                  <Text size="xs" c="dimmed" className="tray-agenda-reason" lineClamp={1}>
+                                                    {item.reason}
+                                                  </Text>
+                                                ) : null}
+                                                <Group gap={6} justify="space-between" className="tray-agenda-actions">
+                                                  <Group gap={4}>
+                                                    {important ? (
+                                                      <Badge size="xs" variant="light" color="red">
+                                                        important
+                                                      </Badge>
+                                                    ) : null}
+                                                    {converted ? (
+                                                      <Badge size="xs" variant="light" color="orange">
+                                                        converted
+                                                      </Badge>
+                                                    ) : null}
+                                                  </Group>
+                                                  <Menu withinPortal={false} position="bottom-end" shadow="md">
+                                                    <Menu.Target>
+                                                      <Button size="compact-xs" variant="subtle">
+                                                        Tune
+                                                      </Button>
+                                                    </Menu.Target>
+                                                    <Menu.Dropdown>
+                                                      <Menu.Item
+                                                        onClick={() => {
+                                                          hideAgendaItem(item, { hideThread: true })
+                                                        }}
+                                                      >
+                                                        Not relevant
+                                                      </Menu.Item>
+                                                      <Menu.Item
+                                                        disabled={!senderKey}
+                                                        onClick={() => {
+                                                          if (!senderKey) return
+                                                          hideAgendaItem(item, { hideSender: true })
+                                                        }}
+                                                      >
+                                                        Always hide sender
+                                                      </Menu.Item>
+                                                      <Menu.Item
+                                                        onClick={() => toggleAgendaImportant(item)}
+                                                      >
+                                                        {important ? 'Remove important' : 'Always important'}
+                                                      </Menu.Item>
+                                                      <Menu.Item
+                                                        disabled={category === 'task'}
+                                                        onClick={() =>
+                                                          setAgendaConvertedTaskKeys(prev => ({
+                                                            ...prev,
+                                                            [itemKey]: true
+                                                          }))
+                                                        }
+                                                      >
+                                                        Convert to task
+                                                      </Menu.Item>
+                                                      {item.link || item.Link ? (
+                                                        <Menu.Item
+                                                          onClick={() => {
+                                                            window.open(item.link || item.Link, '_blank', 'noopener,noreferrer')
+                                                          }}
+                                                        >
+                                                          Open source
+                                                        </Menu.Item>
+                                                      ) : null}
+                                                    </Menu.Dropdown>
+                                                  </Menu>
+                                                </Group>
+                                              </Stack>
+                                            </Group>
+                                          </Card>
+                                        )
+                                      })}
+                                    </Stack>
+                                  ) : (
+                                    <Text size="xs" c="dimmed" className="tray-agenda-empty">
+                                      No open items in this section.
+                                    </Text>
+                                  )}
+                                </Stack>
+                              </Card>
+                            ))}
+                            {!visibleAgendaItems.length ? (
+                              <Text size="xs" c="dimmed" className="tray-agenda-empty">
+                                {agendaHiddenCount
+                                  ? 'All agenda items are hidden by your relevance filters. Clear hidden to bring them back.'
+                                  : 'All agenda items are resolved. Enable Show resolved to bring one back.'}
+                              </Text>
+                            ) : null}
+                          </Stack>
+                        ) : (
+                          !agendaLoading && !agendaSummary ? (
+                            <Text size="xs" c="dimmed">
+                              Fetch agenda to build tasks, summaries, and replies.
+                            </Text>
+                          ) : null
+                        )}
+                      </Stack>
+                    </Card>
+                  </Stack>
+                ) : trayPanel === 'employees' ? (
+                  <Stack gap="xs" className="tray-employees-panel">
+                    <Card radius="md" withBorder className="tray-employees-summary">
+                      <Stack gap="xs">
+                        <Group justify="space-between" align="flex-start" gap="xs">
+                          <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+                            <Text size="sm" fw={800}>
+                              Employee reports
+                            </Text>
+                            <Text size="xs" c="dimmed" lineClamp={2}>
+                              {employeesResult?.source === 'directReports'
+                                ? `Direct reports under ${employeesResult.currentEmployeeName ?? 'you'}`
+                                : 'Hours report calendar from HRS employee report'}
+                            </Text>
+                          </Stack>
+                          <Badge size="xs" variant="light" color="teal">
+                            {Math.max(employeeReportEmployeeOptions.length - 1, 0)}
+                          </Badge>
+                        </Group>
+
+                        <Select
+                          label="Employee"
+                          placeholder={employeesLoading ? 'Loading employees...' : 'Select employee'}
+                          data={employeeReportEmployeeOptions}
+                          value={employeeReportEmployeeId}
+                          searchable
+                          nothingFoundMessage="No employees"
+                          disabled={employeesLoading || !employeeReportEmployeeOptions.length}
+                          onChange={value => {
+                            setEmployeeReportEmployeeId(value)
+                            setEmployeeReport(null)
+                            setEmployeeReportTask(null)
+                            setEmployeeReportCustomerId('')
+                          }}
+                          styles={traySelectStyles}
+                        />
+
+                        <SimpleGrid cols={2} spacing="xs" className="tray-employee-period-grid">
+                          <DatePickerInput
+                            label="From"
+                            value={employeeReportFrom ? dayjs(employeeReportFrom).toDate() : null}
+                            onChange={value => {
+                              if (!value) return
+                              const next = dayjs(value).format('YYYY-MM-DD')
+                              setEmployeeReportMonth(dayjs(value).toDate())
+                              setEmployeeReportFrom(next)
+                              if (next > employeeReportTo) setEmployeeReportTo(next)
+                              setEmployeeReportSelectedDate(next)
+                              setEmployeeReport(null)
+                              setEmployeeReportTask(null)
+                              setEmployeeReportCustomerId('')
+                            }}
+                            size="xs"
+                            styles={traySelectStyles}
+                          />
+                          <DatePickerInput
+                            label="To"
+                            value={employeeReportTo ? dayjs(employeeReportTo).toDate() : null}
+                            onChange={value => {
+                              if (!value) return
+                              const next = dayjs(value).format('YYYY-MM-DD')
+                              setEmployeeReportMonth(dayjs(value).toDate())
+                              setEmployeeReportTo(next)
+                              if (next < employeeReportFrom) setEmployeeReportFrom(next)
+                              setEmployeeReportSelectedDate(next)
+                              setEmployeeReport(null)
+                              setEmployeeReportTask(null)
+                              setEmployeeReportCustomerId('')
+                            }}
+                            size="xs"
+                            styles={traySelectStyles}
+                          />
+                        </SimpleGrid>
+
+                        <Group grow gap="xs" className="tray-employee-month-actions">
+                          <Button size="compact-xs" variant="subtle" onClick={() => shiftEmployeeReportMonth(-1)}>
+                            Prev month
+                          </Button>
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            onClick={() => setEmployeeReportPeriod(new Date())}
+                          >
+                            Current
+                          </Button>
+                          <Button size="compact-xs" variant="subtle" onClick={() => shiftEmployeeReportMonth(1)}>
+                            Next month
+                          </Button>
+                        </Group>
+
+                        <SimpleGrid cols={2} spacing="xs" className="tray-employee-filter-grid">
+                          <Select
+                            label="Customer"
+                            data={employeeReportCustomerOptions}
+                            value={employeeReportCustomerId || '__all__'}
+                            disabled={!employeeReport}
+                            searchable
+                            onChange={value => {
+                              setEmployeeReportCustomerId(value && value !== '__all__' ? value : '')
+                              setEmployeeReportTask(null)
+                            }}
+                            styles={traySelectStyles}
+                          />
+                          <Select
+                            label="Task"
+                            placeholder="All tasks"
+                            data={employeeReportTaskOptions}
+                            value={employeeReportTask}
+                            disabled={!employeeReport || !employeeReportTaskOptions.length}
+                            searchable
+                            clearable
+                            onChange={setEmployeeReportTask}
+                            styles={traySelectStyles}
+                          />
+                        </SimpleGrid>
+
+                        <Stack gap={7}>
+                          <SimpleGrid cols={employeeReportIsAllEmployees ? 2 : 4} spacing="xs" className="tray-employee-kpi-grid">
+                            {!employeeReportIsAllEmployees && (
+                              <Card className="tray-report-kpi tray-employee-kpi" radius="md" withBorder>
+                                <Text size="xs" c="dimmed">
+                                  Total Hours
+                                </Text>
+                                <Text fw={700} size="lg">
+                                  {employeeReport ? minutesToHHMM(employeeReportFilteredTotalMinutes) : '00:00'}
+                                </Text>
+                              </Card>
+                            )}
+                            <Card className="tray-report-kpi tray-employee-kpi" radius="md" withBorder>
+                              <Text size="xs" c="dimmed">
+                                {employeeReportIsAllEmployees ? 'Total Customers' : 'Customers'}
+                              </Text>
+                              <Text fw={700} size="lg">
+                                {employeeReportDistinctCustomerCount}
+                              </Text>
+                            </Card>
+                            {!employeeReportIsAllEmployees && (
+                              <Card className="tray-report-kpi tray-employee-kpi" radius="md" withBorder>
+                                <Text size="xs" c="dimmed">
+                                  Missing
+                                </Text>
+                                <Text fw={700} size="lg">
+                                  {employeeReport ? employeeReportMissingDays : 0}
+                                </Text>
+                              </Card>
+                            )}
+                            <Card className="tray-report-kpi tray-employee-kpi" radius="md" withBorder>
+                              <Text size="xs" c="dimmed">
+                                Billable %
+                              </Text>
+                              <Text fw={700} size="lg">
+                                {employeeReport ? `${employeeReportBillablePercent}%` : '0%'}
+                              </Text>
+                            </Card>
+                          </SimpleGrid>
+                          {employeeReportCustomerTotals.length ? (
+                            <Stack gap={5} className="tray-employee-customer-hours">
+                              {employeeReportCustomerTotals.map(item => (
+                                <Group
+                                  key={item.customer}
+                                  justify="space-between"
+                                  gap="xs"
+                                  wrap="nowrap"
+                                  className="tray-employee-customer-hour-row"
+                                >
+                                  <Text size="xs" fw={700} lineClamp={1}>
+                                    {item.customer}
+                                  </Text>
+                                  <Text size="xs" fw={800} className="tray-employee-customer-hour-value">
+                                    {minutesToHHMM(item.totalMinutes)}
+                                  </Text>
+                                </Group>
+                              ))}
+                            </Stack>
+                          ) : employeeReport ? (
+                            <Text size="xs" c="dimmed" className="tray-employee-customer-hours-empty">
+                              No customer hours reported for this filter.
+                            </Text>
+                          ) : null}
+                        </Stack>
+                      </Stack>
+                    </Card>
+
+                    {(employeesError || employeeReportError) && (
+                      <Alert color="red" variant="light">
+                        {employeeReportError || employeesError}
+                      </Alert>
+                    )}
+
+                    <Card radius="md" withBorder className="tray-employee-report-card">
+                      <Stack gap="xs">
+                        <Group justify="space-between" align="center" gap="xs">
+                          <Text size="xs" fw={800}>
+                            {dayjs(employeeReportMonth).format('MMMM YYYY')}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {dayjs(employeeReportFrom).format('DD/MM')} - {dayjs(employeeReportTo).format('DD/MM')}
+                          </Text>
+                        </Group>
+                        <div className="tray-calendar tray-employee-report-calendar" role="grid" aria-label="Employee report calendar">
+                          <div className="tray-calendar-weekdays" role="row">
+                            {['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].map(label => (
+                              <span key={label} className="tray-calendar-weekday" role="columnheader">
+                                {label}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="tray-calendar-grid">
+                            {(() => {
+                              const monthStart = dayjs(employeeReportMonth).startOf('month')
+                              const monthEnd = monthStart.endOf('month')
+                              const gridStart = monthStart.startOf('week')
+                              const gridEnd = monthEnd.endOf('week')
+                              const todayKey = dayjs().format('YYYY-MM-DD')
+                              const cells: Array<{ key: string; date: Date; inMonth: boolean }> = []
+                              let cursor = gridStart
+                              while (cursor.isBefore(gridEnd, 'day') || cursor.isSame(gridEnd, 'day')) {
+                                cells.push({
+                                  key: cursor.format('YYYY-MM-DD'),
+                                  date: cursor.toDate(),
+                                  inMonth: cursor.isSame(monthStart, 'month')
+                                })
+                                cursor = cursor.add(1, 'day')
+                              }
+                              const weeks: Array<Array<{ key: string; date: Date; inMonth: boolean }>> = []
+                              for (let index = 0; index < cells.length; index += 7) {
+                                weeks.push(cells.slice(index, index + 7))
+                              }
+                              return weeks.map((week, weekIndex) => (
+                                <div className="tray-calendar-row" role="row" key={`employee-week-${weekIndex}`}>
+                                  {week.map(dayCell => {
+                                    const dayInfo = employeeReportDaysByDate.get(dayCell.key)
+                                    const inPeriod =
+                                      dayCell.key >= employeeReportFrom && dayCell.key <= employeeReportTo
+                                    const hasHours = Boolean(dayInfo?.entries.length)
+                                    const isSelected = employeeReportSelectedDate === dayCell.key
+                                    const isToday = todayKey === dayCell.key
+                                    const tooltipLabel = dayInfo?.entries.length
+                                      ? `${dayjs(dayCell.date).format('DD/MM/YYYY')} · ${minutesToHHMM(dayInfo.totalMinutes)} · ${dayInfo.entries.length} entries`
+                                      : dayCell.inMonth && inPeriod
+                                        ? `${dayjs(dayCell.date).format('DD/MM/YYYY')} · no report`
+                                        : dayjs(dayCell.date).format('DD/MM/YYYY')
+                                    return (
+                                      <Tooltip key={dayCell.key} label={tooltipLabel} position="top" withArrow>
+                                        <span className="tray-day-tooltip-target" role="gridcell">
+                                          <button
+                                            type="button"
+                                            className={[
+                                              'tray-day-button',
+                                              'employee-hours-day',
+                                              dayCell.inMonth ? '' : 'is-outside',
+                                              inPeriod ? 'is-in-period' : 'is-outside-period',
+                                              hasHours ? 'has-reports' : '',
+                                              isSelected ? 'is-selected' : '',
+                                              isToday ? 'is-today' : ''
+                                            ]
+                                              .join(' ')
+                                              .trim()}
+                                            onClick={() => {
+                                              if (!dayCell.inMonth || !inPeriod) return
+                                              setEmployeeReportSelectedDate(dayCell.key)
+                                            }}
+                                            disabled={!dayCell.inMonth || !inPeriod}
+                                          >
+                                            <span className="tray-day-number">{dayjs(dayCell.date).date()}</span>
+                                            {hasHours ? (
+                                              <span className="employee-hours-day-hours">
+                                                {minutesToHHMM(dayInfo?.totalMinutes ?? 0)}
+                                              </span>
+                                            ) : null}
+                                          </button>
+                                        </span>
+                                      </Tooltip>
+                                    )
+                                  })}
+                                </div>
+                              ))
+                            })()}
+                          </div>
+                        </div>
+                      </Stack>
+                    </Card>
+
+                    <Card radius="md" withBorder className="tray-employee-day-card">
+                      <Stack gap="xs">
+                        <Group justify="space-between" gap="xs">
+                          <Text size="xs" fw={800}>
+                            {dayjs(employeeReportSelectedDate).format('DD/MM/YYYY')}
+                          </Text>
+                          <Badge size="xs" variant="light" color="blue">
+                            {minutesToHHMM(employeeSelectedDay?.totalMinutes ?? 0)}
+                          </Badge>
+                        </Group>
+                        {employeeSelectedDay?.entries.length ? (
+                          <Stack gap={7}>
+                            {employeeSelectedDay.entries.map((entry, index) => (
+                              <Card
+                                key={`${entry.date}-${entry.taskId ?? entry.task}-${index}`}
+                                radius="md"
+                                withBorder
+                                className="tray-employee-entry-card"
+                              >
+                                <Group justify="space-between" align="flex-start" gap="xs" wrap="nowrap">
+                                  <Stack gap={4} style={{ flex: 1, minWidth: 0 }}>
+                                    <Group gap={6} wrap="nowrap">
+                                      {employeeReportIsAllEmployees ? (
+                                        <Badge size="xs" variant="light" color="blue">
+                                          {entry.employee || 'Employee'}
+                                        </Badge>
+                                      ) : null}
+                                      <Badge size="xs" variant="light" color="cyan">
+                                        {entry.customer || 'No customer'}
+                                      </Badge>
+                                      {entry.milestone && entry.milestone !== '-' ? (
+                                        <Badge size="xs" variant="outline" color="gray">
+                                          {entry.milestone}
+                                        </Badge>
+                                      ) : null}
+                                    </Group>
+                                    <Text size="xs" fw={800} lineClamp={2}>
+                                      {entry.task || 'No task'}
+                                    </Text>
+                                  </Stack>
+                                  <Text size="xs" fw={800} className="tray-employee-entry-hours">
+                                    {entry.hoursHHMM}
+                                  </Text>
+                                </Group>
+                              </Card>
                             ))}
                           </Stack>
                         ) : (
-                          <Text size="xs" c="dimmed">
-                            No agenda items yet.
+                          <Text size="xs" c="dimmed" className="tray-employee-empty">
+                            {employeeReport
+                              ? 'No reported hours for this day and filter.'
+                              : employeesLoading || employeeReportLoading
+                                ? 'Loading employee report...'
+                                : 'Select an employee and load the report.'}
                           </Text>
                         )}
                       </Stack>
@@ -9269,6 +11915,16 @@ export default function App() {
                           <Badge size="xs" variant="light">
                             {jiraBudgetRows.length}
                           </Badge>
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            onClick={() => {
+                              setTraySettingsTab('mapping')
+                              switchTrayPanel('settings')
+                            }}
+                          >
+                            Mapping
+                          </Button>
                           <Button
                             size="xs"
                             variant="subtle"
@@ -9427,6 +12083,20 @@ export default function App() {
                                       )}
                                     </button>
 
+                                    <Group justify="flex-end" px={8} pb={isExpanded ? 0 : 8}>
+                                      <Button
+                                        size="compact-xs"
+                                        variant="subtle"
+                                        color="red"
+                                        leftSection={<IconTrash size={12} />}
+                                        onClick={() => {
+                                          void removeJiraBudgetMapping(row.customer)
+                                        }}
+                                      >
+                                        Remove mapping
+                                      </Button>
+                                    </Group>
+
                                     {isExpanded && (
                                       <div className="tray-project-details">
                                         {row.detailsLoading && (
@@ -9530,6 +12200,20 @@ export default function App() {
                   </Stack>
                 ) : (
                   <Stack gap="xs" className="tray-settings-panel">
+                    <Card radius="md" withBorder className="tray-settings-card tray-theme-settings-card">
+                      <Stack gap="xs">
+                        <Group justify="space-between" align="center">
+                          <Text fw={700} size="sm">
+                            Appearance
+                          </Text>
+                          <Badge size="xs" variant="light" color={themeMode === 'liquid' ? 'cyan' : themeMode === 'oled' ? 'gray' : 'blue'}>
+                            {THEME_MODE_OPTIONS.find(option => option.value === themeMode)?.label ?? 'Dark'}
+                          </Badge>
+                        </Group>
+                        {renderThemeModeToggle('sm')}
+                      </Stack>
+                    </Card>
+
                     <Group grow className="tray-settings-tabs" wrap="nowrap">
                       <Button
                         size="xs"
@@ -10174,7 +12858,7 @@ export default function App() {
     const prefetchEpicKeys = jiraPrefetchProgress
       ? Object.keys(jiraPrefetchEntries)
       : []
-    return (
+    return renderLiquidGlassFrame(
       <Box className="app-shell">
         <Container size="sm">
           <Card className="glass-card hero-card" radius="lg" p="xl">
@@ -10244,7 +12928,7 @@ export default function App() {
   }
 
   if (isSettingsWindow) {
-    return (
+    return renderLiquidGlassFrame(
       <Box className="app-shell settings-shell">
         <Container size="sm" className="settings-container">
           <Card className="glass-card" radius="lg" p="xl">
@@ -10288,6 +12972,35 @@ export default function App() {
                   {bridgeError}
                 </Alert>
               )}
+
+              <Card radius="md" withBorder className="theme-settings-card">
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center">
+                    <Text fw={700}>Appearance</Text>
+                    <Badge color={themeMode === 'liquid' ? 'cyan' : themeMode === 'oled' ? 'gray' : 'blue'} variant="light">
+                      {THEME_MODE_OPTIONS.find(option => option.value === themeMode)?.label ?? 'Dark'}
+                    </Badge>
+                  </Group>
+                  <Text size="xs" c="dimmed">
+                    Choose the visual style used across the main app, tray, reports, meetings, and settings.
+                  </Text>
+                  <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm" className="theme-settings-grid">
+                    {THEME_MODE_OPTIONS.map(option => (
+                      <button
+                        key={option.value}
+                        type="button"
+                        className={`theme-mode-card theme-mode-card-${option.value}${themeMode === option.value ? ' is-active' : ''}`}
+                        onClick={() => setThemeMode(option.value)}
+                        aria-pressed={themeMode === option.value}
+                      >
+                        <span className="theme-mode-card-preview" aria-hidden="true" />
+                        <span className="theme-mode-card-title">{option.label}</span>
+                        <span className="theme-mode-card-description">{option.description}</span>
+                      </button>
+                    ))}
+                  </SimpleGrid>
+                </Stack>
+              </Card>
 
               <Card radius="md" withBorder>
                 <Stack gap="sm">
@@ -10607,7 +13320,7 @@ export default function App() {
   }
 
   if (isMeetingsWindow) {
-    return (
+    return renderLiquidGlassFrame(
       <Box className="app-shell settings-shell">
         <Container size="lg" className="settings-container">
           <Card className="glass-card" radius="lg" p="xl">
@@ -10723,6 +13436,7 @@ export default function App() {
                     </Button>
                   )}
                 </Group>
+                {meetingSubjectFilterMenu}
                 <Badge variant="light" color="gray">
                   {meetingsSummary.totalMeetings} meetings
                 </Badge>
@@ -10768,7 +13482,9 @@ export default function App() {
                 </Text>
               )}
 
-              {meetings.length ? (
+              {meetingDomainControls}
+
+              {meetingsSorted.length ? (
                 <Table striped highlightOnHover withTableBorder>
                   <Table.Thead>
                     <Table.Tr>
@@ -10811,7 +13527,13 @@ export default function App() {
                 </Table>
               ) : (
                 <Text size="sm" c="dimmed">
-                  {meetingsLoading ? 'Fetching meetings…' : 'No meetings found for this month.'}
+                  {meetingsLoading
+                    ? 'Fetching meetings…'
+                    : meetingDomainFilter
+                      ? `No meetings for @${meetingDomainFilter}.`
+                    : meetings.length && hiddenMeetingCount
+                      ? 'All meetings are hidden by the meeting filter.'
+                      : 'No meetings found for this month.'}
                 </Text>
               )}
             </Stack>
@@ -10823,7 +13545,7 @@ export default function App() {
   }
 
   if (!loggedIn) {
-    return (
+    return renderLiquidGlassFrame(
       <Box className="app-shell">
         <Container size="sm">
           <Card className="glass-card hero-card" radius="lg" p="xl">
@@ -10832,24 +13554,7 @@ export default function App() {
                 <Text className="page-title-text">HRS Desktop Ver 0.1</Text>
               </div>
               <Group justify="center" align="center">
-                <div className="theme-toggle" role="group" aria-label="Theme">
-                  <button
-                    type="button"
-                    className={`theme-toggle-option${!oledEnabled ? ' is-active' : ''}`}
-                    aria-pressed={!oledEnabled}
-                    onClick={() => setOledEnabled(false)}
-                  >
-                    DARK
-                  </button>
-                  <button
-                    type="button"
-                    className={`theme-toggle-option${oledEnabled ? ' is-active' : ''}`}
-                    aria-pressed={oledEnabled}
-                    onClick={() => setOledEnabled(true)}
-                  >
-                    OLED
-                  </button>
-                </div>
+                {renderThemeModeToggle()}
               </Group>
               <Text c="dimmed" mt="xs" ta="center">
                 Connect once, then pick project, customer, and task to log hours quickly.
@@ -10974,7 +13679,7 @@ export default function App() {
     )
   }
 
-  return (
+  return renderLiquidGlassFrame(
     <Box className="app-shell">
       <Container size="lg" className="app-container">
         <Stack gap="xl">
@@ -11055,24 +13760,7 @@ export default function App() {
                 )}
               </Stack>
               <Group align="center" className="page-toolbar-actions">
-                <div className="theme-toggle theme-toggle-sm" role="group" aria-label="Theme">
-                  <button
-                    type="button"
-                    className={`theme-toggle-option${!oledEnabled ? ' is-active' : ''}`}
-                    aria-pressed={!oledEnabled}
-                    onClick={() => setOledEnabled(false)}
-                  >
-                    DARK
-                  </button>
-                  <button
-                    type="button"
-                    className={`theme-toggle-option${oledEnabled ? ' is-active' : ''}`}
-                    aria-pressed={oledEnabled}
-                    onClick={() => setOledEnabled(true)}
-                  >
-                    OLED
-                  </button>
-                </div>
+                {renderThemeModeToggle('sm')}
                 <Tooltip
                   label={focusMode ? 'Exit focus mode' : 'Enter focus mode'}
                   position="bottom"
@@ -12207,6 +14895,21 @@ export default function App() {
                                     </svg>
                                   )}
                                 </ActionIcon>
+                                <Tooltip label="Remove mapping" withArrow openDelay={120}>
+                                  <ActionIcon
+                                    size="xs"
+                                    variant="subtle"
+                                    color="red"
+                                    component="span"
+                                    onClick={event => {
+                                      event.stopPropagation()
+                                      void removeJiraBudgetMapping(row.customer)
+                                    }}
+                                    aria-label="Remove mapping"
+                                  >
+                                    <IconTrash size={12} />
+                                  </ActionIcon>
+                                </Tooltip>
                               </Group>
                               {epicAlias && (
                                 <Text size="xs" c="dimmed" className="project-meta">
@@ -13423,16 +16126,17 @@ export default function App() {
                               </ActionIcon>
                             </Tooltip>
                           </Group>
-                          <Button
-                            size="xs"
-                            variant="light"
-                            onClick={() => fetchMeetings()}
-                            loading={meetingsLoading}
-                          >
-                            Fetch meetings
-                          </Button>
-                        </>
-                      )}
+	                          <Button
+	                            size="xs"
+	                            variant="light"
+	                            onClick={() => fetchMeetings()}
+	                            loading={meetingsLoading}
+	                          >
+	                            Fetch meetings
+	                          </Button>
+	                          {meetingSubjectFilterMenu}
+	                        </>
+	                      )}
                       {meetingsCollapsed && (
                         <Button
                           size="xs"
@@ -13527,8 +16231,10 @@ export default function App() {
                         </Text>
                       )}
 
-                      {meetings.length ? (
-                        <Table striped highlightOnHover withTableBorder>
+                      {meetingDomainControls}
+
+	                      {meetingsSorted.length ? (
+	                        <Table striped highlightOnHover withTableBorder>
                           <Table.Thead>
                             <Table.Tr>
                               <Table.Th>Meeting</Table.Th>
@@ -13573,11 +16279,17 @@ export default function App() {
                             )})}
                           </Table.Tbody>
                         </Table>
-                      ) : (
-                        <Text size="sm" c="dimmed">
-                          {meetingsLoading ? 'Fetching meetings…' : 'No meetings yet.'}
-                        </Text>
-                      )}
+	                      ) : (
+	                        <Text size="sm" c="dimmed">
+	                          {meetingsLoading
+	                            ? 'Fetching meetings…'
+                              : meetingDomainFilter
+                                ? `No meetings for @${meetingDomainFilter}.`
+	                            : meetings.length && hiddenMeetingCount
+	                              ? 'All meetings are hidden by the meeting filter.'
+	                              : 'No meetings yet.'}
+	                        </Text>
+	                      )}
                     </>
                   )}
                 </Stack>

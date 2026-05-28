@@ -1,4 +1,14 @@
-import { app, BrowserWindow, ipcMain, nativeImage, session, Tray, Menu, screen } from 'electron'
+import {
+  app,
+  BrowserWindow,
+  ipcMain,
+  nativeImage,
+  session,
+  Tray,
+  Menu,
+  screen,
+  type BrowserWindowConstructorOptions
+} from 'electron'
 import fs from 'node:fs'
 import { createRequire } from 'node:module'
 import path from 'node:path'
@@ -11,6 +21,7 @@ import { registerExportIpc } from './ipc/export'
 import { registerNotificationIpc } from './ipc/notifications'
 import { registerMeetingsIpc } from './ipc/meetings'
 import { registerAgendaIpc } from './ipc/agenda'
+import liquidGlass from 'electron-liquid-glass'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const nodeRequire = createRequire(import.meta.url)
@@ -83,10 +94,32 @@ type UpdaterLike = {
   on: (event: string, listener: (...args: unknown[]) => void) => void
 }
 
+type ThemeMode = 'dark' | 'oled' | 'liquid'
+
 let updateCheckTimer: NodeJS.Timeout | null = null
 let updaterConfigured = false
 let latestUpdateState: AppUpdateState = { state: 'idle', currentVersion: app.getVersion() }
 let appUpdater: UpdaterLike | null = null
+let nativeThemeMode: ThemeMode = 'dark'
+const nativeLiquidGlassViewIds = new Map<number, number>()
+const macNativeGlassWindowOptions: Partial<BrowserWindowConstructorOptions> =
+  process.platform === 'darwin'
+    ? ({
+        transparent: true,
+        vibrancy: false,
+        backgroundColor: '#00000000'
+      } as Partial<BrowserWindowConstructorOptions>)
+    : {}
+
+function configureMacNativeGlassWindow(window: BrowserWindow, options: { windowButtons?: boolean } = {}) {
+  if (process.platform !== 'darwin') return
+  try {
+    window.setBackgroundColor('#00000000')
+    window.setWindowButtonVisibility(Boolean(options.windowButtons))
+  } catch (error) {
+    logWarn('[native liquid glass] failed to configure transparent window', error)
+  }
+}
 
 function normalizeChangelog(raw: unknown): string[] {
   if (!raw) return []
@@ -459,6 +492,59 @@ function logError(...parts: unknown[]) {
   console.error(safeLine)
 }
 
+function applyNativeLiquidGlassToWindow(window: BrowserWindow | null, label: string) {
+  if (process.platform !== 'darwin' || !window || window.isDestroyed()) return false
+  if (nativeThemeMode !== 'liquid') return false
+  return false
+
+  const contentsId = window.webContents.id
+  const existing = nativeLiquidGlassViewIds.get(contentsId)
+  if (existing !== undefined) return existing >= 0
+
+  try {
+    const viewId = liquidGlass.addView(window.getNativeWindowHandle(), {
+      cornerRadius: 34,
+      tintColor: '#FFFFFF00',
+      opaque: false
+    })
+    nativeLiquidGlassViewIds.set(contentsId, viewId)
+
+    if (typeof viewId === 'number' && viewId >= 0) {
+      liquidGlass.unstable_setVariant(viewId, 19)
+    }
+
+    logInfo(
+      '[native liquid glass] applied',
+      `label=${label}`,
+      `view=${viewId}`,
+      'variant=19',
+      'cornerRadius=34',
+      'opaque=false'
+    )
+    return viewId >= 0
+  } catch (error) {
+    nativeLiquidGlassViewIds.set(contentsId, -1)
+    logWarn('[native liquid glass] apply failed', `label=${label}`, error)
+    return false
+  }
+}
+
+function applyNativeLiquidGlassToAllWindows() {
+  applyNativeLiquidGlassToWindow(mainWindow, 'main')
+  applyNativeLiquidGlassToWindow(floatingWindow, 'floating')
+  applyNativeLiquidGlassToWindow(trayWindow, 'tray')
+  applyNativeLiquidGlassToWindow(reportsWindow, 'reports')
+  applyNativeLiquidGlassToWindow(settingsWindow, 'settings')
+  applyNativeLiquidGlassToWindow(meetingsWindow, 'meetings')
+}
+
+function forgetNativeLiquidGlassForWindow(window: BrowserWindow | null) {
+  if (!window || window.isDestroyed()) return
+  try {
+    nativeLiquidGlassViewIds.delete(window.webContents.id)
+  } catch {}
+}
+
 process.on('uncaughtException', error => {
   logError('[process] uncaughtException', error)
 })
@@ -614,6 +700,7 @@ function getFloatingOptions() {
     skipTaskbar: true,
     movable: true,
     frame: false,
+    ...macNativeGlassWindowOptions,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -635,6 +722,9 @@ function loadRendererWindow(
   window: BrowserWindow,
   mode: 'main' | 'floating' | 'tray' | 'reports' | 'settings' | 'meetings'
 ) {
+  window.webContents.once('did-finish-load', () => {
+    applyNativeLiquidGlassToWindow(window, mode)
+  })
   const useFile =
     app.isPackaged || process.env.E2E_USE_FILE === '1' || process.env.HRS_E2E === '1'
   const devServerUrl = !useFile
@@ -670,6 +760,7 @@ function createMainWindow(startHidden = false) {
     height: 800,
     show: !startHidden,
     skipTaskbar: true,
+    ...macNativeGlassWindowOptions,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -688,6 +779,7 @@ function createMainWindow(startHidden = false) {
       disableBlinkFeatures: 'Auxclick'      // Prevent auxiliary click attacks
     }
   })
+  configureMacNativeGlassWindow(mainWindow, { windowButtons: true })
   
   attachRendererLogging(mainWindow, 'main')
   
@@ -723,6 +815,11 @@ function createMainWindow(startHidden = false) {
     hideMainWindowToTray()
   })
 
+  mainWindow.on('closed', () => {
+    forgetNativeLiquidGlassForWindow(mainWindow)
+    mainWindow = null
+  })
+
   if (startHidden) {
     mainWindow.once('ready-to-show', () => {
       if (openMainRequested || !tray) {
@@ -744,6 +841,7 @@ function createFloatingWindow() {
   }
   hideMainWindowForFloating()
   floatingWindow = new BrowserWindow(getFloatingOptions())
+  configureMacNativeGlassWindow(floatingWindow)
   attachRendererLogging(floatingWindow, 'floating')
   floatingWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
   floatingWindow.once('ready-to-show', () => {
@@ -757,6 +855,7 @@ function createFloatingWindow() {
     hideMainWindowForFloating()
   })
   floatingWindow.on('closed', () => {
+    forgetNativeLiquidGlassForWindow(floatingWindow)
     floatingWindow = null
     restoreMainWindowFromFloating()
   })
@@ -775,9 +874,9 @@ function createTrayWindow() {
     alwaysOnTop: true,
     skipTaskbar: true,
     frame: false,
-    transparent: false,
+    transparent: process.platform === 'darwin',
     show: false,
-    backgroundColor: '#0e151b',
+    backgroundColor: process.platform === 'darwin' ? '#00000000' : '#0e151b',
     hasShadow: true,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
@@ -793,6 +892,7 @@ function createTrayWindow() {
       navigateOnDragDrop: false
     }
   })
+  configureMacNativeGlassWindow(trayWindow)
   attachRendererLogging(trayWindow, 'tray')
   trayWindow.once('ready-to-show', () => {
     if (!trayOpenOnReady) return
@@ -814,6 +914,7 @@ function createTrayWindow() {
     beginHideTrayWindow('blur')
   })
   trayWindow.on('closed', () => {
+    forgetNativeLiquidGlassForWindow(trayWindow)
     if (trayHideTimer) {
       clearTimeout(trayHideTimer)
       trayHideTimer = null
@@ -838,6 +939,7 @@ function createDetachedWindow(
     skipTaskbar: true,
     autoHideMenuBar: process.platform === 'win32',
     title,
+    ...macNativeGlassWindowOptions,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
     webPreferences: {
       preload: path.join(__dirname, 'preload.mjs'),
@@ -852,11 +954,13 @@ function createDetachedWindow(
       navigateOnDragDrop: false
     }
   })
+  configureMacNativeGlassWindow(window, { windowButtons: true })
   attachRendererLogging(window, mode)
   window.once('ready-to-show', () => {
     window.show()
   })
   window.on('closed', () => {
+    forgetNativeLiquidGlassForWindow(window)
     if (mode === 'reports') reportsWindow = null
     if (mode === 'settings') settingsWindow = null
     if (mode === 'meetings') meetingsWindow = null
@@ -1074,6 +1178,20 @@ app.whenReady().then(() => {
     const size = collapsed ? floatingSizes.collapsed : floatingSizes.expanded
     floatingWindow.setSize(size.width, size.height, false)
     return true
+  })
+  ipcMain.handle('app:setNativeThemeMode', (event, mode: ThemeMode) => {
+    if (mode !== 'dark' && mode !== 'oled' && mode !== 'liquid') {
+      throw new Error('Invalid app:setNativeThemeMode payload')
+    }
+    nativeThemeMode = mode
+    if (mode === 'liquid') {
+      applyNativeLiquidGlassToWindow(BrowserWindow.fromWebContents(event.sender), 'current')
+      applyNativeLiquidGlassToAllWindows()
+    }
+    return {
+      nativeLiquidGlass: process.platform === 'darwin',
+      supported: process.platform === 'darwin' && liquidGlass.isGlassSupported()
+    }
   })
   ipcMain.handle('app:getVersion', () => app.getVersion())
   ipcMain.handle('app:getUpdateState', () => latestUpdateState)

@@ -1,7 +1,6 @@
 import { app, ipcMain } from 'electron'
-import { spawn, spawnSync } from 'node:child_process'
+import { spawn } from 'node:child_process'
 import path from 'node:path'
-import fs from 'node:fs'
 import {
   validateEnum,
   validateExactObject,
@@ -9,6 +8,7 @@ import {
   validateOptionalString,
   validateStringLength
 } from '../utils/validation'
+import { ensurePythonEnv, resolvePackagedScriptPath, resolvePythonBin } from './pythonRuntime'
 
 type MeetingsResult = {
   month: string
@@ -123,87 +123,6 @@ function shouldIgnoreProgressLine(line: string) {
   return false
 }
 
-function resolveMeetingsScriptPath() {
-  const candidates: string[] = []
-  if (app.isPackaged) {
-    candidates.push(
-      path.join(process.resourcesPath, 'app.asar.unpacked', 'scripts', 'meetings_fetch.py')
-    )
-    candidates.push(path.join(process.resourcesPath, 'scripts', 'meetings_fetch.py'))
-  }
-  candidates.push(path.join(app.getAppPath(), 'scripts', 'meetings_fetch.py'))
-  const existing = candidates.find(candidate => fs.existsSync(candidate))
-  if (!existing) {
-    throw new Error(`Meetings script not found. Tried: ${candidates.join(', ')}`)
-  }
-  return existing
-}
-
-function canRunPython(pythonBin: string) {
-  const result = spawnSync(pythonBin, ['-V'], { encoding: 'utf8' })
-  if (result.error) {
-    return false
-  }
-  return result.status === 0
-}
-
-function resolvePythonBin() {
-  const envBin = process.env.PYTHON_BIN
-  if (envBin && canRunPython(envBin)) {
-    return envBin
-  }
-  if (canRunPython('python3')) {
-    return 'python3'
-  }
-  if (canRunPython('python')) {
-    return 'python'
-  }
-  throw new Error('Python 3 not found. Install it or set PYTHON_BIN to your python3 path.')
-}
-
-function getVenvPython(venvPath: string) {
-  if (process.platform === 'win32') {
-    return path.join(venvPath, 'Scripts', 'python.exe')
-  }
-  return path.join(venvPath, 'bin', 'python')
-}
-
-function ensurePythonEnv(pythonBin: string) {
-  const venvPath = path.join(app.getPath('userData'), 'meetings-venv')
-  const markerPath = path.join(venvPath, '.requirements')
-  const expected = REQUIRED_PACKAGES.join('\n')
-
-  const hasVenv = fs.existsSync(venvPath)
-  const hasMarker = fs.existsSync(markerPath)
-  const marker = hasMarker ? fs.readFileSync(markerPath, 'utf8') : ''
-  const needsInstall = !hasVenv || marker.trim() !== expected.trim()
-
-  if (!needsInstall) {
-    return getVenvPython(venvPath)
-  }
-
-  const venvResult = spawnSync(pythonBin, ['-m', 'venv', venvPath], { encoding: 'utf8' })
-  if (venvResult.status !== 0) {
-    throw new Error(
-      venvResult.stderr?.trim() ||
-        'Python is missing or venv creation failed. Install python3 and try again.'
-    )
-  }
-
-  const venvPython = getVenvPython(venvPath)
-  spawnSync(venvPython, ['-m', 'pip', 'install', '--upgrade', 'pip'], { encoding: 'utf8' })
-  const installResult = spawnSync(
-    venvPython,
-    ['-m', 'pip', 'install', ...REQUIRED_PACKAGES],
-    { encoding: 'utf8' }
-  )
-  if (installResult.status !== 0) {
-    throw new Error(installResult.stderr?.trim() || 'Failed to install Python packages.')
-  }
-  fs.writeFileSync(markerPath, expected)
-  return venvPython
-}
-
 export function registerMeetingsIpc() {
   ipcMain.handle('meetings:run', async (event, options: MeetingsOptions) => {
     const safe = validateExactObject<{
@@ -231,9 +150,9 @@ export function registerMeetingsIpc() {
       allowNull: true
     })
 
-    const scriptPath = resolveMeetingsScriptPath()
+    const scriptPath = resolvePackagedScriptPath('meetings_fetch.py')
     const pythonBin = resolvePythonBin()
-    const venvPython = ensurePythonEnv(pythonBin)
+    const venvPython = ensurePythonEnv(pythonBin, REQUIRED_PACKAGES)
     const args = [scriptPath, '--browser', browser]
     if (headless) {
       args.push('--headless')
@@ -243,9 +162,13 @@ export function registerMeetingsIpc() {
     }
     const env = {
       ...process.env,
+      PYTHONDONTWRITEBYTECODE: '1',
+      AGENDA_BROWSER: process.env.AGENDA_BROWSER || browser,
+      AGENDA_HEADLESS: process.env.AGENDA_HEADLESS || (headless ? '1' : '0'),
+      AGENDA_CHROME_PROFILE: path.join(app.getPath('userData'), 'agenda-chrome-profile'),
       MS_USERNAME: username || process.env.MS_USERNAME || '',
       MS_PASSWORD: password || process.env.MS_PASSWORD || '',
-      MEETINGS_CHROME_PROFILE: path.join(app.getPath('userData'), 'meetings-chrome-profile')
+      MEETINGS_CHROME_PROFILE: path.join(app.getPath('userData'), 'agenda-chrome-profile')
     }
     return new Promise<MeetingsResult>((resolve, reject) => {
       const child = spawn(venvPython, args, { env })

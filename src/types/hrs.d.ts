@@ -228,6 +228,84 @@ type MeetingsCacheEntry = {
 
 type JiraMappings = Record<string, string>
 
+type ReportingSource = 'hrs' | 'jira'
+type ProjectSyncMode = 'manual' | 'automatic'
+type MissionStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived'
+
+type CustomerProjectMapping = {
+  id: string
+  hrsCustomerName: string
+  jiraProjectKeys: string[]
+  jiraEpicKeys: string[]
+  defaultJiraIssueKey?: string
+  active: boolean
+  notes?: string
+  updatedAt: string
+}
+
+type ProjectMission = {
+  id: string
+  customerName: string
+  name: string
+  jiraIssueKey: string
+  hrsTaskIds: string[]
+  virtual: boolean
+  parentMissionId?: string
+  assignedEmployees: string[]
+  plannedHours: number | null
+  cappedHours: number | null
+  status: MissionStatus
+  startDate?: string
+  dueDate?: string
+  dependencies: string[]
+  notes?: string
+  createdAt: string
+  updatedAt: string
+}
+
+type SyncAuditStatus = 'pending' | 'applied' | 'skipped' | 'failed' | 'dry_run'
+type SyncAuditAction = 'create' | 'update' | 'delete' | 'skip' | 'error'
+type SyncAuditEntity = 'worklog' | 'mapping' | 'mission' | 'cap_validation'
+
+type SyncAuditEntry = {
+  id: string
+  action: SyncAuditAction
+  entity: SyncAuditEntity
+  source: ReportingSource | 'system'
+  status: SyncAuditStatus
+  employee?: string
+  customerName?: string
+  taskName?: string
+  jiraIssueKey?: string
+  hrsTaskId?: string
+  reportingDate?: string
+  previousSeconds?: number | null
+  nextSeconds?: number | null
+  message?: string
+  createdAt: string
+}
+
+type ProjectManagementConfig = {
+  reportingSource: ReportingSource
+  syncMode: ProjectSyncMode
+  utilizationThresholds: number[]
+  customerMappings: CustomerProjectMapping[]
+  missions: ProjectMission[]
+  updatedAt: string
+}
+
+type MissionCapValidationResult = {
+  mission: ProjectMission
+  capped: boolean
+  usedHours: number
+  additionalHours: number
+  nextHours: number
+  utilizationPercent: number | null
+  exceeded: boolean
+  crossedThresholds: number[]
+  requiresSeventyPercentPrompt: boolean
+}
+
 type CommentRule = {
   id: string
   scope: 'project' | 'customer'
@@ -358,6 +436,58 @@ type HrsApi = {
   }) => Promise<JiraWorklogEntry | null>
   getJiraWorklogHistory: (issueKey: string) => Promise<JiraWorklogEntry[]>
   deleteJiraWorklog: (payload: { issueKey: string; worklogId: string }) => Promise<boolean>
+  getProjectManagementConfig: () => Promise<ProjectManagementConfig>
+  setProjectReportingSource: (source: ReportingSource) => Promise<ProjectManagementConfig>
+  setProjectSyncMode: (mode: ProjectSyncMode) => Promise<ProjectManagementConfig>
+  upsertCustomerProjectMapping: (payload: {
+    id?: string
+    hrsCustomerName: string
+    jiraProjectKeys: string[]
+    jiraEpicKeys: string[]
+    defaultJiraIssueKey?: string
+    active?: boolean
+    notes?: string
+  }) => Promise<CustomerProjectMapping>
+  removeCustomerProjectMapping: (id: string) => Promise<ProjectManagementConfig>
+  upsertProjectMission: (payload: {
+    id?: string
+    customerName: string
+    name: string
+    jiraIssueKey: string
+    hrsTaskIds?: string[]
+    virtual?: boolean
+    parentMissionId?: string
+    assignedEmployees?: string[]
+    plannedHours?: number | null
+    cappedHours?: number | null
+    status?: MissionStatus
+    startDate?: string
+    dueDate?: string
+    dependencies?: string[]
+    notes?: string
+  }) => Promise<ProjectMission>
+  removeProjectMission: (id: string) => Promise<ProjectManagementConfig>
+  validateProjectMissionCap: (payload: {
+    missionId: string
+    usedHours: number
+    additionalHours?: number
+  }) => Promise<MissionCapValidationResult>
+  getProjectSyncAuditLog: (limit?: number) => Promise<SyncAuditEntry[]>
+  addProjectSyncAuditEntry: (payload: {
+    action: SyncAuditAction
+    entity: SyncAuditEntity
+    source: ReportingSource | 'system'
+    status: SyncAuditStatus
+    employee?: string
+    customerName?: string
+    taskName?: string
+    jiraIssueKey?: string
+    hrsTaskId?: string
+    reportingDate?: string
+    previousSeconds?: number | null
+    nextSeconds?: number | null
+    message?: string
+  }) => Promise<SyncAuditEntry>
   getPreferences: () => Promise<AppPreferences>
 	  setPreferences: (next: {
     jiraActiveOnly?: boolean

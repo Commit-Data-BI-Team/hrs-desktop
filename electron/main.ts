@@ -21,10 +21,32 @@ import { registerExportIpc } from './ipc/export'
 import { registerNotificationIpc } from './ipc/notifications'
 import { registerMeetingsIpc } from './ipc/meetings'
 import { registerAgendaIpc } from './ipc/agenda'
-import liquidGlass from 'electron-liquid-glass'
+import { registerProjectManagementIpc } from './ipc/projectManagement'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const nodeRequire = createRequire(import.meta.url)
+
+type LiquidGlassModule = {
+  isGlassSupported?: () => boolean
+  addView?: (handle: Buffer, options?: Record<string, unknown>) => number
+  unstable_setVariant?: (viewId: number, variant: number) => void
+}
+
+let liquidGlassModule: LiquidGlassModule | null | undefined
+
+function getLiquidGlassModule() {
+  if (liquidGlassModule !== undefined) return liquidGlassModule
+  try {
+    const loaded = nodeRequire('electron-liquid-glass') as
+      | LiquidGlassModule
+      | { default?: LiquidGlassModule }
+    liquidGlassModule = ('default' in loaded ? loaded.default : loaded) ?? null
+  } catch (error) {
+    liquidGlassModule = null
+    logWarn('[native liquid glass] module unavailable', error)
+  }
+  return liquidGlassModule
+}
 
 let mainWindow: BrowserWindow | null = null
 let floatingWindow: BrowserWindow | null = null
@@ -502,6 +524,8 @@ function applyNativeLiquidGlassToWindow(window: BrowserWindow | null, label: str
   if (existing !== undefined) return existing >= 0
 
   try {
+    const liquidGlass = getLiquidGlassModule()
+    if (!liquidGlass?.addView) return false
     const viewId = liquidGlass.addView(window.getNativeWindowHandle(), {
       cornerRadius: 34,
       tintColor: '#FFFFFF00',
@@ -510,7 +534,7 @@ function applyNativeLiquidGlassToWindow(window: BrowserWindow | null, label: str
     nativeLiquidGlassViewIds.set(contentsId, viewId)
 
     if (typeof viewId === 'number' && viewId >= 0) {
-      liquidGlass.unstable_setVariant(viewId, 19)
+      liquidGlass.unstable_setVariant?.(viewId, 19)
     }
 
     logInfo(
@@ -1141,6 +1165,7 @@ app.whenReady().then(() => {
   registerNotificationIpc()
   registerMeetingsIpc()
   registerAgendaIpc()
+  registerProjectManagementIpc()
   void setupAutoUpdater()
   ipcMain.handle('app:openMainWindow', () => {
     showMainWindow()
@@ -1190,7 +1215,9 @@ app.whenReady().then(() => {
     }
     return {
       nativeLiquidGlass: process.platform === 'darwin',
-      supported: process.platform === 'darwin' && liquidGlass.isGlassSupported()
+      supported:
+        process.platform === 'darwin' &&
+        Boolean(getLiquidGlassModule()?.isGlassSupported?.())
     }
   })
   ipcMain.handle('app:getVersion', () => app.getVersion())

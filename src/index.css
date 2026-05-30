@@ -1818,6 +1818,59 @@ body {
   color: rgba(252, 206, 132, 0.96);
 }
 
+.calendar-day-hover-dropdown {
+  width: min(520px, calc(100vw - 24px));
+  min-width: min(320px, calc(100vw - 24px));
+  max-width: calc(100vw - 24px);
+  max-height: min(78vh, calc(100vh - 28px));
+  overflow: hidden;
+}
+
+.calendar-day-hover {
+  width: min(496px, calc(100vw - 48px));
+  min-width: min(296px, calc(100vw - 48px));
+  max-height: calc(min(78vh, calc(100vh - 28px)) - 20px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.calendar-day-hover-hours {
+  min-width: 0;
+}
+
+.calendar-day-hover-meetings {
+  padding-top: 8px;
+  border-top: 1px solid rgba(184, 118, 255, 0.24);
+  max-height: clamp(148px, 42vh, 344px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.calendar-meeting-row {
+  min-height: 38px;
+  padding: 5px 7px;
+  border-radius: 9px;
+  background: rgba(42, 28, 62, 0.38);
+  border: 1px solid rgba(184, 118, 255, 0.16);
+}
+
+.calendar-meeting-row .mantine-Text-root {
+  line-height: 1.12;
+}
+
+.calendar-meeting-row .mantine-Button-root {
+  height: 27px;
+  min-height: 27px;
+  min-width: 46px;
+  padding-inline: 8px;
+  font-size: 0.72rem;
+}
+
+.calendar-meeting-copy {
+  min-width: 0;
+  flex: 1;
+}
+
 .report-details {
   flex: 1;
 }
@@ -2608,6 +2661,106 @@ body.floating-mode {
   margin-top: 6px;
 }
 
+.task-add-option {
+  width: 100%;
+  min-height: 20px;
+  line-height: 1.25;
+  overflow: hidden;
+}
+
+.task-select-option {
+  width: 100%;
+  min-height: 20px;
+  line-height: 1.25;
+  overflow: hidden;
+}
+
+.task-select-option-text {
+  min-width: 0;
+  font-size: 14px !important;
+  line-height: 18px !important;
+}
+
+.task-select-dropdown {
+  overflow: hidden;
+}
+
+.task-select-mantine-option {
+  min-height: 32px !important;
+  padding: 6px 10px !important;
+  font-size: 14px !important;
+  line-height: 18px !important;
+}
+
+.task-option-check {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.quick-fictive-usage {
+  display: grid;
+  gap: 7px;
+  margin-top: -4px;
+  padding: 10px 12px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--panel) 68%, transparent);
+}
+
+.quick-fictive-usage.is-compact {
+  gap: 5px;
+  padding: 7px 9px;
+  border-radius: 10px;
+}
+
+.quick-fictive-usage-hours {
+  white-space: nowrap;
+}
+
+.quick-fictive-usage-track {
+  position: relative;
+  height: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background:
+    linear-gradient(
+      90deg,
+      rgba(64, 192, 87, 0.22) 0%,
+      rgba(64, 192, 87, 0.22) 50%,
+      rgba(250, 176, 5, 0.24) 50%,
+      rgba(250, 176, 5, 0.24) 75%,
+      rgba(250, 82, 82, 0.24) 75%,
+      rgba(250, 82, 82, 0.24) 100%
+    );
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
+}
+
+.quick-fictive-usage-fill {
+  width: var(--quick-fictive-progress);
+  height: 100%;
+  min-width: 4px;
+  border-radius: inherit;
+  transition:
+    width 220ms ease,
+    background 220ms ease;
+  box-shadow: 0 0 16px color-mix(in srgb, currentColor 38%, transparent);
+}
+
+.quick-fictive-usage-fill.is-green {
+  color: #51cf66;
+  background: linear-gradient(90deg, #2f9e44 0%, #51cf66 100%);
+}
+
+.quick-fictive-usage-fill.is-yellow {
+  color: #ffd43b;
+  background: linear-gradient(90deg, #f08c00 0%, #ffd43b 100%);
+}
+
+.quick-fictive-usage-fill.is-red {
+  color: #ff6b6b;
+  background: linear-gradient(90deg, #fa5252 0%, #ff8787 100%);
+}
+
 .fade-in {
   animation: float-in 600ms ease-out both;
 }
@@ -2791,6 +2944,104 @@ html[data-platform='windows'] .tray-shell-enter {
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
+.quick-meetings-panel {
+  padding: 8px;
+  border-radius: 16px;
+  background: rgba(10, 14, 22, 0.58);
+  border: 1px solid rgba(171, 119, 255, 0.16);
+}
+
+.quick-sync-meetings-button {
+  min-width: 190px;
+  height: 40px;
+  min-height: 40px;
+}
+
+.quick-sync-meetings-target {
+  display: inline-flex;
+  max-width: 100%;
+}
+
+.quick-sync-meetings-button.is-syncing {
+  border-color: rgba(100, 190, 255, 0.26);
+}
+
+.quick-sync-meetings-button.is-duo-waiting {
+  color: #ffdca8;
+  background: linear-gradient(135deg, rgba(92, 54, 18, 0.86), rgba(37, 22, 12, 0.86));
+  border-color: rgba(255, 185, 88, 0.46);
+  box-shadow: inset 0 0 0 1px rgba(255, 185, 88, 0.14);
+}
+
+.quick-sync-meetings-button.is-duo-waiting:disabled,
+.quick-sync-meetings-button.is-duo-waiting[data-disabled] {
+  opacity: 1;
+  color: #ffdca8;
+}
+
+.quick-sync-meetings-button.is-duo-waiting .mantine-Button-section {
+  color: #ffbf5f;
+}
+
+.quick-sync-meetings-content {
+  display: grid;
+  gap: 2px;
+  text-align: left;
+  line-height: 1.05;
+  overflow: hidden;
+}
+
+.quick-sync-meetings-subline {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  line-height: 1;
+  color: rgba(190, 220, 240, 0.72);
+}
+
+.quick-sync-meetings-subline.is-duo-alert {
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: #ffcf7a;
+}
+
+.quick-meeting-filter-button {
+  color: rgba(190, 143, 255, 0.92);
+  border: 1px solid rgba(171, 119, 255, 0.18);
+  background: rgba(30, 20, 48, 0.42);
+}
+
+.meeting-subject-filter-heading {
+  display: block;
+  padding: 6px 8px 4px;
+}
+
+.quick-meeting-subject-list {
+  max-height: 122px;
+  overflow-y: auto;
+  display: grid;
+  gap: 6px;
+  padding-right: 2px;
+}
+
+.meeting-subject-filter-divider {
+  height: 1px;
+  margin: 8px 0;
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.quick-meeting-subject-popover {
+  padding: 8px !important;
+  max-height: min(72vh, 420px);
+  overflow: hidden;
+}
+
+.quick-meeting-subject-popover .meeting-subject-filter-list {
+  max-height: min(52vh, 310px);
+}
+
 .tray-nav-row {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(36px, 1fr));
@@ -2854,6 +3105,15 @@ html[data-platform='windows'] .tray-shell-enter {
 
 .meeting-domain-count {
   text-transform: none;
+}
+
+.tray-settings-meetings-card {
+  background: linear-gradient(160deg, rgba(20, 17, 32, 0.76), rgba(8, 14, 22, 0.72));
+  border-color: rgba(184, 118, 255, 0.2);
+}
+
+.meetings-chrome-note {
+  font-style: italic;
 }
 
 .tray-meetings-step {
@@ -3339,6 +3599,18 @@ html[data-platform='windows'] .tray-calendar {
   border-color: rgba(73, 194, 208, calc(0.36 + var(--heat, 0) * 0.5));
 }
 
+.tray-day-button.has-meetings {
+  border-color: rgba(184, 118, 255, 0.78);
+  box-shadow: inset 0 0 0 1px rgba(184, 118, 255, 0.28);
+}
+
+.tray-day-button.has-many-meetings {
+  border-color: rgba(205, 142, 255, 0.98);
+  box-shadow:
+    inset 0 0 0 1px rgba(205, 142, 255, 0.5),
+    0 0 14px rgba(162, 91, 255, 0.24);
+}
+
 .tray-day-button.is-holiday {
   background: rgba(180, 74, 49, 0.28);
   border-color: rgba(180, 74, 49, 0.55);
@@ -3517,12 +3789,11 @@ body.meetings-mode .meetings-card {
 }
 
 .meeting-subject-filter-list {
-  max-height: 260px;
+  max-height: min(44vh, 270px);
   overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
+  display: grid;
+  gap: 7px;
+  padding: 4px 8px;
 }
 
 .tray-agenda-summary {
@@ -3779,6 +4050,74 @@ body.meetings-mode .meetings-card {
   border-radius: 10px;
   border: 1px dashed rgba(255, 255, 255, 0.1);
   background: rgba(5, 11, 15, 0.34);
+}
+
+.tray-employee-workload-card {
+  padding: 10px;
+  border-color: rgba(110, 190, 255, 0.16);
+  background:
+    linear-gradient(180deg, rgba(8, 16, 22, 0.78), rgba(5, 10, 14, 0.72));
+}
+
+.tray-employee-workload-list {
+  max-height: min(54vh, 520px);
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.tray-employee-workload-filters {
+  min-width: 0;
+}
+
+.tray-employee-workload-toolbar {
+  padding: 2px 0 4px;
+}
+
+.tray-employee-workload-employee {
+  padding: 9px;
+  border-color: rgba(255, 255, 255, 0.08);
+  background: rgba(12, 20, 26, 0.64);
+}
+
+.tray-employee-workload-customer {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  background: rgba(5, 12, 16, 0.44);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.tray-employee-workload-hours {
+  color: #8ff0d3;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.tray-employee-workload-task {
+  min-width: 0;
+}
+
+.tray-employee-workload-shared {
+  padding: 9px;
+  border-color: rgba(184, 118, 255, 0.16);
+  background: linear-gradient(180deg, rgba(28, 18, 44, 0.52), rgba(8, 14, 22, 0.58));
+}
+
+.tray-employee-workload-shared-task {
+  min-width: 0;
+  padding: 7px 8px;
+  border-radius: 10px;
+  border: 1px solid rgba(184, 118, 255, 0.12);
+  background: rgba(5, 10, 18, 0.38);
+}
+
+.tray-employee-workload-people {
+  min-width: 0;
+}
+
+.tray-employee-workload-people .mantine-Badge-root {
+  max-width: 100%;
+  text-transform: none;
 }
 
 .tray-employee-report-card,

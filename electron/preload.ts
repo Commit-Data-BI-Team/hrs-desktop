@@ -48,6 +48,22 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getWorklogHistory', issueKey),
   deleteJiraWorklog: (payload: { issueKey: string; worklogId: string }) =>
     ipcRenderer.invoke('jira:deleteWorklog', payload),
+  getProjectManagementConfig: () => ipcRenderer.invoke('pm:getConfig'),
+  setProjectReportingSource: (source: 'hrs' | 'jira') =>
+    ipcRenderer.invoke('pm:setReportingSource', source),
+  setProjectSyncMode: (mode: 'manual' | 'automatic') =>
+    ipcRenderer.invoke('pm:setSyncMode', mode),
+  upsertCustomerProjectMapping: (payload: unknown) =>
+    ipcRenderer.invoke('pm:upsertCustomerMapping', payload),
+  removeCustomerProjectMapping: (id: string) =>
+    ipcRenderer.invoke('pm:removeCustomerMapping', id),
+  upsertProjectMission: (payload: unknown) => ipcRenderer.invoke('pm:upsertMission', payload),
+  removeProjectMission: (id: string) => ipcRenderer.invoke('pm:removeMission', id),
+  validateProjectMissionCap: (payload: unknown) =>
+    ipcRenderer.invoke('pm:validateMissionCap', payload),
+  getProjectSyncAuditLog: (limit?: number) => ipcRenderer.invoke('pm:getSyncAuditLog', limit),
+  addProjectSyncAuditEntry: (payload: unknown) =>
+    ipcRenderer.invoke('pm:addSyncAuditEntry', payload),
   getPreferences: () => ipcRenderer.invoke('app:getPreferences'),
   setPreferences: (next: {
     jiraActiveOnly?: boolean

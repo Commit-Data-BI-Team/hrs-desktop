@@ -9,12 +9,15 @@ import {
   Collapse,
   Container,
   Group,
+  HoverCard,
   Input,
   Loader,
   Menu,
   Modal,
   NumberInput,
   PasswordInput,
+  Popover,
+  Progress,
   Select,
   SimpleGrid,
   Stack,
@@ -42,10 +45,12 @@ import {
   IconUsers,
   IconTrash,
   IconChevronDown,
-  IconChevronRight
+  IconChevronRight,
+  IconInfoCircle
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
+import type { SelectProps } from '@mantine/core'
 import dayjs from 'dayjs'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { MouseEvent as ReactMouseEvent, CSSProperties, ReactNode } from 'react'
@@ -1097,6 +1102,11 @@ function getMeetingSubjectKey(subject: string) {
   return normalizeText(subject || 'Meeting')
 }
 
+function isCanceledMeeting(meeting: MeetingItem) {
+  const subject = getMeetingSubjectKey(meeting.subject || '')
+  return /^(canceled|cancelled)\s*:/.test(subject)
+}
+
 function formatJiraBudgetValue(
   seconds: number,
   showHours: boolean,
@@ -1342,6 +1352,29 @@ function buildJiraComment(selectedTask: WorkLog | null, comment: string) {
   const cleaned = comment.trim()
   if (cleaned) return cleaned
   return 'HRS work log'
+}
+
+const QUICKLOG_MISSION_PREFIX = 'pm-mission:'
+const QUICKLOG_ADD_FICTIVE_VALUE = '__add_fictive_task__'
+
+function getMissionOptionValue(id: string) {
+  return `${QUICKLOG_MISSION_PREFIX}${id}`
+}
+
+function getMissionIdFromTaskValue(value?: string | null) {
+  if (!value?.startsWith(QUICKLOG_MISSION_PREFIX)) return null
+  return value.slice(QUICKLOG_MISSION_PREFIX.length)
+}
+
+function getMissionCommentMarker(mission: ProjectMission) {
+  return `[HRS-PM:${mission.id}]`
+}
+
+function stripMissionCommentMarkers(comment?: string | null) {
+  return (comment ?? '')
+    .replace(/\s*\[HRS-PM:[^\]]+\]\s*/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
 }
 
 function formatLastWorklog(lastWorklog?: JiraWorklogEntry | null) {
@@ -1764,6 +1797,29 @@ export default function App() {
   const [jiraMappingProject, setJiraMappingProject] = useState<string | null>(null)
   const [jiraMappingCustomer, setJiraMappingCustomer] = useState<string | null>(null)
   const [preferencesLoaded, setPreferencesLoaded] = useState(false)
+  const [projectManagementConfig, setProjectManagementConfig] =
+    useState<ProjectManagementConfig | null>(null)
+  const [projectManagementAudit, setProjectManagementAudit] = useState<SyncAuditEntry[]>([])
+  const [projectManagementLoading, setProjectManagementLoading] = useState(false)
+  const [projectManagementError, setProjectManagementError] = useState<string | null>(null)
+  const [projectDashboardCustomer, setProjectDashboardCustomer] = useState<string | null>(null)
+  const [projectDashboardProject, setProjectDashboardProject] = useState<string | null>(null)
+  const [missionName, setMissionName] = useState('')
+  const [missionJiraIssueKey, setMissionJiraIssueKey] = useState('')
+  const [missionHrsTaskId, setMissionHrsTaskId] = useState<string | null>(null)
+  const [missionVirtual, setMissionVirtual] = useState(false)
+  const [missionPlannedHours, setMissionPlannedHours] = useState<string | number>('')
+  const [missionCappedHours, setMissionCappedHours] = useState<string | number>('')
+  const [missionStatus, setMissionStatus] = useState<MissionStatus>('in_progress')
+  const [missionEmployees, setMissionEmployees] = useState('')
+  const [missionNotes, setMissionNotes] = useState('')
+  const [quickFictiveModalOpen, setQuickFictiveModalOpen] = useState(false)
+  const [quickFictiveOriginalTaskId, setQuickFictiveOriginalTaskId] = useState<string | null>(null)
+  const [quickFictiveName, setQuickFictiveName] = useState('')
+  const [quickFictivePlannedHours, setQuickFictivePlannedHours] = useState<string | number>('')
+  const [quickFictiveCappedHours, setQuickFictiveCappedHours] = useState<string | number>('')
+  const [quickFictiveNotes, setQuickFictiveNotes] = useState('')
+  const [quickFictiveError, setQuickFictiveError] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
   const [jiraLoggedEntries, setJiraLoggedEntries] = useState<
     Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
@@ -1802,6 +1858,8 @@ export default function App() {
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [trayMeetingsProgressOpen, setTrayMeetingsProgressOpen] = useState(false)
+  const [quickMeetingNamesMenuOpen, setQuickMeetingNamesMenuOpen] = useState(false)
+  const [quickMeetingNamesAutoShownKey, setQuickMeetingNamesAutoShownKey] = useState<string | null>(null)
   const [meetingsCredentialsOpen, setMeetingsCredentialsOpen] = useState(false)
   const [meetingsCache, setMeetingsCache] = useState<
     Record<string, { updatedAt: string; meetings: MeetingItem[] }>
@@ -1932,6 +1990,9 @@ export default function App() {
   const [employeeReportEmployeeId, setEmployeeReportEmployeeId] = useState<string | null>(null)
   const [employeeReportCustomerId, setEmployeeReportCustomerId] = useState('')
   const [employeeReportTask, setEmployeeReportTask] = useState<string | null>(null)
+  const [employeeWorkloadEmployeeFilter, setEmployeeWorkloadEmployeeFilter] = useState<string | null>(null)
+  const [employeeWorkloadCustomerFilter, setEmployeeWorkloadCustomerFilter] = useState<string | null>(null)
+  const [employeeWorkloadTaskFilter, setEmployeeWorkloadTaskFilter] = useState<string | null>(null)
   const [employeeReport, setEmployeeReport] = useState<EmployeeHoursReport | null>(null)
   const [employeeReportLoading, setEmployeeReportLoading] = useState(false)
   const [employeeReportError, setEmployeeReportError] = useState<string | null>(null)
@@ -2310,11 +2371,21 @@ export default function App() {
         return
       }
       if (
-        normalized.includes('sign in') ||
         normalized.includes('duo') ||
+        normalized.includes('microsoft sign-in') ||
+        normalized.includes('sign-in') ||
+        normalized.includes('sign in') ||
         normalized.includes('access token') ||
         normalized.includes('token request') ||
-        normalized.includes('query')
+        normalized.includes('authenticat')
+      ) {
+        setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
+        return
+      }
+      if (
+        normalized.includes('fetching calendarview') ||
+        normalized.includes('microsoft graph returned') ||
+        normalized.includes('raw calendar events')
       ) {
         setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'query'))
       }
@@ -2585,8 +2656,11 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    if (meetingsBrowser !== 'chrome' && meetingsHeadless) {
-      setMeetingsHeadless(false)
+    if (meetingsBrowser !== 'chrome') {
+      setMeetingsBrowser('chrome')
+    }
+    if (!meetingsHeadless) {
+      setMeetingsHeadless(true)
     }
   }, [meetingsBrowser, meetingsHeadless])
   const [commentRules, setCommentRules] = useState<CommentRule[]>([])
@@ -3336,10 +3410,10 @@ export default function App() {
       setJiraProjectStartDates(prefs.jiraProjectStartDates ?? {})
       setJiraProjectPeoplePercent(prefs.jiraProjectPeoplePercent ?? {})
       setJiraProjectPositionSnapshots(prefs.jiraProjectPositionSnapshots ?? {})
-      setMeetingsBrowser(prefs.meetingsBrowser ?? 'chrome')
+      setMeetingsBrowser('chrome')
       setMeetingsUsername(prefs.meetingsUsername ?? '')
       setMeetingsPassword(prefs.meetingsPassword ?? '')
-      setMeetingsHeadless(prefs.meetingsHeadless ?? true)
+      setMeetingsHeadless(true)
       setTrayMeetingsSettingsOpen(prefs.trayMeetingsSettingsOpen ?? true)
       setMeetingsCollapsed(prefs.meetingsCollapsed ?? false)
       const normalizedMeetingsCache = Object.fromEntries(
@@ -3412,6 +3486,207 @@ export default function App() {
     } catch {
       setPreferencesLoaded(true)
     }
+  }
+
+  async function loadProjectManagementConfig() {
+    if (!window.hrs?.getProjectManagementConfig) return
+    setProjectManagementLoading(true)
+    setProjectManagementError(null)
+    try {
+      const [config, audit] = await Promise.all([
+        window.hrs.getProjectManagementConfig(),
+        window.hrs.getProjectSyncAuditLog(25)
+      ])
+      setProjectManagementConfig(config)
+      setProjectManagementAudit(audit)
+    } catch (err) {
+      setProjectManagementError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  async function updateProjectReportingSource(source: ReportingSource) {
+    setProjectManagementLoading(true)
+    setProjectManagementError(null)
+    try {
+      const config = await window.hrs.setProjectReportingSource(source)
+      setProjectManagementConfig(config)
+    } catch (err) {
+      setProjectManagementError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  async function updateProjectSyncMode(mode: ProjectSyncMode) {
+    setProjectManagementLoading(true)
+    setProjectManagementError(null)
+    try {
+      const config = await window.hrs.setProjectSyncMode(mode)
+      setProjectManagementConfig(config)
+    } catch (err) {
+      setProjectManagementError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  async function importJiraMappingsToProjectManagement() {
+    const sourceMappings = { ...jiraMappings, ...jiraManualBudgets }
+    const entries = Object.entries(sourceMappings).filter(([, issueKey]) => issueKey)
+    if (!entries.length) {
+      setProjectManagementError('No Jira mappings found to import.')
+      return
+    }
+    setProjectManagementLoading(true)
+    setProjectManagementError(null)
+    try {
+      for (const [customer, issueKey] of entries) {
+        const projectKey = issueKey.split('-')[0]
+        await window.hrs.upsertCustomerProjectMapping({
+          hrsCustomerName: customer,
+          jiraProjectKeys: projectKey ? [projectKey] : [],
+          jiraEpicKeys: [issueKey],
+          active: true,
+          notes: 'Imported from existing HRS Desktop Jira mapping.'
+        })
+      }
+      await window.hrs.addProjectSyncAuditEntry({
+        action: 'create',
+        entity: 'mapping',
+        source: 'system',
+        status: 'applied',
+        message: `Imported ${entries.length} existing Jira mapping${entries.length === 1 ? '' : 's'} into Project Management.`
+      })
+      await loadProjectManagementConfig()
+    } catch (err) {
+      setProjectManagementError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  function renderProjectManagementCard(compact = false) {
+    const source = projectManagementConfig?.reportingSource ?? 'hrs'
+    const syncMode = projectManagementConfig?.syncMode ?? 'manual'
+    const mappingCount = projectManagementConfig?.customerMappings.length ?? 0
+    const missionCount = projectManagementConfig?.missions.length ?? 0
+
+    return (
+      <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
+        <Stack gap={compact ? 'xs' : 'sm'}>
+          <Group justify="space-between" align="center">
+            <Stack gap={2}>
+              <Text fw={700} size={compact ? 'sm' : 'md'}>
+                Project Management
+              </Text>
+              <Text size="xs" c="dimmed">
+                HRS/Jira source, mapping, caps, and sync audit.
+              </Text>
+            </Stack>
+            <Badge color={source === 'hrs' ? 'blue' : 'violet'} variant="light">
+              {source.toUpperCase()}
+            </Badge>
+          </Group>
+
+          <SimpleGrid cols={compact ? 2 : 3} spacing="xs">
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                Mappings
+              </Text>
+              <Text fw={800}>{mappingCount}</Text>
+            </Card>
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                Missions
+              </Text>
+              <Text fw={800}>{missionCount}</Text>
+            </Card>
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                Audit
+              </Text>
+              <Text fw={800}>{projectManagementAudit.length}</Text>
+            </Card>
+          </SimpleGrid>
+
+          <Stack gap={6}>
+            <Text size="xs" fw={700}>
+              Reporting source
+            </Text>
+            <Group gap="xs">
+              <Button
+                size={compact ? 'xs' : 'sm'}
+                variant={source === 'hrs' ? 'filled' : 'light'}
+                onClick={() => void updateProjectReportingSource('hrs')}
+                loading={projectManagementLoading && source !== 'hrs'}
+              >
+                HRS
+              </Button>
+              <Button
+                size={compact ? 'xs' : 'sm'}
+                variant={source === 'jira' ? 'filled' : 'light'}
+                onClick={() => void updateProjectReportingSource('jira')}
+                loading={projectManagementLoading && source !== 'jira'}
+              >
+                Jira
+              </Button>
+            </Group>
+          </Stack>
+
+          <Switch
+            checked={syncMode === 'automatic'}
+            onChange={event =>
+              void updateProjectSyncMode(event.currentTarget.checked ? 'automatic' : 'manual')
+            }
+            label="Automatic Jira sync mode"
+            description="Manual keeps reconciliation visible; automatic is the guarded mode for HRS-driven Jira worklog updates."
+            disabled={projectManagementLoading}
+          />
+
+          <Group justify="space-between" align="center" gap="xs">
+            <Button
+              size={compact ? 'xs' : 'sm'}
+              variant="light"
+              onClick={() => void importJiraMappingsToProjectManagement()}
+              loading={projectManagementLoading}
+            >
+              Import existing Jira mappings
+            </Button>
+            <Text size="xs" c="dimmed">
+              Visible in Settings → Mapping.
+            </Text>
+          </Group>
+
+          {projectManagementConfig?.customerMappings.length ? (
+            <Stack gap={4}>
+              {projectManagementConfig.customerMappings.slice(0, compact ? 4 : 8).map(mapping => (
+                <Group key={mapping.id} justify="space-between" wrap="nowrap" gap="xs">
+                  <Text size="xs" truncate>
+                    {mapping.hrsCustomerName}
+                  </Text>
+                  <Badge size="xs" variant="outline" color={mapping.active ? 'teal' : 'gray'}>
+                    {mapping.jiraProjectKeys.join(', ') || mapping.jiraEpicKeys.join(', ') || 'unmapped'}
+                  </Badge>
+                </Group>
+              ))}
+            </Stack>
+          ) : (
+            <Text size="xs" c="dimmed">
+              No Project Management mappings yet. Import current Jira mappings or add them from
+              this section as the feature expands.
+            </Text>
+          )}
+
+          {projectManagementError && (
+            <Alert color="red" variant="light" radius="md">
+              {projectManagementError}
+            </Alert>
+          )}
+        </Stack>
+      </Card>
+    )
   }
 
   async function loadHrsCredentials() {
@@ -3510,8 +3785,8 @@ export default function App() {
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
       setMeetingsProgress('Authenticating with Microsoft…')
       const result = await window.hrs.getMeetings({
-        browser: meetingsBrowser,
-        headless: meetingsHeadless,
+        browser: 'chrome',
+        headless: true,
         month: monthKey,
         username: meetingsUsername.trim() || null,
         password: meetingsPassword || null
@@ -5213,6 +5488,7 @@ export default function App() {
       logToJira?: boolean
       jiraIssueKey?: string | null
       jiraCommentOverride?: string | null
+      mission?: ProjectMission | null
       onError?: (message: string) => void
     }
   ): Promise<boolean> {
@@ -5232,6 +5508,12 @@ export default function App() {
       setLogError('Add a short, informative comment before logging.')
       return false
     }
+    const effectiveMission = overrides?.mission ?? null
+    const missionMarker = effectiveMission?.virtual ? getMissionCommentMarker(effectiveMission) : ''
+    const apiComment =
+      missionMarker && !trimmedComment.includes(missionMarker)
+        ? `${missionMarker} ${trimmedComment}`
+        : trimmedComment
     const effectiveFromTime = overrides?.fromTime ?? fromTime
     const effectiveToTime = overrides?.toTime ?? toTime
     const effectiveReportingFrom = overrides?.reportingFrom ?? reportingFrom
@@ -5248,6 +5530,7 @@ export default function App() {
 	    try {
 	      const date = dayjs(effectiveDate).format('YYYY-MM-DD')
 	      let existingReports: WorkReportEntry[] = []
+        let capSourceReports = allReportItems
 	      const dateKey = date
 	      if (monthlyReport && dayjs(effectiveDate).isSame(reportMonth, 'month')) {
 	        existingReports = reportsByDate.get(dateKey)?.day.reports ?? []
@@ -5256,6 +5539,13 @@ export default function App() {
 	        const data = await window.hrs.getReports(start, end)
 	        const month = data as MonthlyReport
 	        existingReports = month.days.find(day => day.date === dateKey)?.reports ?? []
+          capSourceReports = month.days.flatMap(day =>
+            day.reports.map((report, index) => ({
+              ...report,
+              dateKey: day.date,
+              dayIndex: index
+            }))
+          )
 	      }
 
 	      let existingDetailed: ReportLogEntry[] = reportWorkLogsByDate[dateKey] ?? []
@@ -5310,11 +5600,37 @@ export default function App() {
 	        to: effectiveToTime,
 	        hours_HHMM: duration.hoursHHMM,
 	        hours: duration.hours,
-	        comment: trimmedComment,
+	        comment: apiComment,
 	        notSaved: true,
 	        reporting_from: effectiveReportingFrom,
 	        taskId
 	      }
+
+        const matchingCappedMissions = effectiveMission
+          ? [effectiveMission].filter(mission => mission.cappedHours && mission.cappedHours > 0)
+          : (projectManagementConfig?.missions ?? []).filter(
+              mission =>
+                mission.cappedHours &&
+                mission.cappedHours > 0 &&
+                (mission.hrsTaskIds ?? []).map(String).includes(String(taskId))
+            )
+        for (const mission of matchingCappedMissions) {
+          const missionTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
+          const marker = mission.virtual ? getMissionCommentMarker(mission) : ''
+          const usedMinutes = capSourceReports.reduce((sum, report) => {
+            if (!missionTaskIds.has(String(report.taskId))) return sum
+            if (marker && !report.comment?.includes(marker)) return sum
+            return sum + parseHoursHHMMToMinutes(report.hours_HHMM)
+          }, 0)
+          const capMinutes = Math.round((mission.cappedHours ?? 0) * 60)
+          const nextMinutes = usedMinutes + duration.minutes
+          if (capMinutes > 0 && nextMinutes > capMinutes) {
+            const message = `${mission.name} is capped at ${mission.cappedHours}h. Current usage is ${Math.round((usedMinutes / 60) * 10) / 10}h, this report would reach ${Math.round((nextMinutes / 60) * 10) / 10}h.`
+            setLogError(message)
+            overrides?.onError?.(message)
+            return false
+          }
+        }
 
 	      const reservedRanges: Array<{ start: number; end: number }> = []
 	      const resolvedRanges: Array<{ from: string; to: string } | null> = []
@@ -5413,7 +5729,7 @@ export default function App() {
           from: effectiveFromTime,
           to: effectiveToTime,
           hours_HHMM: duration.hoursHHMM,
-          comment: trimmedComment,
+          comment: apiComment,
           reporting_from: effectiveReportingFrom,
           projectInstance
         }
@@ -5428,7 +5744,7 @@ export default function App() {
       const started = buildJiraStarted(effectiveDate, effectiveFromTime)
       const seconds = Math.max(1, Math.round(duration.minutes * 60))
       const jiraComment =
-        overrides?.jiraCommentOverride ?? buildJiraComment(effectiveTask, trimmedComment)
+        overrides?.jiraCommentOverride ?? buildJiraComment(effectiveTask, apiComment)
       const createdWorklog = await window.hrs.addJiraWorklog({
         issueKey: effectiveJiraIssueKey,
         started,
@@ -5439,7 +5755,7 @@ export default function App() {
             {
               taskId,
               hours_HHMM: duration.hoursHHMM,
-              comment: trimmedComment,
+              comment: apiComment,
               reporting_from: effectiveReportingFrom,
               projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
             },
@@ -6218,7 +6534,8 @@ export default function App() {
       fromTime: logSameFrom,
       toTime: logSameTo,
       comment: logSameComment,
-      reportingFrom
+      reportingFrom,
+      mission: selectedQuickLogMission
     })
     if (success) {
       setLogSameOpen(false)
@@ -6311,7 +6628,11 @@ export default function App() {
       setFloatingStopError('Add a short, informative comment before logging.')
       return
     }
-    const success = await submitLogWork(taskIdForLog, duration)
+    const success = await submitLogWork(
+      taskIdForLog,
+      duration,
+      selectedQuickLogMission ? { mission: selectedQuickLogMission } : undefined
+    )
     if (success) {
       closeFloatingStop()
     }
@@ -6327,8 +6648,9 @@ export default function App() {
     setProjectName(meta?.projectName ?? item.project ?? null)
     setCustomerName(meta?.customerName ?? item.customer ?? null)
     setTaskName(meta?.taskName ?? item.taskName ?? null)
-    if (item.comment?.trim()) {
-      setComment(item.comment.trim())
+    const cleanComment = stripMissionCommentMarkers(item.comment)
+    if (cleanComment) {
+      setComment(cleanComment)
     }
     setLogSuccess(`Loaded from history: ${meta?.taskName ?? item.taskName}`)
   }
@@ -6345,7 +6667,11 @@ export default function App() {
 
   async function confirmReview() {
     if (!taskIdForLog || !duration) return
-    await submitLogWork(taskIdForLog, duration)
+    await submitLogWork(
+      taskIdForLog,
+      duration,
+      selectedQuickLogMission ? { mission: selectedQuickLogMission } : undefined
+    )
     setReviewOpen(false)
   }
 
@@ -6413,6 +6739,14 @@ export default function App() {
     return active.length ? active : taskScope
   }, [taskScope])
 
+  const taskMetaById = useMemo(() => {
+    const map = new Map<number, WorkLog>()
+    for (const log of logs) {
+      if (!map.has(log.taskId)) map.set(log.taskId, log)
+    }
+    return map
+  }, [logs])
+
   const taskNameMap = useMemo(() => {
     const map = new Map<string, WorkLog>()
     for (const log of activeTaskScope) {
@@ -6435,17 +6769,6 @@ export default function App() {
     return map
   }, [activeTaskScope])
 
-  const taskOptions = useMemo(() => {
-    return Array.from(taskNameMap.keys())
-      .sort((a, b) => a.localeCompare(b))
-      .map(value => ({ value, label: value }))
-  }, [taskNameMap])
-
-  const ruleMatchOptions = useMemo(
-    () => (newRuleScope === 'project' ? projectOptions : customerOptions),
-    [newRuleScope, projectOptions, customerOptions]
-  )
-
   const allReportItems = useMemo<ReportItem[]>(() => {
     if (!monthlyReport) return []
     return monthlyReport.days.flatMap(day =>
@@ -6456,6 +6779,127 @@ export default function App() {
       }))
     )
   }, [monthlyReport])
+
+  const getMissionUsedMinutesFromReports = (
+    mission: ProjectMission,
+    reports: Array<ReportItem | WorkReportEntry>
+  ) => {
+    const hrsTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
+    const missionMarker = mission.virtual ? getMissionCommentMarker(mission) : ''
+    return reports.reduce((sum, item) => {
+      const taskMatch = hrsTaskIds.size ? hrsTaskIds.has(String(item.taskId)) : false
+      if (taskMatch && missionMarker && !item.comment?.includes(missionMarker)) {
+        return sum
+      }
+      return taskMatch ? sum + parseHoursHHMMToMinutes(item.hours_HHMM) : sum
+    }, 0)
+  }
+
+  const taskOptions = useMemo(() => {
+    const visibleVirtualMissions = (projectManagementConfig?.missions ?? [])
+      .filter(mission => mission.virtual)
+      .filter(mission => !customerName || mission.customerName === customerName)
+      .map(mission => {
+        const originalTaskId = mission.hrsTaskIds?.[0]
+        if (!originalTaskId) return null
+        const originalTask = activeTaskScope.find(
+          log => String(log.taskId) === String(originalTaskId)
+        )
+        if (!originalTask) return null
+        if (projectName && originalTask.projectName !== projectName) return null
+        if (customerName && originalTask.customerName !== customerName) return null
+        return {
+          mission,
+          originalTask,
+          originalTaskId: String(originalTaskId),
+          value: getMissionOptionValue(mission.id),
+          label: mission.name
+        }
+      })
+      .filter(
+        (
+          option
+        ): option is {
+          mission: ProjectMission
+          originalTask: WorkLog
+          originalTaskId: string
+          value: string
+          label: string
+        } => Boolean(option)
+      )
+      .sort((a, b) => a.label.localeCompare(b.label))
+
+    const hiddenOriginalTaskIds = new Set(visibleVirtualMissions.map(option => option.originalTaskId))
+    const realOptions = Array.from(taskNameMap.values())
+      .filter(log => !hiddenOriginalTaskIds.has(String(log.taskId)))
+      .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
+      .map(log => {
+        const cappedMission = (projectManagementConfig?.missions ?? []).find(
+          mission =>
+            !mission.virtual &&
+            mission.cappedHours &&
+            mission.cappedHours > 0 &&
+            (mission.hrsTaskIds ?? []).map(String).includes(String(log.taskId))
+        )
+        if (!cappedMission) {
+          return { value: log.taskName, label: log.taskName }
+        }
+        const usedMinutes = getMissionUsedMinutesFromReports(cappedMission, allReportItems)
+        return {
+          value: log.taskName,
+          label: `${log.taskName} · ${minutesToHHMM(usedMinutes)} / ${cappedMission.cappedHours}h`
+        }
+      })
+
+    const addOption = customerName
+      ? [{ value: QUICKLOG_ADD_FICTIVE_VALUE, label: '+ Add Task' }]
+      : []
+
+    return [...addOption, ...visibleVirtualMissions, ...realOptions]
+  }, [
+    taskNameMap,
+    projectManagementConfig,
+    customerName,
+    projectName,
+    activeTaskScope,
+    allReportItems
+  ])
+
+  const taskSelectRenderOption: SelectProps['renderOption'] = ({ option, checked }) => {
+    if (option.value === QUICKLOG_ADD_FICTIVE_VALUE) {
+      return (
+        <Group justify="space-between" align="center" wrap="nowrap" gap="xs" className="task-add-option">
+          <Text size="sm" fw={700} className="task-select-option-text">
+            {option.label}
+          </Text>
+          <ThemeIcon
+            size="xs"
+            radius="xl"
+            variant="light"
+            color="cyan"
+            title="Creates a UI-only task for caps and progress. Reports still go to the original HRS task."
+            aria-label="Add task explanation"
+          >
+            <IconInfoCircle size={12} />
+          </ThemeIcon>
+        </Group>
+      )
+    }
+
+    return (
+      <Group justify="space-between" align="center" wrap="nowrap" gap="xs" className="task-select-option">
+        <Text size="sm" truncate className="task-select-option-text">
+          {option.label}
+        </Text>
+        {checked && <IconCheck size={16} className="task-option-check" />}
+      </Group>
+    )
+  }
+
+  const ruleMatchOptions = useMemo(
+    () => (newRuleScope === 'project' ? projectOptions : customerOptions),
+    [newRuleScope, projectOptions, customerOptions]
+  )
 
   const getDayTargetMinutes = (day?: WorkReportDay | null) => {
     if (!day) return 9 * 60
@@ -6964,8 +7408,11 @@ export default function App() {
   }, [taskName, taskOptions])
 
   useEffect(() => {
-    if (!taskName && taskOptions.length === 1 && !suppressTaskAutoSelect) {
-      setTaskName(taskOptions[0].value)
+    const selectableTaskOptions = taskOptions.filter(
+      option => option.value !== QUICKLOG_ADD_FICTIVE_VALUE
+    )
+    if (!taskName && selectableTaskOptions.length === 1 && !suppressTaskAutoSelect) {
+      setTaskName(selectableTaskOptions[0].value)
     }
   }, [taskName, taskOptions, suppressTaskAutoSelect])
 
@@ -7013,6 +7460,7 @@ export default function App() {
     void checkSession()
     void loadJiraStatus()
     void loadPreferences()
+    void loadProjectManagementConfig()
     void loadHrsCredentials()
     void loadJiraLoggedEntries()
   }, [])
@@ -7270,6 +7718,49 @@ export default function App() {
     if (!employeeReportEmployeeId || employeeReport || employeeReportLoading) return
     void loadEmployeeHoursReport()
   }, [isTray, loggedIn, trayPanel, employeeReportEmployeeId, employeeReport, employeeReportLoading])
+
+  useEffect(() => {
+    if (!isTray || !loggedIn || trayPanel !== 'reports') return
+    if (!employeesResult?.hasAccess || !employeesResult.hasEmployees) return
+    if (!employeeReportEmployeeId) return
+
+    const range = getEmployeeMonthRange(reportMonth)
+    const needsAllEmployees = employeeReportEmployeeId !== EMPLOYEE_REPORT_ALL_VALUE
+    const needsRange =
+      employeeReportFrom !== range.start ||
+      employeeReportTo !== range.end ||
+      !dayjs(employeeReportMonth).isSame(reportMonth, 'month')
+
+    if (needsAllEmployees || needsRange) {
+      if (needsAllEmployees) setEmployeeReportEmployeeId(EMPLOYEE_REPORT_ALL_VALUE)
+      if (needsRange) {
+        setEmployeeReportMonth(reportMonth)
+        setEmployeeReportFrom(range.start)
+        setEmployeeReportTo(range.end)
+        setEmployeeReportSelectedDate(range.end)
+      }
+      setEmployeeReport(null)
+      setEmployeeReportTask(null)
+      setEmployeeReportCustomerId('')
+      return
+    }
+
+    if (!employeeReport && !employeeReportLoading) {
+      void loadEmployeeHoursReport()
+    }
+  }, [
+    isTray,
+    loggedIn,
+    trayPanel,
+    employeesResult,
+    employeeReportEmployeeId,
+    employeeReportFrom,
+    employeeReportTo,
+    employeeReportMonth,
+    reportMonth,
+    employeeReport,
+    employeeReportLoading
+  ])
 
   useEffect(() => {
     if (!isTray || !loggedIn || trayPanel !== 'reports') return
@@ -7821,18 +8312,59 @@ export default function App() {
     }
   }, [reportMonth, selectedReportDate])
 
+  const selectedQuickLogMission = useMemo(() => {
+    const missionId = getMissionIdFromTaskValue(debouncedTaskName)
+    if (!missionId) return null
+    return projectManagementConfig?.missions.find(mission => mission.id === missionId) ?? null
+  }, [debouncedTaskName, projectManagementConfig])
+
+  const selectedQuickLogMissionTaskId = useMemo(() => {
+    const originalTaskId = selectedQuickLogMission?.hrsTaskIds?.[0]
+    if (!originalTaskId) return null
+    const parsed = Number(originalTaskId)
+    return Number.isFinite(parsed) ? parsed : null
+  }, [selectedQuickLogMission])
+
+  const selectedQuickLogMissionUsage = useMemo(() => {
+    if (!selectedQuickLogMission?.virtual || !selectedQuickLogMission.cappedHours) return null
+    const capMinutes = Math.round(selectedQuickLogMission.cappedHours * 60)
+    if (capMinutes <= 0) return null
+    const usedMinutes = getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
+    const percent = (usedMinutes / capMinutes) * 100
+    const status = percent > 75 ? 'red' : percent > 50 ? 'yellow' : 'green'
+    return {
+      missionName: selectedQuickLogMission.name,
+      usedMinutes,
+      capMinutes,
+      percent,
+      status
+    }
+  }, [selectedQuickLogMission, allReportItems])
+
   const filteredLogs = useMemo(() => {
-    const preferredTaskId = debouncedTaskName
+    const preferredTaskId = selectedQuickLogMissionTaskId
+      ? selectedQuickLogMissionTaskId
+      : debouncedTaskName
       ? taskNameMap.get(debouncedTaskName)?.taskId ?? null
       : null
     return logs.filter(log => {
       if (debouncedProjectName && log.projectName !== debouncedProjectName) return false
       if (debouncedCustomerName && log.customerName !== debouncedCustomerName) return false
-      if (debouncedTaskName && log.taskName !== debouncedTaskName) return false
+      if (debouncedTaskName && !selectedQuickLogMission && log.taskName !== debouncedTaskName) {
+        return false
+      }
       if (preferredTaskId && log.taskId !== preferredTaskId) return false
       return true
     })
-  }, [logs, debouncedProjectName, debouncedCustomerName, debouncedTaskName, taskNameMap])
+  }, [
+    logs,
+    debouncedProjectName,
+    debouncedCustomerName,
+    debouncedTaskName,
+    selectedQuickLogMission,
+    selectedQuickLogMissionTaskId,
+    taskNameMap
+  ])
 
   const uniqueTaskIds = useMemo(() => {
     return Array.from(new Set(filteredLogs.map(log => log.taskId)))
@@ -7843,6 +8375,30 @@ export default function App() {
   const selectedTask = taskIdForLog
     ? filteredLogs.find(log => log.taskId === taskIdForLog) ?? null
     : null
+
+  const quickFictiveOriginalTaskOptions = useMemo(() => {
+    const byTaskId = new Map<number, WorkLog>()
+    for (const log of activeTaskScope) {
+      if (!log.taskId || byTaskId.has(log.taskId)) continue
+      byTaskId.set(log.taskId, log)
+    }
+    return Array.from(byTaskId.values())
+      .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
+      .map(log => ({
+        value: String(log.taskId),
+        label: `${log.taskName || `Task ${log.taskId}`} · ${log.projectName || log.projectInstance}`
+      }))
+  }, [activeTaskScope])
+
+  const quickFictiveOriginalTask = useMemo(() => {
+    if (!quickFictiveOriginalTaskId) return null
+    const parsed = Number(quickFictiveOriginalTaskId)
+    return (
+      activeTaskScope.find(log => String(log.taskId) === quickFictiveOriginalTaskId) ??
+      (Number.isFinite(parsed) ? taskMetaById.get(parsed) : null) ??
+      null
+    )
+  }, [activeTaskScope, quickFictiveOriginalTaskId, taskMetaById])
 
   const reportingFromOptions = useMemo(() => {
     const values = new Set<string>()
@@ -7865,9 +8421,14 @@ export default function App() {
 
   const meetingsFilterMonthKey = useMemo(() => dayjs(reportMonth).format('YYYY-MM'), [reportMonth])
 
+  const meetingsDisplayable = useMemo(
+    () => meetings.filter(meeting => !isCanceledMeeting(meeting)),
+    [meetings]
+  )
+
   const meetingSubjectOptions = useMemo(() => {
     const options = new Map<string, { key: string; label: string; count: number }>()
-    for (const meeting of meetings) {
+    for (const meeting of meetingsDisplayable) {
       const label = (meeting.subject || 'Meeting').trim() || 'Meeting'
       const key = getMeetingSubjectKey(label)
       const existing = options.get(key)
@@ -7877,10 +8438,12 @@ export default function App() {
         options.set(key, { key, label, count: 1 })
       }
     }
-    return Array.from(options.values()).sort((a, b) =>
-      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
+    return Array.from(options.values()).sort(
+      (a, b) =>
+        b.count - a.count ||
+        a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
     )
-  }, [meetings])
+  }, [meetingsDisplayable])
 
   const excludedMeetingSubjectSet = useMemo(
     () => new Set(meetingExcludedSubjects[meetingsFilterMonthKey] ?? []),
@@ -7889,13 +8452,36 @@ export default function App() {
 
   const meetingsVisible = useMemo(
     () =>
-      meetings.filter(
+      meetingsDisplayable.filter(
         meeting => !excludedMeetingSubjectSet.has(getMeetingSubjectKey(meeting.subject || 'Meeting'))
       ),
-    [meetings, excludedMeetingSubjectSet]
+    [meetingsDisplayable, excludedMeetingSubjectSet]
   )
 
-  const hiddenMeetingCount = meetings.length - meetingsVisible.length
+  const hiddenMeetingCount = meetingsDisplayable.length - meetingsVisible.length
+
+  const meetingsVisibleByDate = useMemo(() => {
+    const byDate = new Map<string, MeetingItem[]>()
+    for (const meeting of meetingsVisible) {
+      const start = dayjs(meeting.startTime.replace(' ', 'T'))
+      if (!start.isValid()) continue
+      const dateKey = start.format('YYYY-MM-DD')
+      const list = byDate.get(dateKey) ?? []
+      list.push(meeting)
+      byDate.set(dateKey, list)
+    }
+    for (const [dateKey, list] of byDate.entries()) {
+      byDate.set(
+        dateKey,
+        [...list].sort((a, b) => {
+          const aStart = dayjs(a.startTime.replace(' ', 'T'))
+          const bStart = dayjs(b.startTime.replace(' ', 'T'))
+          return (aStart.isValid() ? aStart.valueOf() : 0) - (bStart.isValid() ? bStart.valueOf() : 0)
+        })
+      )
+    }
+    return byDate
+  }, [meetingsVisible])
 
   const meetingDomainOptions = useMemo(() => {
     const counts = new Map<string, number>()
@@ -7958,7 +8544,37 @@ export default function App() {
     }))
   }
 
-  const meetingSubjectFilterMenu = meetingSubjectOptions.length ? (
+  const meetingSubjectFilterContent = meetingSubjectOptions.length ? (
+    <>
+      <Text size="xs" fw={700} c="dimmed" className="meeting-subject-filter-heading">
+        Meeting names
+      </Text>
+      <div className="meeting-subject-filter-list">
+        {meetingSubjectOptions.map(option => (
+          <Checkbox
+            key={option.key}
+            size="xs"
+            checked={!excludedMeetingSubjectSet.has(option.key)}
+            onChange={event =>
+              updateMeetingSubjectVisibility(option.key, event.currentTarget.checked)
+            }
+            label={`${option.label} (${option.count})`}
+          />
+        ))}
+      </div>
+      <div className="meeting-subject-filter-divider" />
+      <Group justify="space-between" gap="xs">
+        <Button size="compact-xs" variant="subtle" onClick={showAllMeetingSubjects}>
+          Show all
+        </Button>
+        <Button size="compact-xs" variant="subtle" color="red" onClick={hideAllMeetingSubjects}>
+          Hide all
+        </Button>
+      </Group>
+    </>
+  ) : null
+
+  const meetingSubjectFilterMenu = meetingSubjectFilterContent ? (
     <Menu closeOnItemClick={false} width={360} position="bottom-end" shadow="md">
       <Menu.Target>
         <Button size="xs" variant={hiddenMeetingCount ? 'light' : 'subtle'}>
@@ -7966,29 +8582,7 @@ export default function App() {
         </Button>
       </Menu.Target>
       <Menu.Dropdown>
-        <Menu.Label>Show meeting names</Menu.Label>
-        <div className="meeting-subject-filter-list">
-          {meetingSubjectOptions.map(option => (
-            <Checkbox
-              key={option.key}
-              size="xs"
-              checked={!excludedMeetingSubjectSet.has(option.key)}
-              onChange={event =>
-                updateMeetingSubjectVisibility(option.key, event.currentTarget.checked)
-              }
-              label={`${option.label} (${option.count})`}
-            />
-          ))}
-        </div>
-        <Menu.Divider />
-        <Group justify="space-between" gap="xs" p="xs">
-          <Button size="compact-xs" variant="subtle" onClick={showAllMeetingSubjects}>
-            Show all
-          </Button>
-          <Button size="compact-xs" variant="subtle" color="red" onClick={hideAllMeetingSubjects}>
-            Hide all
-          </Button>
-        </Group>
+        {meetingSubjectFilterContent}
       </Menu.Dropdown>
     </Menu>
   ) : null
@@ -8029,9 +8623,7 @@ export default function App() {
       {
         key: 'init',
         title: 'Start browser session',
-        detail: meetingsBrowser === 'chrome' && meetingsHeadless
-          ? 'Chrome runs in background mode.'
-          : 'Browser window is prepared for login.'
+        detail: 'Chrome runs in background mode.'
       },
       {
         key: 'auth',
@@ -8049,7 +8641,7 @@ export default function App() {
         detail: 'Normalize and cache meetings for this month.'
       }
     ],
-    [meetingsBrowser, meetingsHeadless, reportMonth]
+    [reportMonth]
   )
 
   const meetingsStepStatuses = useMemo(() => {
@@ -8086,6 +8678,68 @@ export default function App() {
       Boolean(meetingsProgress) ||
       meetingsProgressLog.length > 0,
     [meetingsLoading, meetingsFetchPhase, meetingsProgress, meetingsProgressLog.length]
+  )
+
+  const renderMeetingsProgressCard = (className = 'tray-meetings-progress') => (
+    <Card radius="md" withBorder className={className}>
+      <Stack gap={6}>
+        <Group justify="space-between" align="center" wrap="nowrap">
+          <Text size="xs" fw={700}>
+            {meetingsFetchPhase === 'done' ? 'Meeting sync complete' : 'Meeting sync progress'}
+          </Text>
+          <ActionIcon
+            size="sm"
+            variant="subtle"
+            aria-label={
+              trayMeetingsProgressOpen
+                ? 'Collapse meeting sync progress'
+                : 'Expand meeting sync progress'
+            }
+            onClick={() => setTrayMeetingsProgressOpen(prev => !prev)}
+            className="tray-progress-toggle"
+          >
+            {trayMeetingsProgressOpen ? (
+              <IconChevronDown size={16} />
+            ) : (
+              <IconChevronRight size={16} />
+            )}
+          </ActionIcon>
+        </Group>
+        <Collapse in={trayMeetingsProgressOpen} transitionDuration={160}>
+          <Stack gap={6}>
+            {meetingsFetchSteps.map((step, index) => (
+              <Group
+                key={step.key}
+                align="center"
+                gap="xs"
+                wrap="nowrap"
+                className={`tray-meetings-step tray-meetings-step-${meetingsStepStatuses[index]}`}
+              >
+                <span className="tray-meetings-step-dot">
+                  {meetingsStepStatuses[index] === 'done' ? (
+                    <IconCheck size={12} />
+                  ) : meetingsStepStatuses[index] === 'active' ? (
+                    <Loader size={12} />
+                  ) : meetingsStepStatuses[index] === 'error' ? (
+                    <IconAlertTriangle size={12} />
+                  ) : (
+                    index + 1
+                  )}
+                </span>
+                <Text size="xs" fw={600}>
+                  {step.title}
+                </Text>
+              </Group>
+            ))}
+            {meetingsProgress && (
+              <Text size="xs" c="dimmed">
+                Current: {meetingsProgress}
+              </Text>
+            )}
+          </Stack>
+        </Collapse>
+      </Stack>
+    </Card>
   )
 
   const trayMeetingsNeedsBootstrap = isTray && trayPanel === 'meetings' && !meetingsHasFetchedOnce
@@ -8213,13 +8867,959 @@ export default function App() {
     </Card>
   ) : null
 
-  const taskMetaById = useMemo(() => {
-    const map = new Map<number, WorkLog>()
-    for (const log of logs) {
-      if (!map.has(log.taskId)) map.set(log.taskId, log)
+  useEffect(() => {
+    if (trayPanel !== 'log') return
+    if (meetingsLoading || meetingsFetchPhase !== 'done') return
+    if (!meetingsUpdatedAt || !meetingSubjectOptions.length) return
+    if (quickMeetingNamesAutoShownKey === meetingsUpdatedAt) return
+    setQuickMeetingNamesAutoShownKey(meetingsUpdatedAt)
+  }, [
+    trayPanel,
+    meetingsLoading,
+    meetingsFetchPhase,
+    meetingsUpdatedAt,
+    meetingSubjectOptions.length,
+    quickMeetingNamesAutoShownKey
+  ])
+
+  const canOpenQuickMeetingNames = Boolean(
+    meetingsFetchPhase === 'done' && meetingsUpdatedAt && meetingSubjectFilterContent
+  )
+
+  const meetingsDuoWaiting = useMemo(() => {
+    if (!meetingsLoading || !meetingsProgress) return false
+    const normalized = meetingsProgress.toLowerCase()
+    return (
+      normalized.includes('duo') ||
+      normalized.includes("approval on user's phone") ||
+      normalized.includes('approval on your phone')
+    )
+  }, [meetingsLoading, meetingsProgress])
+
+  const quickMeetingSyncIcon = meetingsDuoWaiting ? (
+    <IconAlertTriangle size={16} />
+  ) : meetingsLoading ? (
+    <Loader size={16} />
+  ) : meetingsFetchPhase === 'error' ? (
+    <IconAlertTriangle size={16} />
+  ) : meetingsFetchPhase === 'done' && meetingsUpdatedAt ? (
+    <IconCheck size={16} />
+  ) : (
+    <IconCalendar size={16} />
+  )
+
+  const quickMeetingButtonStep = useMemo(() => {
+    if (meetingsDuoWaiting) return '2/4 Approve DUO on phone'
+    if (meetingsLoading) {
+      if (meetingsFetchPhase === 'init') return '1/4 Start browser'
+      if (meetingsFetchPhase === 'auth') return '2/4 Authenticate Microsoft'
+      if (meetingsFetchPhase === 'query') return '3/4 Fetch meetings'
+      if (meetingsFetchPhase === 'finalize') return '4/4 Build list'
+      return 'Syncing meetings'
     }
-    return map
-  }, [logs])
+    if (meetingsFetchPhase === 'error') return 'Sync failed'
+    if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) return 'Meetings synced'
+    return 'Sync Meetings'
+  }, [meetingsDuoWaiting, meetingsFetchPhase, meetingsLoading, meetingsUpdatedAt])
+
+  const quickMeetingButtonSubline = useMemo(() => {
+    if (meetingsDuoWaiting) return 'Check your phone'
+    if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) {
+      return dayjs(meetingsUpdatedAt).format('DD/MM HH:mm')
+    }
+    return null
+  }, [meetingsDuoWaiting, meetingsFetchPhase, meetingsUpdatedAt])
+
+  const quickLogMeetingsPanel = (
+    <Stack gap="xs" className="quick-meetings-panel">
+      <Group justify="space-between" align="center" wrap="nowrap">
+        <Popover
+          opened={quickMeetingNamesMenuOpen && canOpenQuickMeetingNames}
+          onChange={setQuickMeetingNamesMenuOpen}
+          position="bottom-start"
+          width={360}
+          shadow="md"
+          withinPortal
+        >
+          <Popover.Target>
+            <span
+              className="quick-sync-meetings-target"
+              onContextMenu={event => {
+                if (!canOpenQuickMeetingNames) return
+                event.preventDefault()
+                setQuickMeetingNamesMenuOpen(true)
+              }}
+            >
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => {
+                  setTrayMeetingsProgressOpen(true)
+                  setQuickMeetingNamesMenuOpen(false)
+                  void fetchMeetings()
+                }}
+                disabled={meetingsLoading}
+                aria-live="polite"
+                title={
+                  canOpenQuickMeetingNames
+                    ? 'Right click to show or hide meeting names'
+                    : undefined
+                }
+                className={[
+                  'quick-sync-meetings-button',
+                  meetingsDuoWaiting ? 'is-duo-waiting' : '',
+                  meetingsLoading ? 'is-syncing' : ''
+                ]
+                  .join(' ')
+                  .trim()}
+                rightSection={quickMeetingSyncIcon}
+              >
+                <span className="quick-sync-meetings-content">
+                  <span>{quickMeetingButtonStep}</span>
+                  {quickMeetingButtonSubline && (
+                    <span
+                      className={[
+                        'quick-sync-meetings-subline',
+                        meetingsDuoWaiting ? 'is-duo-alert' : ''
+                      ]
+                        .join(' ')
+                        .trim()}
+                    >
+                      {quickMeetingButtonSubline}
+                    </span>
+                  )}
+                </span>
+              </Button>
+            </span>
+          </Popover.Target>
+          <Popover.Dropdown className="quick-meeting-subject-popover">
+            {meetingSubjectFilterContent}
+          </Popover.Dropdown>
+        </Popover>
+      </Group>
+
+      {meetingsError && (
+        <Alert color="red" variant="light" radius="md">
+          {meetingsError}
+        </Alert>
+      )}
+    </Stack>
+  )
+
+  const projectDashboardCustomerOptions = useMemo(() => {
+    const customers = reportedCustomers.length ? reportedCustomers : uniqueCustomers
+    return customers.map(customer => ({
+      value: customer,
+      label: getCustomerDisplayName(customer)
+    }))
+  }, [reportedCustomers, uniqueCustomers, jiraCustomerAliases])
+
+  useEffect(() => {
+    if (!projectDashboardCustomerOptions.length) {
+      if (projectDashboardCustomer) setProjectDashboardCustomer(null)
+      return
+    }
+    if (
+      !projectDashboardCustomer ||
+      !projectDashboardCustomerOptions.some(option => option.value === projectDashboardCustomer)
+    ) {
+      setProjectDashboardCustomer(projectDashboardCustomerOptions[0].value)
+    }
+  }, [projectDashboardCustomer, projectDashboardCustomerOptions])
+
+  const selectedProjectCustomerMapping = useMemo(() => {
+    if (!projectDashboardCustomer) return null
+    return (
+      projectManagementConfig?.customerMappings.find(
+        mapping => mapping.hrsCustomerName === projectDashboardCustomer
+      ) ?? null
+    )
+  }, [projectDashboardCustomer, projectManagementConfig])
+
+  const selectedProjectMappedIssueKey = projectDashboardCustomer
+    ? selectedProjectCustomerMapping?.defaultJiraIssueKey ||
+      selectedProjectCustomerMapping?.jiraEpicKeys[0] ||
+      jiraMappings[projectDashboardCustomer] ||
+      ''
+    : ''
+
+  const projectDashboardProjectOptions = useMemo(() => {
+    if (!projectDashboardCustomer) return []
+    const byProject = new Map<string, { value: string; label: string }>()
+    for (const log of logs) {
+      if (log.customerName !== projectDashboardCustomer) continue
+      const project = log.projectName || log.projectInstance || 'Project'
+      if (!project.trim()) continue
+      if (!byProject.has(project)) byProject.set(project, { value: project, label: project })
+    }
+    return Array.from(byProject.values()).sort((a, b) => a.label.localeCompare(b.label))
+  }, [logs, projectDashboardCustomer])
+
+  useEffect(() => {
+    setMissionHrsTaskId(null)
+    setMissionName('')
+    if (!projectDashboardProjectOptions.length) {
+      if (projectDashboardProject) setProjectDashboardProject(null)
+      return
+    }
+    if (
+      !projectDashboardProject ||
+      !projectDashboardProjectOptions.some(option => option.value === projectDashboardProject)
+    ) {
+      setProjectDashboardProject(projectDashboardProjectOptions[0].value)
+    }
+  }, [projectDashboardCustomer, projectDashboardProject, projectDashboardProjectOptions])
+
+  const projectDashboardHrsTaskOptions = useMemo(() => {
+    if (!projectDashboardCustomer || !projectDashboardProject) return []
+    const byTask = new Map<number, WorkLog>()
+    for (const log of logs) {
+      if (log.customerName !== projectDashboardCustomer) continue
+      const project = log.projectName || log.projectInstance || 'Project'
+      if (project !== projectDashboardProject) continue
+      if (!byTask.has(log.taskId)) byTask.set(log.taskId, log)
+    }
+    return Array.from(byTask.values())
+      .sort((a, b) => {
+        return (a.taskName || '').localeCompare(b.taskName || '')
+      })
+      .map(log => ({
+        value: String(log.taskId),
+        label: log.taskName || `Task ${log.taskId}`
+      }))
+  }, [logs, projectDashboardCustomer, projectDashboardProject])
+
+  const selectedProjectHrsTask = useMemo(() => {
+    if (!missionHrsTaskId) return null
+    return taskMetaById.get(Number(missionHrsTaskId)) ?? null
+  }, [missionHrsTaskId, taskMetaById])
+
+  useEffect(() => {
+    if (!projectDashboardCustomer) return
+    setMissionJiraIssueKey(current => current || selectedProjectMappedIssueKey)
+  }, [projectDashboardCustomer, selectedProjectMappedIssueKey])
+
+  useEffect(() => {
+    if (!selectedProjectHrsTask) return
+    if (!missionVirtual) {
+      setMissionName(selectedProjectHrsTask.taskName || '')
+    }
+  }, [selectedProjectHrsTask, missionVirtual])
+
+  const selectedProjectReportItems = useMemo(() => {
+    if (!projectDashboardCustomer) return []
+    return allReportItems.filter(item => {
+      const meta = taskMetaById.get(item.taskId)
+      return (
+        meta?.customerName === projectDashboardCustomer ||
+        item.projectInstance === projectDashboardCustomer
+      )
+    })
+  }, [allReportItems, taskMetaById, projectDashboardCustomer])
+
+  const projectDashboardSummary = useMemo(() => {
+    const taskIds = new Set<number>()
+    const projectMap = new Map<
+      string,
+      {
+        projectName: string
+        totalMinutes: number
+        tasks: Map<string, { taskName: string; taskId: number; totalMinutes: number }>
+      }
+    >()
+
+    for (const item of selectedProjectReportItems) {
+      const meta = taskMetaById.get(item.taskId)
+      const projectName = meta?.projectName || item.projectInstance || 'HRS project'
+      const taskName = meta?.taskName || item.taskName || `Task ${item.taskId}`
+      const minutes = parseHoursHHMMToMinutes(item.hours_HHMM)
+      taskIds.add(item.taskId)
+      const project = projectMap.get(projectName) ?? {
+        projectName,
+        totalMinutes: 0,
+        tasks: new Map<string, { taskName: string; taskId: number; totalMinutes: number }>()
+      }
+      project.totalMinutes += minutes
+      const taskKey = String(item.taskId)
+      const task = project.tasks.get(taskKey) ?? {
+        taskName,
+        taskId: item.taskId,
+        totalMinutes: 0
+      }
+      task.totalMinutes += minutes
+      project.tasks.set(taskKey, task)
+      projectMap.set(projectName, project)
+    }
+
+    return {
+      totalMinutes: selectedProjectReportItems.reduce(
+        (sum, item) => sum + parseHoursHHMMToMinutes(item.hours_HHMM),
+        0
+      ),
+      taskCount: taskIds.size,
+      projects: Array.from(projectMap.values())
+        .map(project => ({
+          ...project,
+          tasks: Array.from(project.tasks.values()).sort((a, b) => b.totalMinutes - a.totalMinutes)
+        }))
+        .sort((a, b) => b.totalMinutes - a.totalMinutes)
+    }
+  }, [selectedProjectReportItems, taskMetaById])
+
+  const selectedProjectMissions = useMemo(() => {
+    if (!projectDashboardCustomer) return []
+    return (projectManagementConfig?.missions ?? []).filter(
+      mission => mission.customerName === projectDashboardCustomer
+    )
+  }, [projectDashboardCustomer, projectManagementConfig])
+
+  const getMissionUsedMinutes = (mission: ProjectMission) => {
+    const hrsTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
+    const missionMarker = mission.virtual ? getMissionCommentMarker(mission) : ''
+    return selectedProjectReportItems.reduce((sum, item) => {
+      const taskMatch = hrsTaskIds.size
+        ? hrsTaskIds.has(String(item.taskId))
+        : (taskMetaById.get(item.taskId)?.taskName || item.taskName) === mission.name
+      if (taskMatch && missionMarker && !item.comment?.includes(missionMarker)) {
+        return sum
+      }
+      return taskMatch ? sum + parseHoursHHMMToMinutes(item.hours_HHMM) : sum
+    }, 0)
+  }
+
+  const selectedProjectMissionRows = useMemo(() => {
+    return selectedProjectMissions.map(mission => {
+      const usedMinutes = getMissionUsedMinutes(mission)
+      const usedHours = Math.round((usedMinutes / 60) * 10) / 10
+      const cap = mission.cappedHours ?? null
+      const utilization = cap && cap > 0 ? Math.round((usedHours / cap) * 100) : null
+      const warning =
+        utilization === null
+          ? null
+          : utilization >= 100
+            ? '100% cap reached'
+            : utilization >= 90
+              ? '90% utilization'
+              : utilization >= 80
+                ? '80% utilization'
+                : utilization >= 70
+                  ? '70% risk check'
+                  : utilization >= 60
+                    ? '60% utilization'
+                    : utilization >= 50
+                      ? '50% utilization'
+                      : null
+      return { mission, usedMinutes, usedHours, cap, utilization, warning }
+    })
+  }, [selectedProjectMissions, selectedProjectReportItems, taskMetaById])
+
+  const selectedProjectJiraIssueOptions = useMemo(() => {
+    const options = new Map<string, string>()
+    for (const epic of jiraEpics) {
+      if (epic.key) options.set(epic.key, `${epic.key} · ${epic.summary}`)
+    }
+    if (projectDashboardCustomer) {
+      const budgetRow = jiraBudgetRows.find(row => row.customer === projectDashboardCustomer)
+      for (const item of budgetRow?.items ?? []) {
+        options.set(item.key, `${item.key} · ${item.summary}`)
+        for (const subtask of item.subtasks ?? []) {
+          options.set(subtask.key, `${subtask.key} · ${subtask.summary}`)
+        }
+      }
+    }
+    if (selectedProjectMappedIssueKey) {
+      options.set(selectedProjectMappedIssueKey, selectedProjectMappedIssueKey)
+    }
+    return Array.from(options.entries()).map(([value, label]) => ({ value, label }))
+  }, [jiraEpics, jiraBudgetRows, projectDashboardCustomer, selectedProjectMappedIssueKey])
+
+  const parseMissionHoursInput = (value: string | number) => {
+    if (typeof value === 'number') return Number.isFinite(value) ? value : null
+    const trimmed = value.trim()
+    if (!trimmed) return null
+    const parsed = Number(trimmed)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+
+  function getDefaultJiraIssueForCustomer(customer?: string | null) {
+    if (!customer) return 'HRS-UI'
+    const mapping = projectManagementConfig?.customerMappings.find(
+      item => item.hrsCustomerName === customer
+    )
+    return (
+      mapping?.defaultJiraIssueKey ||
+      mapping?.jiraEpicKeys[0] ||
+      jiraMappings[customer] ||
+      'HRS-UI'
+    )
+  }
+
+  function openQuickFictiveTaskModal() {
+    const selectedOriginalTaskId =
+      selectedQuickLogMissionTaskId ??
+      (taskName && !getMissionIdFromTaskValue(taskName) ? taskNameMap.get(taskName)?.taskId : null) ??
+      (uniqueTaskIds.length === 1 ? uniqueTaskIds[0] : null)
+    const originalTaskId = selectedOriginalTaskId ? String(selectedOriginalTaskId) : null
+    setQuickFictiveOriginalTaskId(originalTaskId)
+    setQuickFictiveName('')
+    setQuickFictivePlannedHours('')
+    setQuickFictiveCappedHours('')
+    setQuickFictiveNotes('')
+    setQuickFictiveError(null)
+    setQuickFictiveModalOpen(true)
+  }
+
+  function handleQuickLogTaskChange(
+    value: string | null,
+    options?: { markTouched?: boolean; manageAutoSelect?: boolean }
+  ) {
+    if (options?.markTouched) {
+      filtersTouchedRef.current = true
+    }
+    if (value === QUICKLOG_ADD_FICTIVE_VALUE) {
+      openQuickFictiveTaskModal()
+      return
+    }
+    setTaskName(value)
+    if (options?.manageAutoSelect) {
+      setSuppressTaskAutoSelect(!value)
+    }
+  }
+
+  function closeQuickFictiveTaskModal() {
+    setQuickFictiveModalOpen(false)
+    setQuickFictiveError(null)
+  }
+
+  async function saveQuickFictiveTask() {
+    const originalTask = quickFictiveOriginalTask
+    if (!originalTask || !quickFictiveOriginalTaskId) {
+      setQuickFictiveError('Select the original HRS task.')
+      return
+    }
+    const safeName = quickFictiveName.trim()
+    if (!safeName) {
+      setQuickFictiveError('Enter a task name.')
+      return
+    }
+    const customer = originalTask.customerName || customerName
+    if (!customer) {
+      setQuickFictiveError('Select a customer first.')
+      return
+    }
+
+    setProjectManagementLoading(true)
+    setQuickFictiveError(null)
+    try {
+      const mission = await window.hrs.upsertProjectMission({
+        customerName: customer,
+        name: safeName,
+        jiraIssueKey: getDefaultJiraIssueForCustomer(customer),
+        hrsTaskIds: [quickFictiveOriginalTaskId],
+        virtual: true,
+        assignedEmployees: [],
+        plannedHours: parseMissionHoursInput(quickFictivePlannedHours),
+        cappedHours: parseMissionHoursInput(quickFictiveCappedHours),
+        status: 'in_progress',
+        dependencies: [],
+        notes:
+          quickFictiveNotes.trim() ||
+          `UI-only task for ${originalTask.taskName || `Task ${quickFictiveOriginalTaskId}`}`
+      })
+      await window.hrs.addProjectSyncAuditEntry({
+        action: 'create',
+        entity: 'mission',
+        source: 'system',
+        status: 'applied',
+        customerName: customer,
+        taskName: mission.name,
+        jiraIssueKey: mission.jiraIssueKey,
+        hrsTaskId: quickFictiveOriginalTaskId,
+        message: `Quick-log UI task created from HRS task ${quickFictiveOriginalTaskId}.`
+      })
+      await loadProjectManagementConfig()
+      setTaskName(getMissionOptionValue(mission.id))
+      setSuppressTaskAutoSelect(false)
+      setQuickFictiveModalOpen(false)
+    } catch (err) {
+      setQuickFictiveError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  const resetMissionForm = () => {
+    setMissionName('')
+    setMissionHrsTaskId(null)
+    setMissionVirtual(false)
+    setMissionPlannedHours('')
+    setMissionCappedHours('')
+    setMissionStatus('in_progress')
+    setMissionEmployees('')
+    setMissionNotes('')
+    setMissionJiraIssueKey(selectedProjectMappedIssueKey)
+  }
+
+  async function saveProjectMission() {
+    const customer = projectDashboardCustomer?.trim()
+    if (!customer) {
+      setProjectManagementError('Select a customer first.')
+      return
+    }
+    const safeName = missionName.trim()
+    if (!safeName) {
+      setProjectManagementError('Enter a mission name.')
+      return
+    }
+    const issueKey = missionJiraIssueKey.trim().toUpperCase()
+    if (!issueKey) {
+      setProjectManagementError('Enter the Jira issue where hours should sync.')
+      return
+    }
+    if (!missionHrsTaskId) {
+      setProjectManagementError('Select the HRS task that feeds this mission.')
+      return
+    }
+
+    setProjectManagementLoading(true)
+    setProjectManagementError(null)
+    try {
+      const mission = await window.hrs.upsertProjectMission({
+        customerName: customer,
+        name: safeName,
+        jiraIssueKey: issueKey,
+        hrsTaskIds: [missionHrsTaskId],
+        virtual: false,
+        assignedEmployees: missionEmployees
+          .split(',')
+          .map(item => item.trim())
+          .filter(Boolean),
+        plannedHours: parseMissionHoursInput(missionPlannedHours),
+        cappedHours: parseMissionHoursInput(missionCappedHours),
+        status: missionStatus,
+        dependencies: [],
+        notes: missionNotes.trim() || undefined
+      })
+      await window.hrs.addProjectSyncAuditEntry({
+        action: 'create',
+        entity: 'mission',
+        source: 'system',
+        status: 'applied',
+        customerName: customer,
+        taskName: mission.name,
+        jiraIssueKey: mission.jiraIssueKey,
+        hrsTaskId: missionHrsTaskId,
+        message: `Real mission created from HRS task ${missionHrsTaskId}.`
+      })
+      await loadProjectManagementConfig()
+      resetMissionForm()
+    } catch (err) {
+      setProjectManagementError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  function renderQuickFictiveUsageBar(compact = false) {
+    if (!selectedQuickLogMissionUsage) return null
+    const width = `${Math.min(Math.max(selectedQuickLogMissionUsage.percent, 0), 100)}%`
+    const percentLabel = `${Math.round(selectedQuickLogMissionUsage.percent)}%`
+    return (
+      <div className={`quick-fictive-usage${compact ? ' is-compact' : ''}`}>
+        <Group justify="space-between" align="center" wrap="nowrap" gap="xs">
+          <Text size={compact ? 'xs' : 'sm'} fw={700} truncate>
+            {selectedQuickLogMissionUsage.missionName}
+          </Text>
+          <Text size={compact ? 'xs' : 'sm'} c="dimmed" className="quick-fictive-usage-hours">
+            {minutesToHHMM(selectedQuickLogMissionUsage.usedMinutes)} /{' '}
+            {formatMinutesToLabel(selectedQuickLogMissionUsage.capMinutes)} · {percentLabel}
+          </Text>
+        </Group>
+        <div className="quick-fictive-usage-track" aria-label="Task utilization">
+          <div
+            className={`quick-fictive-usage-fill is-${selectedQuickLogMissionUsage.status}`}
+            style={{ '--quick-fictive-progress': width } as CSSProperties}
+          />
+        </div>
+      </div>
+    )
+  }
+
+  async function deleteProjectMission(mission: ProjectMission) {
+    setProjectManagementLoading(true)
+    setProjectManagementError(null)
+    try {
+      const config = await window.hrs.removeProjectMission(mission.id)
+      setProjectManagementConfig(config)
+      await window.hrs.addProjectSyncAuditEntry({
+        action: 'delete',
+        entity: 'mission',
+        source: 'system',
+        status: 'applied',
+        customerName: mission.customerName,
+        taskName: mission.name,
+        jiraIssueKey: mission.jiraIssueKey,
+        message: `Mission removed: ${mission.name}.`
+      })
+      setProjectManagementAudit(await window.hrs.getProjectSyncAuditLog(25))
+    } catch (err) {
+      setProjectManagementError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setProjectManagementLoading(false)
+    }
+  }
+
+  function renderProjectManagementDashboard(compact = false) {
+    const selectedCustomerLabel = projectDashboardCustomer
+      ? getCustomerDisplayName(projectDashboardCustomer)
+      : 'Customer'
+    const cappedMissionCount = selectedProjectMissions.filter(
+      mission => mission.cappedHours && mission.cappedHours > 0
+    ).length
+
+    return (
+      <Card radius="md" withBorder className={compact ? 'tray-settings-card' : 'glass-card'}>
+        <Stack gap={compact ? 'xs' : 'md'}>
+          <Group justify="space-between" align="center" wrap="wrap">
+            <Stack gap={2}>
+              <Text fw={800} size={compact ? 'sm' : 'lg'}>
+                Projects
+              </Text>
+              <Text size="xs" c="dimmed">
+                HRS customer/project dashboard with real and fictive capped missions.
+              </Text>
+            </Stack>
+            <Badge color="cyan" variant="light">
+              {projectManagementConfig?.reportingSource?.toUpperCase() ?? 'HRS'}
+            </Badge>
+          </Group>
+
+          <Select
+            label="HRS customer"
+            placeholder="Select customer"
+            data={projectDashboardCustomerOptions}
+            value={projectDashboardCustomer}
+            onChange={setProjectDashboardCustomer}
+            searchable
+            clearable
+            nothingFoundMessage="No HRS customers found"
+            size={compact ? 'xs' : 'sm'}
+          />
+
+          <SimpleGrid cols={compact ? 2 : 4} spacing="xs">
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                HRS hours
+              </Text>
+              <Text fw={800}>{minutesToHHMM(projectDashboardSummary.totalMinutes)}</Text>
+            </Card>
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                HRS projects
+              </Text>
+              <Text fw={800}>{projectDashboardSummary.projects.length}</Text>
+            </Card>
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                HRS tasks
+              </Text>
+              <Text fw={800}>{projectDashboardSummary.taskCount}</Text>
+            </Card>
+            <Card radius="sm" withBorder p="xs">
+              <Text size="xs" c="dimmed">
+                Capped missions
+              </Text>
+              <Text fw={800}>{cappedMissionCount}</Text>
+            </Card>
+          </SimpleGrid>
+
+          <Card radius="md" withBorder p={compact ? 'xs' : 'sm'}>
+            <Stack gap="xs">
+              <Group justify="space-between" align="center">
+                <Text fw={700} size={compact ? 'sm' : 'md'}>
+                  HRS projects for {selectedCustomerLabel}
+                </Text>
+                <Badge size="xs" variant="light">
+                  {projectDashboardSummary.projects.length}
+                </Badge>
+              </Group>
+              {projectDashboardSummary.projects.length ? (
+                <Stack gap="xs">
+                  {projectDashboardSummary.projects.slice(0, compact ? 3 : 8).map(project => (
+                    <Card key={project.projectName} radius="sm" withBorder p="xs">
+                      <Group justify="space-between" align="flex-start" wrap="nowrap">
+                        <Stack gap={4} style={{ minWidth: 0, flex: 1 }}>
+                          <Text fw={700} size="sm" truncate>
+                            {project.projectName}
+                          </Text>
+                          <Text size="xs" c="dimmed">
+                            {project.tasks.length} task{project.tasks.length === 1 ? '' : 's'}
+                          </Text>
+                          <Stack gap={3}>
+                            {project.tasks.slice(0, 3).map(task => (
+                              <Group key={task.taskId} justify="space-between" gap="xs" wrap="nowrap">
+                                <Text size="xs" truncate>
+                                  {task.taskName}
+                                </Text>
+                                <Badge size="xs" variant="outline">
+                                  {minutesToHHMM(task.totalMinutes)}
+                                </Badge>
+                              </Group>
+                            ))}
+                          </Stack>
+                        </Stack>
+                        <Badge color="teal" variant="light">
+                          {minutesToHHMM(project.totalMinutes)}
+                        </Badge>
+                      </Group>
+                    </Card>
+                  ))}
+                </Stack>
+              ) : (
+                <Text size="xs" c="dimmed">
+                  No HRS reports for this customer in the selected period. Refresh reports or select another customer.
+                </Text>
+              )}
+            </Stack>
+          </Card>
+
+          <Card radius="md" withBorder p={compact ? 'xs' : 'sm'}>
+            <Stack gap="xs">
+              <Group justify="space-between" align="center" wrap="wrap">
+                <Stack gap={2}>
+                  <Text fw={700} size={compact ? 'sm' : 'md'}>
+                    Add real mission
+                  </Text>
+                  <Text size="xs" c="dimmed">
+                    UI tasks are created from the Quick Log task picker and stay local to HRS Desktop.
+                  </Text>
+                </Stack>
+              </Group>
+
+              <SimpleGrid cols={compact ? 1 : 2} spacing="xs">
+                <Select
+                  label="Customer"
+                  placeholder="Select customer"
+                  data={projectDashboardCustomerOptions}
+                  value={projectDashboardCustomer}
+                  onChange={setProjectDashboardCustomer}
+                  searchable
+                  clearable
+                  nothingFoundMessage="No HRS customers found"
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <Select
+                  label="Project"
+                  placeholder={projectDashboardCustomer ? 'Select project' : 'Select customer first'}
+                  data={projectDashboardProjectOptions}
+                  value={projectDashboardProject}
+                  onChange={setProjectDashboardProject}
+                  searchable
+                  clearable
+                  disabled={!projectDashboardCustomer}
+                  nothingFoundMessage="No HRS projects for this customer"
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <Select
+                  label="Task"
+                  placeholder={projectDashboardProject ? 'Select task' : 'Select project first'}
+                  data={projectDashboardHrsTaskOptions}
+                  value={missionHrsTaskId}
+                  onChange={setMissionHrsTaskId}
+                  searchable
+                  disabled={!projectDashboardProject}
+                  nothingFoundMessage="No HRS tasks for this project"
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <TextInput
+                  label="Mission name"
+                  placeholder="Mission name"
+                  value={missionName}
+                  onChange={event => setMissionName(event.currentTarget.value)}
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <Select
+                  label="Known Jira issue"
+                  placeholder="Pick known Jira issue"
+                  data={selectedProjectJiraIssueOptions}
+                  value={
+                    selectedProjectJiraIssueOptions.some(option => option.value === missionJiraIssueKey)
+                      ? missionJiraIssueKey
+                      : null
+                  }
+                  onChange={value => {
+                    if (value) setMissionJiraIssueKey(value)
+                  }}
+                  searchable
+                  clearable
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <TextInput
+                  label="Jira issue key"
+                  placeholder="VDA-123"
+                  value={missionJiraIssueKey}
+                  onChange={event => setMissionJiraIssueKey(event.currentTarget.value)}
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <NumberInput
+                  label="Planned hours"
+                  placeholder="Optional"
+                  value={missionPlannedHours}
+                  onChange={setMissionPlannedHours}
+                  min={0}
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <NumberInput
+                  label="Cap hours"
+                  placeholder="Hard cap"
+                  value={missionCappedHours}
+                  onChange={setMissionCappedHours}
+                  min={0}
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <Select
+                  label="Status"
+                  data={[
+                    { value: 'todo', label: 'Todo' },
+                    { value: 'in_progress', label: 'In progress' },
+                    { value: 'blocked', label: 'Blocked' },
+                    { value: 'done', label: 'Done' },
+                    { value: 'archived', label: 'Archived' }
+                  ]}
+                  value={missionStatus}
+                  onChange={value => setMissionStatus((value as MissionStatus) || 'in_progress')}
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <TextInput
+                  label="Assigned employees"
+                  placeholder="Comma separated"
+                  value={missionEmployees}
+                  onChange={event => setMissionEmployees(event.currentTarget.value)}
+                  size={compact ? 'xs' : 'sm'}
+                />
+              </SimpleGrid>
+              <Textarea
+                label="Notes"
+                placeholder="Scope, dependency, risk, or reporting rule"
+                value={missionNotes}
+                onChange={event => setMissionNotes(event.currentTarget.value)}
+                minRows={2}
+                size={compact ? 'xs' : 'sm'}
+              />
+              <Group justify="space-between" align="center">
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  variant="subtle"
+                  onClick={resetMissionForm}
+                  disabled={projectManagementLoading}
+                >
+                  Reset
+                </Button>
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  onClick={() => void saveProjectMission()}
+                  loading={projectManagementLoading}
+                  disabled={!projectDashboardCustomer}
+                >
+                  Save mission
+                </Button>
+              </Group>
+            </Stack>
+          </Card>
+
+          <Card radius="md" withBorder p={compact ? 'xs' : 'sm'}>
+            <Stack gap="xs">
+              <Group justify="space-between" align="center">
+                <Text fw={700} size={compact ? 'sm' : 'md'}>
+                  Missions and caps
+                </Text>
+                <Badge size="xs" variant="light">
+                  {selectedProjectMissionRows.length}
+                </Badge>
+              </Group>
+              {selectedProjectMissionRows.length ? (
+                <Stack gap="xs">
+                  {selectedProjectMissionRows.map(row => (
+                    <Card key={row.mission.id} radius="sm" withBorder p="xs">
+                      <Stack gap={6}>
+                        <Group justify="space-between" align="flex-start" wrap="nowrap">
+                          <Stack gap={3} style={{ minWidth: 0, flex: 1 }}>
+                            <Group gap={6} wrap="wrap">
+                              <Text fw={800} size="sm" truncate>
+                                {row.mission.name}
+                              </Text>
+                              <Badge size="xs" color={row.mission.virtual ? 'grape' : 'blue'} variant="light">
+                                {row.mission.virtual ? 'UI task' : 'Real'}
+                              </Badge>
+                              <Badge size="xs" color="gray" variant="outline">
+                                {row.mission.status.replace('_', ' ')}
+                              </Badge>
+                            </Group>
+                            <Text size="xs" c="dimmed">
+                              HRS task {row.mission.hrsTaskIds?.join(', ') || 'unlinked'} → Jira {row.mission.jiraIssueKey}
+                            </Text>
+                          </Stack>
+                          <Button
+                            size="compact-xs"
+                            variant="subtle"
+                            color="red"
+                            onClick={() => void deleteProjectMission(row.mission)}
+                            disabled={projectManagementLoading}
+                          >
+                            Remove
+                          </Button>
+                        </Group>
+                        <Group justify="space-between" gap="xs">
+                          <Text size="xs" c="dimmed">
+                            Used {row.usedHours}h
+                            {row.cap ? ` / ${row.cap}h cap` : ''}
+                            {row.mission.plannedHours ? ` · planned ${row.mission.plannedHours}h` : ''}
+                          </Text>
+                          {row.warning && (
+                            <Badge
+                              size="xs"
+                              color={row.utilization && row.utilization >= 100 ? 'red' : row.utilization && row.utilization >= 70 ? 'yellow' : 'blue'}
+                              variant="light"
+                            >
+                              {row.warning}
+                            </Badge>
+                          )}
+                        </Group>
+                        {row.utilization !== null && (
+                          <Progress
+                            value={Math.min(100, row.utilization)}
+                            color={row.utilization >= 100 ? 'red' : row.utilization >= 70 ? 'yellow' : 'teal'}
+                            radius="xl"
+                          />
+                        )}
+                        {row.utilization !== null && row.utilization >= 70 && row.utilization < 100 && (
+                          <Alert color="yellow" variant="light" radius="md">
+                            70% workflow: confirm whether this task will finish on time, needs more hours,
+                            needs escalation, or needs an extension.
+                          </Alert>
+                        )}
+                      </Stack>
+                    </Card>
+                  ))}
+                </Stack>
+              ) : (
+                <Text size="xs" c="dimmed">
+                  No missions yet for this customer. Create a real mission from an HRS task or create a fictive
+                  task that rolls up to the original Jira issue.
+                </Text>
+              )}
+            </Stack>
+          </Card>
+
+          {projectManagementError && (
+            <Alert color="red" variant="light" radius="md">
+              {projectManagementError}
+            </Alert>
+          )}
+        </Stack>
+      </Card>
+    )
+  }
 
   const clockHistoryItems = useMemo(() => {
     return [...allReportItems]
@@ -8434,6 +10034,406 @@ export default function App() {
     }).length
   }, [employeeReport, employeeReportDaysByDate, monthlyReport])
 
+  const employeeWorkloadBaseEntries = useMemo(() => {
+    return (employeeReport?.entries ?? []).filter(entry => {
+      const employee = entry.employee?.trim() || 'Employee'
+      return entry.minutes > 0 && !isExcludedEmployeeName(employee)
+    })
+  }, [employeeReport])
+
+  const employeeWorkloadFilterOptions = useMemo(() => {
+    const employees = new Map<string, number>()
+    const customers = new Map<string, number>()
+    const tasks = new Map<string, number>()
+
+    for (const entry of employeeWorkloadBaseEntries) {
+      const employee = entry.employee?.trim() || 'Employee'
+      const customer = entry.customer?.trim() || 'No customer'
+      const task = entry.task?.trim() || 'No task'
+      employees.set(employee, (employees.get(employee) ?? 0) + entry.minutes)
+      customers.set(customer, (customers.get(customer) ?? 0) + entry.minutes)
+      tasks.set(task, (tasks.get(task) ?? 0) + entry.minutes)
+    }
+
+    const toOptions = (values: Map<string, number>) =>
+      Array.from(values.entries())
+        .map(([value, minutes]) => ({
+          value,
+          label: `${value} · ${minutesToHHMM(minutes)}`
+        }))
+        .sort((a, b) => a.label.localeCompare(b.label))
+
+    return {
+      employees: toOptions(employees),
+      customers: toOptions(customers),
+      tasks: toOptions(tasks)
+    }
+  }, [employeeWorkloadBaseEntries])
+
+  useEffect(() => {
+    if (
+      employeeWorkloadEmployeeFilter &&
+      !employeeWorkloadFilterOptions.employees.some(option => option.value === employeeWorkloadEmployeeFilter)
+    ) {
+      setEmployeeWorkloadEmployeeFilter(null)
+    }
+    if (
+      employeeWorkloadCustomerFilter &&
+      !employeeWorkloadFilterOptions.customers.some(option => option.value === employeeWorkloadCustomerFilter)
+    ) {
+      setEmployeeWorkloadCustomerFilter(null)
+    }
+    if (
+      employeeWorkloadTaskFilter &&
+      !employeeWorkloadFilterOptions.tasks.some(option => option.value === employeeWorkloadTaskFilter)
+    ) {
+      setEmployeeWorkloadTaskFilter(null)
+    }
+  }, [
+    employeeWorkloadEmployeeFilter,
+    employeeWorkloadCustomerFilter,
+    employeeWorkloadTaskFilter,
+    employeeWorkloadFilterOptions
+  ])
+
+  const employeeWorkloadEntries = useMemo(() => {
+    return employeeWorkloadBaseEntries.filter(entry => {
+      const employee = entry.employee?.trim() || 'Employee'
+      const customer = entry.customer?.trim() || 'No customer'
+      const task = entry.task?.trim() || 'No task'
+      if (employeeWorkloadEmployeeFilter && employee !== employeeWorkloadEmployeeFilter) return false
+      if (employeeWorkloadCustomerFilter && customer !== employeeWorkloadCustomerFilter) return false
+      if (employeeWorkloadTaskFilter && task !== employeeWorkloadTaskFilter) return false
+      return true
+    })
+  }, [
+    employeeWorkloadBaseEntries,
+    employeeWorkloadEmployeeFilter,
+    employeeWorkloadCustomerFilter,
+    employeeWorkloadTaskFilter
+  ])
+
+  const employeeProjectWorkload = useMemo(() => {
+    const employeeMap = new Map<
+      string,
+      {
+        employee: string
+        totalMinutes: number
+        customers: Map<
+          string,
+          {
+            customer: string
+            totalMinutes: number
+            tasks: Map<string, { task: string; totalMinutes: number }>
+          }
+        >
+      }
+    >()
+
+    for (const entry of employeeWorkloadEntries) {
+      const employee = entry.employee?.trim() || 'Employee'
+      const customer = entry.customer?.trim() || 'No customer'
+      const task = entry.task?.trim() || 'No task'
+      const employeeRow =
+        employeeMap.get(employee) ?? {
+          employee,
+          totalMinutes: 0,
+          customers: new Map<
+            string,
+            {
+              customer: string
+              totalMinutes: number
+              tasks: Map<string, { task: string; totalMinutes: number }>
+            }
+          >()
+        }
+
+      employeeRow.totalMinutes += entry.minutes
+
+      const customerRow =
+        employeeRow.customers.get(customer) ?? {
+          customer,
+          totalMinutes: 0,
+          tasks: new Map<string, { task: string; totalMinutes: number }>()
+        }
+      customerRow.totalMinutes += entry.minutes
+
+      const taskRow = customerRow.tasks.get(task) ?? { task, totalMinutes: 0 }
+      taskRow.totalMinutes += entry.minutes
+      customerRow.tasks.set(task, taskRow)
+      employeeRow.customers.set(customer, customerRow)
+      employeeMap.set(employee, employeeRow)
+    }
+
+    return Array.from(employeeMap.values())
+      .map(employee => ({
+        employee: employee.employee,
+        totalMinutes: employee.totalMinutes,
+        customers: Array.from(employee.customers.values())
+          .map(customer => ({
+            customer: customer.customer,
+            totalMinutes: customer.totalMinutes,
+            tasks: Array.from(customer.tasks.values()).sort(
+              (a, b) => b.totalMinutes - a.totalMinutes || a.task.localeCompare(b.task)
+            )
+          }))
+          .sort((a, b) => b.totalMinutes - a.totalMinutes || a.customer.localeCompare(b.customer))
+      }))
+      .sort((a, b) => b.totalMinutes - a.totalMinutes || a.employee.localeCompare(b.employee))
+  }, [employeeWorkloadEntries])
+
+  const employeeSharedTasks = useMemo(() => {
+    const taskMap = new Map<
+      string,
+      {
+        customer: string
+        task: string
+        totalMinutes: number
+        employees: Map<string, number>
+      }
+    >()
+
+    for (const entry of employeeWorkloadEntries) {
+      const employee = entry.employee?.trim() || 'Employee'
+      const customer = entry.customer?.trim() || 'No customer'
+      const task = entry.task?.trim() || 'No task'
+      const key = `${customer}\u0000${task}`
+      const row =
+        taskMap.get(key) ?? {
+          customer,
+          task,
+          totalMinutes: 0,
+          employees: new Map<string, number>()
+        }
+      row.totalMinutes += entry.minutes
+      row.employees.set(employee, (row.employees.get(employee) ?? 0) + entry.minutes)
+      taskMap.set(key, row)
+    }
+
+    return Array.from(taskMap.values())
+      .map(row => ({
+        customer: row.customer,
+        task: row.task,
+        totalMinutes: row.totalMinutes,
+        employees: Array.from(row.employees.entries())
+          .map(([employee, totalMinutes]) => ({ employee, totalMinutes }))
+          .sort((a, b) => b.totalMinutes - a.totalMinutes || a.employee.localeCompare(b.employee))
+      }))
+      .filter(row => row.employees.length > 1)
+      .sort((a, b) => b.totalMinutes - a.totalMinutes || a.task.localeCompare(b.task))
+  }, [employeeWorkloadEntries])
+
+  function renderEmployeeProjectWorkloadCard() {
+    const hasEmployeeAccess = Boolean(employeesResult?.hasAccess && employeesResult.hasEmployees)
+    const filtersActive = Boolean(
+      employeeWorkloadEmployeeFilter || employeeWorkloadCustomerFilter || employeeWorkloadTaskFilter
+    )
+    return (
+      <Card radius="md" withBorder className="tray-employee-workload-card">
+        <Stack gap="xs">
+          <Group justify="space-between" align="center" gap="xs">
+            <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
+              <Text size="sm" fw={800}>
+                Employee projects
+              </Text>
+              <Text size="xs" c="dimmed" lineClamp={2}>
+                Customers, tasks, and reported hours by employee for{' '}
+                {dayjs(reportMonth).format('MMMM YYYY')}.
+              </Text>
+            </Stack>
+            <Badge size="xs" variant="light" color="teal">
+              {employeeProjectWorkload.length} people
+            </Badge>
+          </Group>
+
+          <SimpleGrid cols={3} spacing="xs" className="tray-employee-workload-filters">
+            <Select
+              label="Employee"
+              placeholder="All employees"
+              data={employeeWorkloadFilterOptions.employees}
+              value={employeeWorkloadEmployeeFilter}
+              onChange={setEmployeeWorkloadEmployeeFilter}
+              searchable
+              clearable
+              disabled={!employeeReport || employeeReportLoading}
+              size="xs"
+              styles={traySelectStyles}
+            />
+            <Select
+              label="Customer"
+              placeholder="All customers"
+              data={employeeWorkloadFilterOptions.customers}
+              value={employeeWorkloadCustomerFilter}
+              onChange={setEmployeeWorkloadCustomerFilter}
+              searchable
+              clearable
+              disabled={!employeeReport || employeeReportLoading}
+              size="xs"
+              styles={traySelectStyles}
+            />
+            <Select
+              label="Task"
+              placeholder="All tasks"
+              data={employeeWorkloadFilterOptions.tasks}
+              value={employeeWorkloadTaskFilter}
+              onChange={setEmployeeWorkloadTaskFilter}
+              searchable
+              clearable
+              disabled={!employeeReport || employeeReportLoading}
+              size="xs"
+              styles={traySelectStyles}
+            />
+          </SimpleGrid>
+          <Group justify="space-between" gap="xs" className="tray-employee-workload-toolbar">
+            <Badge size="xs" variant="light" color={filtersActive ? 'blue' : 'gray'}>
+              {filtersActive ? 'Filtered' : 'All selected'}
+            </Badge>
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              disabled={!filtersActive}
+              onClick={() => {
+                setEmployeeWorkloadEmployeeFilter(null)
+                setEmployeeWorkloadCustomerFilter(null)
+                setEmployeeWorkloadTaskFilter(null)
+              }}
+            >
+              Select all
+            </Button>
+          </Group>
+
+          {!hasEmployeeAccess ? (
+            <Text size="xs" c="dimmed">
+              Employee reports are not available for this account.
+            </Text>
+          ) : employeeReportLoading || employeesLoading ? (
+            <Group gap="xs">
+              <Loader size="xs" />
+              <Text size="xs" c="dimmed">
+                Loading employee workload...
+              </Text>
+            </Group>
+          ) : employeeProjectWorkload.length ? (
+            <Stack gap={8} className="tray-employee-workload-list">
+              <Card radius="md" withBorder className="tray-employee-workload-shared">
+                <Stack gap={7}>
+                  <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                    <Text size="xs" fw={800}>
+                      Shared tasks
+                    </Text>
+                    <Badge size="xs" variant="light" color="grape">
+                      {employeeSharedTasks.length}
+                    </Badge>
+                  </Group>
+                  {employeeSharedTasks.length ? (
+                    <Stack gap={6}>
+                      {employeeSharedTasks.slice(0, 5).map(row => (
+                        <div
+                          key={`${row.customer}-${row.task}`}
+                          className="tray-employee-workload-shared-task"
+                        >
+                          <Group justify="space-between" align="flex-start" gap="xs" wrap="nowrap">
+                            <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+                              <Text size="xs" fw={800} lineClamp={1}>
+                                {row.task}
+                              </Text>
+                              <Text size="xs" c="dimmed" lineClamp={1}>
+                                {row.customer}
+                              </Text>
+                            </Stack>
+                            <Badge size="xs" variant="light" color="teal">
+                              {minutesToHHMM(row.totalMinutes)}
+                            </Badge>
+                          </Group>
+                          <Group gap={5} mt={6} className="tray-employee-workload-people">
+                            {row.employees.slice(0, 5).map(person => (
+                              <Badge
+                                key={`${row.customer}-${row.task}-${person.employee}`}
+                                size="xs"
+                                variant="outline"
+                                color="blue"
+                              >
+                                {person.employee} · {minutesToHHMM(person.totalMinutes)}
+                              </Badge>
+                            ))}
+                          </Group>
+                        </div>
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Text size="xs" c="dimmed">
+                      No task is shared by multiple employees in this filter.
+                    </Text>
+                  )}
+                </Stack>
+              </Card>
+
+              {employeeProjectWorkload.slice(0, 8).map(employee => (
+                <Card
+                  key={employee.employee}
+                  radius="md"
+                  withBorder
+                  className="tray-employee-workload-employee"
+                >
+                  <Stack gap={7}>
+                    <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                      <Text size="xs" fw={800} lineClamp={1}>
+                        {employee.employee}
+                      </Text>
+                      <Badge size="xs" variant="light" color="blue">
+                        {minutesToHHMM(employee.totalMinutes)}
+                      </Badge>
+                    </Group>
+                    <Stack gap={6}>
+                      {employee.customers.slice(0, 5).map(customer => (
+                        <div
+                          key={`${employee.employee}-${customer.customer}`}
+                          className="tray-employee-workload-customer"
+                        >
+                          <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                            <Text size="xs" fw={700} lineClamp={1}>
+                              {customer.customer}
+                            </Text>
+                            <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                              {minutesToHHMM(customer.totalMinutes)}
+                            </Text>
+                          </Group>
+                          <Stack gap={3} mt={4}>
+                            {customer.tasks.slice(0, 4).map(task => (
+                              <Group
+                                key={`${customer.customer}-${task.task}`}
+                                justify="space-between"
+                                align="center"
+                                gap="xs"
+                                wrap="nowrap"
+                                className="tray-employee-workload-task"
+                              >
+                                <Text size="xs" c="dimmed" lineClamp={1}>
+                                  {task.task}
+                                </Text>
+                                <Badge size="xs" variant="outline" color="gray">
+                                  {minutesToHHMM(task.totalMinutes)}
+                                </Badge>
+                              </Group>
+                            ))}
+                          </Stack>
+                        </div>
+                      ))}
+                    </Stack>
+                  </Stack>
+                </Card>
+              ))}
+            </Stack>
+          ) : (
+            <Text size="xs" c="dimmed">
+              No employee project hours found for this month.
+            </Text>
+          )}
+        </Stack>
+      </Card>
+    )
+  }
+
   const weekendDays = useMemo(
     () => parseWeekendDays(monthlyReport?.weekend ?? 'Fri-Sat'),
     [monthlyReport]
@@ -8452,7 +10452,11 @@ export default function App() {
       setLogError('Start and stop the timer to set a duration.')
       return
     }
-    await submitLogWork(taskIdForLog, duration)
+    await submitLogWork(
+      taskIdForLog,
+      duration,
+      selectedQuickLogMission ? { mission: selectedQuickLogMission } : undefined
+    )
   }
 
   const maxDayMinutes = useMemo(() => {
@@ -8924,14 +10928,18 @@ export default function App() {
           if (reviewMode) {
             openReview()
           } else {
-            submitLogWork(taskIdForLog, duration)
+            submitLogWork(
+              taskIdForLog,
+              duration,
+              selectedQuickLogMission ? { mission: selectedQuickLogMission } : undefined
+            )
           }
         }
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [taskIdForLog, duration, reviewMode])
+  }, [taskIdForLog, duration, reviewMode, selectedQuickLogMission])
 
   const trayDayEditorReports = useMemo(() => {
     if (!trayDayEditorDateKey) return [] as Array<WorkReportEntry & { dayIndex: number }>
@@ -9111,7 +11119,11 @@ export default function App() {
             if (reviewMode) {
               openReview()
             } else {
-              submitLogWork(taskIdForLog, duration)
+              submitLogWork(
+                taskIdForLog,
+                duration,
+                selectedQuickLogMission ? { mission: selectedQuickLogMission } : undefined
+              )
             }
           }
         }
@@ -9138,6 +11150,7 @@ export default function App() {
       timerRunning,
       taskIdForLog,
       duration,
+      selectedQuickLogMission,
       reviewMode,
       exportFiltered
     ]
@@ -9163,8 +11176,8 @@ export default function App() {
     const entryKey = getReportEntryKey(report, report.dateKey)
     const isJiraLogged = Boolean(jiraLoggedEntries[entryKey])
     const isSelected = Boolean(selectedReportEntries[entryKey])
-    const commentLabel =
-      report.comment && report.comment.trim().length ? report.comment.trim() : 'No comment'
+    const strippedComment = stripMissionCommentMarkers(report.comment)
+    const commentLabel = strippedComment || 'No comment'
     const timeRange =
       reportTimeRangesByIndex.get(report.dateKey)?.get(report.dayIndex) ??
       buildReportEntryKeys(report, report.dateKey)
@@ -9452,7 +11465,7 @@ export default function App() {
         project,
         customer,
         task: item.taskName,
-        comment: item.comment || '',
+        comment: stripMissionCommentMarkers(item.comment),
         hours: item.hours_HHMM,
         reportingFrom: item.reporting_from || '',
         jiraLogged: jiraEntry ? 'Yes' : 'No',
@@ -9979,9 +11992,79 @@ export default function App() {
     </Modal>
   )
 
+  const quickFictiveTaskModal = (
+    <Modal
+      opened={quickFictiveModalOpen}
+      onClose={closeQuickFictiveTaskModal}
+      title="Add Task"
+      centered
+      size="sm"
+      classNames={isFloating ? { content: 'floating-modal' } : undefined}
+    >
+      <Stack gap="sm">
+        <Text size="sm" c="dimmed">
+          This task is only for HRS Desktop progress, caps, and milestones. Reports still go to the
+          original HRS task.
+        </Text>
+        <Select
+          label="Original HRS task"
+          placeholder="Select the task that receives the API report"
+          data={quickFictiveOriginalTaskOptions}
+          value={quickFictiveOriginalTaskId}
+          onChange={setQuickFictiveOriginalTaskId}
+          searchable
+          nothingFoundMessage="No HRS tasks in the current scope"
+        />
+        <TextInput
+          label="Task name"
+          placeholder="API / Auth / Optimizations"
+          value={quickFictiveName}
+          onChange={event => setQuickFictiveName(event.currentTarget.value)}
+        />
+        <SimpleGrid cols={2} spacing="xs">
+          <NumberInput
+            label="Planned hours"
+            placeholder="Optional"
+            value={quickFictivePlannedHours}
+            onChange={setQuickFictivePlannedHours}
+            min={0}
+          />
+          <NumberInput
+            label="Cap hours"
+            placeholder="Hard cap"
+            value={quickFictiveCappedHours}
+            onChange={setQuickFictiveCappedHours}
+            min={0}
+          />
+        </SimpleGrid>
+        <Textarea
+          label="Notes"
+          placeholder="Milestone, scope, or reporting rule"
+          value={quickFictiveNotes}
+          onChange={event => setQuickFictiveNotes(event.currentTarget.value)}
+          minRows={2}
+        />
+        {quickFictiveError && (
+          <Alert color="red" variant="light" radius="md">
+            {quickFictiveError}
+          </Alert>
+        )}
+        <Group justify="space-between" align="center">
+          <Button variant="subtle" onClick={closeQuickFictiveTaskModal}>
+            Cancel
+          </Button>
+          <Button onClick={() => void saveQuickFictiveTask()} loading={projectManagementLoading}>
+            Add Task
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   if (isFloating) {
     return (
       <Box className="floating-shell">
+        {quickFictiveTaskModal}
         <Modal
           opened={floatingStartOpen}
           onClose={closeFloatingStart}
@@ -10025,7 +12108,12 @@ export default function App() {
               placeholder={customerName ? 'Choose a task' : 'Select a customer first'}
               data={taskOptions}
               value={taskName}
-              onChange={value => setTaskName(value)}
+              onChange={value => handleQuickLogTaskChange(value)}
+              renderOption={taskSelectRenderOption}
+              classNames={{
+                dropdown: 'task-select-dropdown',
+                option: 'task-select-mantine-option'
+              }}
               searchable
               disabled={!customerName}
               comboboxProps={{
@@ -10035,6 +12123,7 @@ export default function App() {
                 offset: 6
               }}
             />
+            {renderQuickFictiveUsageBar(true)}
             <Switch
               checked={logToJira}
               onChange={event => {
@@ -10208,6 +12297,7 @@ export default function App() {
           trayClosingAnimating ? ' tray-shell-exit' : ''
         }`}
       >
+        {quickFictiveTaskModal}
         <Stack gap="sm" className="tray-content">
           {!window.hrs && (
             <Alert color="red" variant="light" radius="md">
@@ -10308,19 +12398,6 @@ export default function App() {
                     <IconClock size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
-                <Tooltip label="Meetings" withArrow openDelay={120} withinPortal>
-                  <ActionIcon
-                    className="tray-nav-icon-btn"
-                    size={38}
-                    radius="md"
-                    variant={trayPanel === 'meetings' ? 'light' : 'subtle'}
-                    onClick={() => switchTrayPanel('meetings')}
-                    aria-label="Meetings"
-                    title="Meetings"
-                  >
-                    <IconCalendar size={18} stroke={2.2} />
-                  </ActionIcon>
-                </Tooltip>
                 <Tooltip label="Agenda" withArrow openDelay={120} withinPortal>
                   <ActionIcon
                     className="tray-nav-icon-btn"
@@ -10384,6 +12461,7 @@ export default function App() {
               <div className={`tray-panel-body${trayPanel === 'clockify' ? ' is-clockify' : ''}`}>
                 {trayPanel === 'log' ? (
                   <Stack gap="xs">
+                    {quickLogMeetingsPanel}
                     <div className="tray-calendar-shell">
                       {(() => {
                         const monthStart = dayjs(reportMonth).startOf('month')
@@ -10460,50 +12538,125 @@ export default function App() {
                                           ? dayTargetMinutes
                                           : undefined
                                     })
+                                    const dayMeetings = meetingsVisibleByDate.get(dayCell.key) ?? []
+                                    const hasMeetings = dayMeetings.length > 0
+                                    const hasManyMeetings = dayMeetings.length > 1
                                     return (
-                                      <Tooltip
+                                      <HoverCard
                                         key={dayCell.key}
                                         disabled={!dayCell.inMonth}
-                                        label={tooltipLabel}
                                         position="top"
                                         withArrow
+                                        openDelay={120}
+                                        closeDelay={350}
+                                        withinPortal
                                         classNames={{
-                                          tooltip: 'calendar-tooltip-shell',
+                                          dropdown: 'calendar-tooltip-shell calendar-day-hover-dropdown',
                                           arrow: 'calendar-tooltip-arrow'
                                         }}
                                       >
-                                        <span className="tray-day-tooltip-target" role="gridcell">
-                                          <button
-                                            type="button"
-                                            className={[
-                                              'tray-day-button',
-                                              dayCell.inMonth ? '' : 'is-outside',
-                                              hasReports ? 'has-reports' : '',
-                                              isMissing ? 'is-missing' : '',
-                                              isUnderTarget ? 'is-under-target' : '',
-                                              isHoliday ? 'is-holiday' : '',
-                                              isWeekend ? 'is-weekend' : '',
-                                              heatmapActive ? 'heatmap' : '',
-                                              isSelected ? 'is-selected' : '',
-                                              isToday ? 'is-today' : ''
-                                            ]
-                                              .join(' ')
-                                              .trim()}
-                                            style={
-                                              heatmapActive
-                                                ? ({ '--heat': intensity } as CSSProperties)
-                                                : undefined
-                                            }
-                                            onClick={() => {
-                                              if (!dayCell.inMonth) return
-                                              openTrayDayEditor(dayCell.date)
-                                            }}
-                                            disabled={!dayCell.inMonth}
-                                          >
-                                            <span className="tray-day-number">{dateValue.date()}</span>
-                                          </button>
-                                        </span>
-                                      </Tooltip>
+                                        <HoverCard.Target>
+                                          <span className="tray-day-tooltip-target" role="gridcell">
+                                            <button
+                                              type="button"
+                                              className={[
+                                                'tray-day-button',
+                                                dayCell.inMonth ? '' : 'is-outside',
+                                                hasReports ? 'has-reports' : '',
+                                                hasMeetings ? 'has-meetings' : '',
+                                                hasManyMeetings ? 'has-many-meetings' : '',
+                                                isMissing ? 'is-missing' : '',
+                                                isUnderTarget ? 'is-under-target' : '',
+                                                isHoliday ? 'is-holiday' : '',
+                                                isWeekend ? 'is-weekend' : '',
+                                                heatmapActive ? 'heatmap' : '',
+                                                isSelected ? 'is-selected' : '',
+                                                isToday ? 'is-today' : ''
+                                              ]
+                                                .join(' ')
+                                                .trim()}
+                                              style={
+                                                heatmapActive
+                                                  ? ({ '--heat': intensity } as CSSProperties)
+                                                  : undefined
+                                              }
+                                              onClick={() => {
+                                                if (!dayCell.inMonth) return
+                                                openTrayDayEditor(dayCell.date)
+                                              }}
+                                              disabled={!dayCell.inMonth}
+                                            >
+                                              <span className="tray-day-number">{dateValue.date()}</span>
+                                            </button>
+                                          </span>
+                                        </HoverCard.Target>
+                                        <HoverCard.Dropdown>
+                                          <Stack gap="xs" className="calendar-day-hover">
+                                            <div className="calendar-day-hover-hours">
+                                              {tooltipLabel}
+                                            </div>
+                                            <div className="calendar-day-hover-meetings">
+                                              <div className="calendar-tooltip-header">
+                                                <span className="calendar-tooltip-title">Meetings</span>
+                                                <span className="calendar-tooltip-total">
+                                                  {dayMeetings.length}
+                                                </span>
+                                              </div>
+                                              {dayMeetings.length ? (
+                                                <Stack gap={6} mt={8}>
+                                                  {dayMeetings.map((meeting, meetingIndex) => {
+                                                    const meetingKey = getMeetingKey(meeting)
+                                                    const isLogged = Boolean(
+                                                      meetingLoggedKeys[meetingKey] ||
+                                                        meetingLoggedKeysFromHrs[meetingKey]
+                                                    )
+                                                    const start = dayjs(meeting.startTime.replace(' ', 'T'))
+                                                    const end = dayjs(meeting.endTime.replace(' ', 'T'))
+                                                    const timeLabel =
+                                                      start.isValid() && end.isValid()
+                                                        ? `${start.format('HH:mm')} → ${end.format('HH:mm')}`
+                                                        : `${meeting.startTime} → ${meeting.endTime}`
+                                                    return (
+                                                      <Group
+                                                        key={`${meetingKey}-${meetingIndex}`}
+                                                        justify="space-between"
+                                                        align="center"
+                                                        wrap="nowrap"
+                                                        gap="xs"
+                                                        className="calendar-meeting-row"
+                                                      >
+                                                        <Stack gap={2} className="calendar-meeting-copy">
+                                                          <Text size="xs" fw={700} lineClamp={1}>
+                                                            {meeting.subject || 'Meeting'}
+                                                          </Text>
+                                                          <Text size="xs" c="dimmed">
+                                                            {timeLabel}
+                                                          </Text>
+                                                        </Stack>
+                                                        <Button
+                                                          size="compact-xs"
+                                                          variant={isLogged ? 'filled' : 'light'}
+                                                          disabled={isLogged}
+                                                          onClick={event => {
+                                                            event.stopPropagation()
+                                                            handleLogMeeting(meeting)
+                                                          }}
+                                                        >
+                                                          {isLogged ? 'Logged' : 'Log'}
+                                                        </Button>
+                                                      </Group>
+                                                    )
+                                                  })}
+                                                </Stack>
+                                              ) : (
+                                                <Text size="xs" c="dimmed" mt={8}>
+                                                  No meetings
+                                                </Text>
+                                              )}
+                                            </div>
+                                          </Stack>
+                                        </HoverCard.Dropdown>
+                                      </HoverCard>
                                     )
                                   })}
                                 </div>
@@ -10564,13 +12717,15 @@ export default function App() {
                         data={taskOptions}
                         value={taskName}
                         onChange={value => {
-                          filtersTouchedRef.current = true
-                          setTaskName(value)
-                          if (!value) {
-                            setSuppressTaskAutoSelect(true)
-                          } else {
-                            setSuppressTaskAutoSelect(false)
-                          }
+                          handleQuickLogTaskChange(value, {
+                            markTouched: true,
+                            manageAutoSelect: true
+                          })
+                        }}
+                        renderOption={taskSelectRenderOption}
+                        classNames={{
+                          dropdown: 'task-select-dropdown',
+                          option: 'task-select-mantine-option'
                         }}
                         styles={traySelectStyles}
                         searchable
@@ -10581,6 +12736,7 @@ export default function App() {
                         size="xs"
                       />
                     </SimpleGrid>
+                    {renderQuickFictiveUsageBar(true)}
 
                     <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
                       <TimeInput
@@ -10679,7 +12835,11 @@ export default function App() {
                       }
                       onClick={() => {
                         if (taskIdForLog && duration) {
-                          submitLogWork(taskIdForLog, duration)
+                          submitLogWork(
+                            taskIdForLog,
+                            duration,
+                            selectedQuickLogMission ? { mission: selectedQuickLogMission } : undefined
+                          )
                         }
                       }}
                     >
@@ -10797,62 +12957,26 @@ export default function App() {
                 ) : trayPanel === 'meetings' ? (
                   <Stack gap="xs" className="tray-meetings-panel">
                     <Card radius="md" withBorder className="tray-meetings-controls">
-                      <Stack gap="xs">
-                        <Group justify="space-between" align="center">
+                      <Group justify="space-between" align="center" wrap="nowrap">
+                        <Stack gap={2}>
                           <Text size="xs" fw={600}>
-                            Integration settings
+                            Meeting sync uses Chrome headless mode.
                           </Text>
-                          <Button
-                            size="xs"
-                            variant="subtle"
-                            onClick={() => setTrayMeetingsSettingsOpen(prev => !prev)}
-                          >
-                            {trayMeetingsSettingsOpen ? 'Hide' : 'Show'}
-                          </Button>
-                        </Group>
-                        <Collapse in={trayMeetingsSettingsOpen} transitionDuration={160}>
-                          <Stack gap="xs">
-                            <SimpleGrid cols={2} spacing="xs">
-                              <Select
-                                label="Browser"
-                                value={meetingsBrowser}
-                                onChange={value =>
-                                  setMeetingsBrowser((value as 'safari' | 'chrome') || 'chrome')
-                                }
-                                data={[
-                                  { value: 'safari', label: 'Safari' },
-                                  { value: 'chrome', label: 'Chrome' }
-                                ]}
-                                size="xs"
-                              />
-                              <Switch
-                                className="meetings-background-switch"
-                                size="xs"
-                                checked={meetingsHeadless}
-                                onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
-                                label="Background"
-                                disabled={meetingsBrowser !== 'chrome'}
-                              />
-                            </SimpleGrid>
-                            <SimpleGrid cols={2} spacing="xs">
-                              <TextInput
-                                label="Domain user"
-                                placeholder="you@company.com"
-                                value={meetingsUsername}
-                                onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                                size="xs"
-                              />
-                              <PasswordInput
-                                label="Domain password"
-                                placeholder="••••••••"
-                                value={meetingsPassword}
-                                onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                                size="xs"
-                              />
-                            </SimpleGrid>
-                          </Stack>
-                        </Collapse>
-                      </Stack>
+                          <Text size="xs" c="dimmed">
+                            Credentials are in Settings → Access.
+                          </Text>
+                        </Stack>
+                        <Button
+                          size="xs"
+                          variant="subtle"
+                          onClick={() => {
+                            setTraySettingsTab('access')
+                            switchTrayPanel('settings')
+                          }}
+                        >
+                          Settings
+                        </Button>
+                      </Group>
                     </Card>
 
                     {trayMeetingsNeedsBootstrap ? (
@@ -10899,66 +13023,7 @@ export default function App() {
                     )}
 
                     {showMeetingsProgressTracker && (
-                      <Card radius="md" withBorder className="tray-meetings-progress">
-                        <Stack gap={6}>
-                          <Group justify="space-between" align="center" wrap="nowrap">
-                            <Text size="xs" fw={700}>
-                              {meetingsFetchPhase === 'done' ? 'Meeting sync complete' : 'Meeting sync progress'}
-                            </Text>
-                            <ActionIcon
-                              size="sm"
-                              variant="subtle"
-                              aria-label={trayMeetingsProgressOpen ? 'Collapse meeting sync progress' : 'Expand meeting sync progress'}
-                              onClick={() => setTrayMeetingsProgressOpen(prev => !prev)}
-                              className="tray-progress-toggle"
-                            >
-                              {trayMeetingsProgressOpen ? (
-                                <IconChevronDown size={16} />
-                              ) : (
-                                <IconChevronRight size={16} />
-                              )}
-                            </ActionIcon>
-                          </Group>
-                          <Collapse in={trayMeetingsProgressOpen} transitionDuration={160}>
-                            <Stack gap={6}>
-                              {meetingsFetchSteps.map((step, index) => (
-                                <Group
-                                  key={step.key}
-                                  align="flex-start"
-                                  gap="xs"
-                                  wrap="nowrap"
-                                  className={`tray-meetings-step tray-meetings-step-${meetingsStepStatuses[index]}`}
-                                >
-                                  <span className="tray-meetings-step-dot">
-                                    {meetingsStepStatuses[index] === 'done' ? (
-                                      <IconCheck size={12} />
-                                    ) : meetingsStepStatuses[index] === 'active' ? (
-                                      <Loader size={12} />
-                                    ) : meetingsStepStatuses[index] === 'error' ? (
-                                      <IconAlertTriangle size={12} />
-                                    ) : (
-                                      index + 1
-                                    )}
-                                  </span>
-                                  <div className="tray-meetings-step-copy">
-                                    <Text size="xs" fw={600}>
-                                      {step.title}
-                                    </Text>
-                                    <Text size="xs" c="dimmed">
-                                      {step.detail}
-                                    </Text>
-                                  </div>
-                                </Group>
-                              ))}
-                              {meetingsProgress && (
-                                <Text size="xs" c="dimmed">
-                                  Current: {meetingsProgress}
-                                </Text>
-                              )}
-                            </Stack>
-                          </Collapse>
-                        </Stack>
-                      </Card>
+                      renderMeetingsProgressCard()
                     )}
 
                     {meetingsError && (
@@ -11878,33 +13943,7 @@ export default function App() {
                       </Card>
                     </SimpleGrid>
 
-                    <Card radius="md" withBorder className="tray-report-list-card">
-                      <Group justify="space-between" align="center">
-                        <Text fw={700} size="sm">
-                          Top clients
-                        </Text>
-                        <Badge size="xs" variant="light">
-                          {topClients.length}
-                        </Badge>
-                      </Group>
-                      <Stack gap={6} mt={8}>
-                        {topClients.slice(0, 4).map(item => (
-                          <Group key={item.client} justify="space-between" wrap="nowrap">
-                            <Text size="xs" lineClamp={1}>
-                              {getCustomerDisplayName(item.client)}
-                            </Text>
-                            <Badge size="xs" variant="light" color="teal">
-                              {item.hours}h
-                            </Badge>
-                          </Group>
-                        ))}
-                        {!topClients.length && (
-                          <Text size="xs" c="dimmed">
-                            No reports yet.
-                          </Text>
-                        )}
-                      </Stack>
-                    </Card>
+                    {renderEmployeeProjectWorkloadCard()}
 
                     <Card radius="md" withBorder className="tray-report-list-card">
                       <Group justify="space-between" align="center">
@@ -12308,6 +14347,45 @@ export default function App() {
                           </Group>
                         </Stack>
                       </Card>
+                      <Card radius="md" withBorder className="tray-settings-card tray-settings-meetings-card">
+                        <Stack gap="xs">
+                          <Group justify="space-between" align="center" wrap="nowrap">
+                            <Text fw={700} size="sm">
+                              Meetings access
+                            </Text>
+                            <Badge size="xs" color="violet" variant="light">
+                              Chrome headless
+                            </Badge>
+                          </Group>
+                          <SimpleGrid cols={2} spacing="xs">
+                            <TextInput
+                              label="Username"
+                              placeholder="you@company.com"
+                              value={meetingsUsername}
+                              onChange={event => setMeetingsUsername(event.currentTarget.value)}
+                              size="xs"
+                            />
+                            <PasswordInput
+                              label="Password"
+                              placeholder="••••••••"
+                              value={meetingsPassword}
+                              onChange={event => setMeetingsPassword(event.currentTarget.value)}
+                              size="xs"
+                            />
+                          </SimpleGrid>
+                          <Group justify="space-between" align="center" wrap="nowrap">
+                            <Text size="xs" c="dimmed">
+                              Runs Microsoft Graph sync in Chrome background mode.
+                            </Text>
+                            <Badge size="xs" color="gray" variant="outline">
+                              Locked
+                            </Badge>
+                          </Group>
+                          <Text size="xs" c="dimmed" className="meetings-chrome-note">
+                            *chrome must be installed to use this feature
+                          </Text>
+                        </Stack>
+                      </Card>
                       <Card radius="md" withBorder className="tray-settings-card">
                         <Stack gap="xs">
                           <Group justify="space-between" align="center">
@@ -12400,6 +14478,8 @@ export default function App() {
 
                     {traySettingsTab === 'mapping' && (
                       <Stack gap="xs">
+                        {renderProjectManagementCard(true)}
+
                         <Card radius="md" withBorder className="tray-settings-card">
                           <Stack gap="xs">
                             <Group justify="space-between" align="center">
@@ -12797,7 +14877,7 @@ export default function App() {
                               ) : (
                                 <>
                                   <Text size="xs" className="tray-day-editor-comment">
-                                    {report.comment?.trim() || 'No comment'}
+                                    {stripMissionCommentMarkers(report.comment) || 'No comment'}
                                   </Text>
                                   <Group
                                     justify="flex-end"
@@ -13061,6 +15141,8 @@ export default function App() {
                   )}
                 </Stack>
               </Card>
+
+              {renderProjectManagementCard()}
 
               <Card radius="md" withBorder>
                 <Stack gap="sm">
@@ -13375,41 +15457,33 @@ export default function App() {
                 </Button>
               </Group>
 
-              <SimpleGrid cols={2} spacing="sm">
-                <Select
-                  label="Browser"
-                  value={meetingsBrowser}
-                  onChange={value => setMeetingsBrowser((value as 'safari' | 'chrome') || 'chrome')}
-                  data={[
-                    { value: 'safari', label: 'Safari' },
-                    { value: 'chrome', label: 'Chrome' }
-                  ]}
-                  size="sm"
-                />
-                <Switch
-                  className="meetings-background-switch"
-                  size="sm"
-                  checked={meetingsHeadless}
-                  onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
-                  label="Background mode"
-                  disabled={meetingsBrowser !== 'chrome'}
-                />
-              </SimpleGrid>
-
-              <SimpleGrid cols={2} spacing="sm">
-                <TextInput
-                  label="Domain user"
-                  placeholder="you@company.com"
-                  value={meetingsUsername}
-                  onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                />
-                <PasswordInput
-                  label="Domain password"
-                  placeholder="••••••••"
-                  value={meetingsPassword}
-                  onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                />
-              </SimpleGrid>
+              <Card radius="md" withBorder className="tray-settings-meetings-card">
+                <Stack gap="sm">
+                  <Group justify="space-between" align="center" wrap="nowrap">
+                    <Text fw={700}>Access</Text>
+                    <Badge color="violet" variant="light">
+                      Chrome headless
+                    </Badge>
+                  </Group>
+                  <SimpleGrid cols={2} spacing="sm">
+                    <TextInput
+                      label="Domain user"
+                      placeholder="you@company.com"
+                      value={meetingsUsername}
+                      onChange={event => setMeetingsUsername(event.currentTarget.value)}
+                    />
+                    <PasswordInput
+                      label="Domain password"
+                      placeholder="••••••••"
+                      value={meetingsPassword}
+                      onChange={event => setMeetingsPassword(event.currentTarget.value)}
+                    />
+                  </SimpleGrid>
+                  <Text size="xs" c="dimmed">
+                    *chrome must be installed to use this feature
+                  </Text>
+                </Stack>
+              </Card>
 
               <Group justify="space-between" align="center">
                 <Group gap="xs">
@@ -13681,6 +15755,7 @@ export default function App() {
 
   return renderLiquidGlassFrame(
     <Box className="app-shell">
+      {quickFictiveTaskModal}
       <Container size="lg" className="app-container">
         <Stack gap="xl">
           <Stack gap="sm" className="page-header">
@@ -15377,13 +17452,15 @@ export default function App() {
                       data={taskOptions}
                       value={taskName}
                       onChange={value => {
-                        filtersTouchedRef.current = true
-                        setTaskName(value)
-                        if (!value) {
-                          setSuppressTaskAutoSelect(true)
-                        } else {
-                          setSuppressTaskAutoSelect(false)
-                        }
+                        handleQuickLogTaskChange(value, {
+                          markTouched: true,
+                          manageAutoSelect: true
+                        })
+                      }}
+                      renderOption={taskSelectRenderOption}
+                      classNames={{
+                        dropdown: 'task-select-dropdown',
+                        option: 'task-select-mantine-option'
                       }}
                       styles={filterSelectStyles}
                       comboboxProps={{
@@ -15400,6 +17477,7 @@ export default function App() {
                       disabled={lockTask}
                     />
                   </SimpleGrid>
+                  {renderQuickFictiveUsageBar()}
                   {!taskIdForLog && (
                     <Text size="xs" c="dimmed">
                       Select a project, customer, and task to unlock logging.
@@ -15566,8 +17644,19 @@ export default function App() {
 
                         {selectedTask && (
                           <Text size="sm">
-                            Logging for <strong>{selectedTask.taskName}</strong> ·{' '}
-                            {selectedTask.projectName}
+                            {selectedQuickLogMission ? (
+                              <>
+                                Logging fictive{' '}
+                                <strong>{selectedQuickLogMission.name}</strong> through{' '}
+                                <strong>{selectedTask.taskName}</strong> ·{' '}
+                                {selectedTask.projectName}
+                              </>
+                            ) : (
+                              <>
+                                Logging for <strong>{selectedTask.taskName}</strong> ·{' '}
+                                {selectedTask.projectName}
+                              </>
+                            )}
                           </Text>
                         )}
 
@@ -15589,7 +17678,13 @@ export default function App() {
                                 if (reviewMode) {
                                   openReview()
                                 } else {
-                                  submitLogWork(taskIdForLog, duration)
+                                  submitLogWork(
+                                    taskIdForLog,
+                                    duration,
+                                    selectedQuickLogMission
+                                      ? { mission: selectedQuickLogMission }
+                                      : undefined
+                                  )
                                 }
                               }
                             }}
@@ -16060,72 +18155,9 @@ export default function App() {
                     <Group gap="sm" wrap="wrap">
                       {!meetingsCollapsed && (
                         <>
-                          <Group gap="xs" align="center">
-                            <Select
-                              value={meetingsBrowser}
-                              onChange={value =>
-                                setMeetingsBrowser((value as 'safari' | 'chrome') || 'chrome')
-                              }
-                              data={[
-                                { value: 'safari', label: 'Safari' },
-                                { value: 'chrome', label: 'Chrome' }
-                              ]}
-                              size="xs"
-                              placeholder="Browser"
-                              className="meetings-browser"
-                            />
-                            <Tooltip
-                              label="Choose the browser to run the crawler during the fetch."
-                              withArrow
-                            >
-                              <ActionIcon size="sm" variant="subtle" aria-label="Browser info">
-                                <svg
-                                  viewBox="0 0 24 24"
-                                  width="14"
-                                  height="14"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <circle cx="12" cy="12" r="10" />
-                                  <line x1="12" y1="16" x2="12" y2="12" />
-                                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                                </svg>
-                              </ActionIcon>
-                            </Tooltip>
-                          </Group>
-                          <Group gap="xs" align="center">
-                            <Switch
-                              size="sm"
-                              checked={meetingsHeadless}
-                              onChange={event => setMeetingsHeadless(event.currentTarget.checked)}
-                              label="Fetch in background"
-                              disabled={meetingsBrowser !== 'chrome'}
-                            />
-                            <Tooltip
-                              label="Toggle this to fetch meetings in the background. When off, you'll see the full browser automation."
-                              withArrow
-                            >
-                              <ActionIcon size="sm" variant="subtle" aria-label="Background info">
-                                <svg
-                                  viewBox="0 0 24 24"
-                                  width="14"
-                                  height="14"
-                                  fill="none"
-                                  stroke="currentColor"
-                                  strokeWidth="2"
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                >
-                                  <circle cx="12" cy="12" r="10" />
-                                  <line x1="12" y1="16" x2="12" y2="12" />
-                                  <line x1="12" y1="8" x2="12.01" y2="8" />
-                                </svg>
-                              </ActionIcon>
-                            </Tooltip>
-                          </Group>
+                          <Badge size="sm" color="violet" variant="light">
+                            Chrome headless
+                          </Badge>
 	                          <Button
 	                            size="xs"
 	                            variant="light"
@@ -16205,12 +18237,6 @@ export default function App() {
                           />
                         </SimpleGrid>
                       </Collapse>
-
-                      {meetingsBrowser !== 'chrome' && (
-                        <Text size="xs" c="dimmed">
-                          Background mode requires Chrome.
-                        </Text>
-                      )}
 
                       {meetingsProgress && (
                         <Text size="xs" c="dimmed">
@@ -16722,7 +18748,11 @@ export default function App() {
           <Group justify="space-between" align="center">
             <Text size="sm">Task</Text>
             <Text size="sm" fw={600}>
-              {selectedTask ? selectedTask.taskName : 'Not selected'}
+              {selectedQuickLogMission
+                ? `${selectedQuickLogMission.name} -> ${selectedTask?.taskName ?? 'original task'}`
+                : selectedTask
+                  ? selectedTask.taskName
+                  : 'Not selected'}
             </Text>
           </Group>
           <Group justify="space-between" align="center">

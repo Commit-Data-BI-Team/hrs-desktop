@@ -18,8 +18,18 @@ export default defineConfig(({ command }) => ({
         entry: 'electron/main.ts',
         vite: {
           build: {
+            lib: {
+              entry: 'electron/main.ts',
+              formats: ['cjs'],
+              fileName: () => 'main.cjs'
+            },
             rollupOptions: {
               external: ['keytar', 'electron-liquid-glass', 'node-gyp-build'],
+              output: {
+                format: 'cjs',
+                entryFileNames: '[name].cjs',
+                chunkFileNames: '[name]-[hash].cjs'
+              }
             },
           },
           optimizeDeps: {

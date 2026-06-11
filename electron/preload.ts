@@ -15,6 +15,7 @@ contextBridge.exposeInMainWorld('hrs', {
   getReports: (startDate: string, endDate: string) =>
     ipcRenderer.invoke('hrs:getReports', startDate, endDate),
   getEmployees: () => ipcRenderer.invoke('hrs:getEmployees'),
+  getHrsIdentity: () => ipcRenderer.invoke('hrs:getIdentity'),
   getEmployeeHoursReport: (payload: unknown) =>
     ipcRenderer.invoke('hrs:getEmployeeHoursReport', payload),
   logWork: (payload: unknown) => ipcRenderer.invoke('hrs:logWork', payload),
@@ -38,6 +39,12 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getWorkItemDetails', epicKey, forceRefresh),
   getJiraIssueWorklogs: (issueKey: string) =>
     ipcRenderer.invoke('jira:getIssueWorklogs', issueKey),
+  createJiraIssue: (payload: {
+    parentIssueKey: string
+    summary: string
+    description?: string
+    estimateSeconds?: number | null
+  }) => ipcRenderer.invoke('jira:createIssue', payload),
   addJiraWorklog: (payload: {
     issueKey: string
     started: string
@@ -48,6 +55,28 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getWorklogHistory', issueKey),
   deleteJiraWorklog: (payload: { issueKey: string; worklogId: string }) =>
     ipcRenderer.invoke('jira:deleteWorklog', payload),
+  getSupabaseStatus: () => ipcRenderer.invoke('supabase:getStatus'),
+  setSupabaseConfig: (url: string, publishableKey: string) =>
+    ipcRenderer.invoke('supabase:setConfig', url, publishableKey),
+  signUpSupabase: (email: string, password: string) =>
+    ipcRenderer.invoke('supabase:signUp', email, password),
+  signInSupabase: (email: string, password: string) =>
+    ipcRenderer.invoke('supabase:signIn', email, password),
+  resendSupabaseConfirmation: (email: string) =>
+    ipcRenderer.invoke('supabase:resendConfirmation', email),
+  signOutSupabase: () => ipcRenderer.invoke('supabase:signOut'),
+  claimSupabaseManager: (payload: { displayName?: string; employeeId?: string | number | null }) =>
+    ipcRenderer.invoke('supabase:claimManager', payload),
+  updateSupabaseProfile: (payload: { displayName?: string; employeeId?: string | number | null }) =>
+    ipcRenderer.invoke('supabase:updateProfile', payload),
+  getSupabaseWorkReports: (startDate: string, endDate: string) =>
+    ipcRenderer.invoke('supabase:getWorkReports', startDate, endDate),
+  syncSupabaseWorkReports: (payload: {
+    startDate: string
+    endDate: string
+    employeeId?: string | number | null
+    rows: unknown[]
+  }) => ipcRenderer.invoke('supabase:syncWorkReports', payload),
   getProjectManagementConfig: () => ipcRenderer.invoke('pm:getConfig'),
   setProjectReportingSource: (source: 'hrs' | 'jira') =>
     ipcRenderer.invoke('pm:setReportingSource', source),
@@ -64,6 +93,29 @@ contextBridge.exposeInMainWorld('hrs', {
   getProjectSyncAuditLog: (limit?: number) => ipcRenderer.invoke('pm:getSyncAuditLog', limit),
   addProjectSyncAuditEntry: (payload: unknown) =>
     ipcRenderer.invoke('pm:addSyncAuditEntry', payload),
+  getSlackStatus: () => ipcRenderer.invoke('slack:getStatus'),
+  setSlackToken: (token: string) => ipcRenderer.invoke('slack:setToken', token),
+  clearSlack: () => ipcRenderer.invoke('slack:clear'),
+  getSlackChannels: () => ipcRenderer.invoke('slack:getChannels'),
+  setSlackCustomerMapping: (payload: {
+    customerName: string
+    channelId: string
+    channelName: string
+  }) => ipcRenderer.invoke('slack:setMapping', payload),
+  removeSlackCustomerMapping: (customerName: string) =>
+    ipcRenderer.invoke('slack:removeMapping', customerName),
+  postSlackCustomerUpdate: (payload: {
+    customer: string
+    title: string
+    lines: string[]
+    channelId?: string | null
+    metrics?: {
+      capLabel?: string
+      usedLabel?: string
+      remainingLabel?: string
+      usedPercent?: number
+    } | null
+  }) => ipcRenderer.invoke('slack:postCustomerUpdate', payload),
   getPreferences: () => ipcRenderer.invoke('app:getPreferences'),
   setPreferences: (next: {
     jiraActiveOnly?: boolean
@@ -188,8 +240,9 @@ contextBridge.exposeInMainWorld('hrs', {
       hiddenSenders?: string[]
       importantTerms?: string[]
     }
-  }) => ipcRenderer.invoke('agenda:run', options),
-  getAgendaAiConfig: () => ipcRenderer.invoke('agenda:getAiConfig'),
+	  }) => ipcRenderer.invoke('agenda:run', options),
+	  getAgendaFact: () => ipcRenderer.invoke('agenda:fact'),
+	  getAgendaAiConfig: () => ipcRenderer.invoke('agenda:getAiConfig'),
   setAgendaAiConfig: (payload: { apiKey?: string | null; model?: string | null }) =>
     ipcRenderer.invoke('agenda:setAiConfig', payload),
   clearAgendaAiConfig: () => ipcRenderer.invoke('agenda:clearAiConfig'),
@@ -208,7 +261,7 @@ contextBridge.exposeInMainWorld('hrs', {
   openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
-  setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid') =>
+  setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') =>
     ipcRenderer.invoke('app:setNativeThemeMode', mode),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
   getUpdateState: () => ipcRenderer.invoke('app:getUpdateState'),

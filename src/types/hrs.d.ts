@@ -62,9 +62,18 @@ type EmployeeAccessResult = {
   hasAccess: boolean
   hasEmployees: boolean
   currentEmployeeName: string | null
+  currentEmployee: EmployeeAdminItem | null
   employees: EmployeeAdminItem[]
   allEmployeesCount: number
   source: 'directReports' | 'accessibleRows' | 'none'
+}
+
+type HrsIdentity = {
+  employeeId: string | null
+  employeeName: string | null
+  email: string | null
+  username: string | null
+  source: 'employee_admin' | 'api_payload' | 'html' | 'credentials' | 'none'
 }
 
 type EmployeeHoursEntry = {
@@ -149,6 +158,48 @@ type JiraWorklogEntry = {
   authorId?: string | null
 }
 
+type JiraCreatedIssue = {
+  id?: string
+  key: string
+  summary: string
+  parentIssueKey: string
+  estimateSeconds: number
+}
+
+type SupabaseProfile = {
+  id: string
+  email: string
+  employee_id: number | null
+  display_name: string | null
+  role: 'manager' | 'employee'
+}
+
+type SupabaseStatus = {
+  configured: boolean
+  url: string
+  hasPublishableKey: boolean
+  email: string | null
+  profile: SupabaseProfile | null
+}
+
+type SupabaseWorkReportRow = {
+  id: string
+  employee_id: number
+  employee_name: string
+  customer: string
+  project: string | null
+  task_id: number | null
+  task_name: string
+  report_date: string
+  seconds: number
+  comment: string | null
+  reporting_from: string | null
+  from_time: string | null
+  to_time: string | null
+  source: string
+  synced_at?: string
+}
+
 type MeetingItem = {
   subject: string
   startTime: string
@@ -199,6 +250,18 @@ type AgendaItem = {
   sourceSender?: string
   sourceSenderEmail?: string
   relevanceScore?: number
+  sourceRole?: string
+  sourceType?: string
+  directAskEvidence?: string
+  latestMessageFromIdentity?: boolean
+  ccOnly?: boolean
+  latestAt?: string
+  threadTimeline?: Array<{
+    time?: string
+    from?: string
+    direction?: string
+    preview?: string
+  }>
   aiSource?: string
 }
 type AgendaResult = {
@@ -292,6 +355,39 @@ type ProjectManagementConfig = {
   customerMappings: CustomerProjectMapping[]
   missions: ProjectMission[]
   updatedAt: string
+}
+
+type SlackChannelMapping = {
+  customerName: string
+  channelId: string
+  channelName: string
+  updatedAt: string
+}
+
+type SlackStatus = {
+  configured: boolean
+  hasToken: boolean
+  mappings: Record<string, SlackChannelMapping>
+}
+
+type SlackChannelOption = {
+  id: string
+  name: string
+  label: string
+}
+
+type SlackPostResult = {
+  posted: boolean
+  reason?: string
+  channelId?: string
+  ts?: string | null
+}
+
+type SlackUpdateMetrics = {
+  capLabel?: string
+  usedLabel?: string
+  remainingLabel?: string
+  usedPercent?: number
 }
 
 type MissionCapValidationResult = {
@@ -401,6 +497,7 @@ type HrsApi = {
   getWorkLogs: (date?: string) => Promise<unknown[]>
   getReports: (startDate: string, endDate: string) => Promise<MonthlyReport>
   getEmployees: () => Promise<EmployeeAccessResult>
+  getHrsIdentity: () => Promise<HrsIdentity>
   getEmployeeHoursReport: (payload: {
     employeeId: string
     fromDate: string
@@ -428,6 +525,12 @@ type HrsApi = {
     partial: boolean
   }>
   getJiraIssueWorklogs: (issueKey: string) => Promise<JiraWorklogEntry[]>
+  createJiraIssue: (payload: {
+    parentIssueKey: string
+    summary: string
+    description?: string
+    estimateSeconds?: number | null
+  }) => Promise<JiraCreatedIssue>
   addJiraWorklog: (payload: {
     issueKey: string
     started: string
@@ -436,6 +539,39 @@ type HrsApi = {
   }) => Promise<JiraWorklogEntry | null>
   getJiraWorklogHistory: (issueKey: string) => Promise<JiraWorklogEntry[]>
   deleteJiraWorklog: (payload: { issueKey: string; worklogId: string }) => Promise<boolean>
+  getSupabaseStatus: () => Promise<SupabaseStatus>
+  setSupabaseConfig: (
+    url: string,
+    publishableKey: string
+  ) => Promise<{ url: string; publishableKey: string }>
+  signUpSupabase: (
+    email: string,
+    password: string
+  ) => Promise<{ email: string | null; needsConfirmation: boolean }>
+  signInSupabase: (
+    email: string,
+    password: string
+  ) => Promise<{ email: string | null; profile: SupabaseProfile | null }>
+  resendSupabaseConfirmation: (email: string) => Promise<boolean>
+  signOutSupabase: () => Promise<boolean>
+  claimSupabaseManager: (payload: {
+    displayName?: string
+    employeeId?: string | number | null
+  }) => Promise<SupabaseProfile>
+  updateSupabaseProfile: (payload: {
+    displayName?: string
+    employeeId?: string | number | null
+  }) => Promise<SupabaseProfile>
+  getSupabaseWorkReports: (
+    startDate: string,
+    endDate: string
+  ) => Promise<SupabaseWorkReportRow[]>
+  syncSupabaseWorkReports: (payload: {
+    startDate: string
+    endDate: string
+    employeeId?: string | number | null
+    rows: Array<Record<string, unknown>>
+  }) => Promise<{ synced: number; syncRunId: string }>
   getProjectManagementConfig: () => Promise<ProjectManagementConfig>
   setProjectReportingSource: (source: ReportingSource) => Promise<ProjectManagementConfig>
   setProjectSyncMode: (mode: ProjectSyncMode) => Promise<ProjectManagementConfig>
@@ -488,6 +624,23 @@ type HrsApi = {
     nextSeconds?: number | null
     message?: string
   }) => Promise<SyncAuditEntry>
+  getSlackStatus: () => Promise<SlackStatus>
+  setSlackToken: (token: string) => Promise<SlackStatus>
+  clearSlack: () => Promise<SlackStatus>
+  getSlackChannels: () => Promise<SlackChannelOption[]>
+  setSlackCustomerMapping: (payload: {
+    customerName: string
+    channelId: string
+    channelName: string
+  }) => Promise<SlackChannelMapping>
+  removeSlackCustomerMapping: (customerName: string) => Promise<Record<string, SlackChannelMapping>>
+  postSlackCustomerUpdate: (payload: {
+    customer: string
+    title: string
+    lines: string[]
+    channelId?: string | null
+    metrics?: SlackUpdateMetrics | null
+  }) => Promise<SlackPostResult>
   getPreferences: () => Promise<AppPreferences>
 	  setPreferences: (next: {
     jiraActiveOnly?: boolean
@@ -573,8 +726,9 @@ type HrsApi = {
       hiddenSenders?: string[]
       importantTerms?: string[]
     }
-  }) => Promise<AgendaResult>
-  getAgendaAiConfig: () => Promise<{ hasApiKey: boolean; model: string }>
+	  }) => Promise<AgendaResult>
+	  getAgendaFact: () => Promise<string>
+	  getAgendaAiConfig: () => Promise<{ hasApiKey: boolean; model: string }>
   setAgendaAiConfig: (payload: {
     apiKey?: string | null
     model?: string | null
@@ -588,7 +742,7 @@ type HrsApi = {
   openReportsWindow: () => Promise<boolean>
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
-  setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid') => Promise<{
+  setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') => Promise<{
     nativeLiquidGlass: boolean
     supported: boolean
   }>

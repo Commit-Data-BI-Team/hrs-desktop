@@ -57,7 +57,23 @@ type AgendaItem = {
   sourceSender?: string
   sourceSenderEmail?: string
   relevanceScore?: number
+  sourceRole?: string
+  sourceType?: string
+  directAskEvidence?: string
+  latestMessageFromIdentity?: boolean
+  ccOnly?: boolean
+  latestAt?: string
+  threadTimeline?: Array<{
+    time?: string
+    from?: string
+    direction?: string
+    preview?: string
+  }>
   aiSource?: string
+  titleHe?: string
+  summaryHe?: string
+  suggestedActionHe?: string
+  reasonHe?: string
 }
 
 type AgendaResult = {
@@ -81,6 +97,18 @@ type AgendaResult = {
 }
 
 const REQUIRED_PACKAGES = ['selenium', 'requests', 'pytz']
+const FALLBACK_FACTS = [
+  'Octopuses have blue blood because they use copper-rich hemocyanin to move oxygen.',
+  'The oldest known writing systems appeared in Mesopotamia and Egypt more than 5,000 years ago.',
+  'A teaspoon of neutron-star matter would weigh billions of tons on Earth.',
+  'The Suez Canal opened in 1869 and shortened sea travel between Europe and Asia dramatically.',
+  'Honey rarely spoils because it has low water content, high acidity, and natural antimicrobial compounds.',
+  'The word algorithm comes from the name of the Persian mathematician Al-Khwarizmi.'
+]
+
+function randomFallbackFact() {
+  return FALLBACK_FACTS[Math.floor(Math.random() * FALLBACK_FACTS.length)]
+}
 
 export function registerAgendaIpc() {
   ipcMain.handle('agenda:getAiConfig', async () => {
@@ -108,6 +136,46 @@ export function registerAgendaIpc() {
   ipcMain.handle('agenda:clearAiConfig', async () => {
     await clearAgendaAiConfig()
     return { hasApiKey: false, model: 'gpt-4o-mini' }
+  })
+
+  ipcMain.handle('agenda:fact', async () => {
+    const config = await getAgendaAiConfig()
+    const apiKey = config.apiKey || process.env.OPENAI_API_KEY || ''
+    if (!apiKey) return randomFallbackFact()
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: config.model || process.env.AGENDA_AI_MODEL || 'gpt-4o-mini',
+          temperature: 0.9,
+          max_tokens: 80,
+          messages: [
+            {
+              role: 'system',
+              content:
+                'Return one concise, surprising, accurate general-knowledge fact. Make it useful and pleasant to read. No markdown, no intro, no numbering.'
+            },
+            {
+              role: 'user',
+              content: 'Give me one random fact that makes me smarter.'
+            }
+          ]
+        }),
+        signal: AbortSignal.timeout(10000)
+      })
+      if (!response.ok) return randomFallbackFact()
+      const payload = (await response.json()) as {
+        choices?: Array<{ message?: { content?: string } }>
+      }
+      const fact = payload.choices?.[0]?.message?.content?.replace(/\s+/g, ' ').trim()
+      return fact || randomFallbackFact()
+    } catch {
+      return randomFallbackFact()
+    }
   })
 
   ipcMain.handle('agenda:run', async (event, options: AgendaOptions) => {

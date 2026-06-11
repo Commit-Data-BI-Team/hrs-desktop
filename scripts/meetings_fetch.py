@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from urllib.parse import parse_qs, urlencode, urlparse
 
 import csv
+import shutil
 import pytz
 import requests
 from urllib3.exceptions import ProtocolError
@@ -44,6 +45,13 @@ WINDOWS_TZ_MAP = {
     "W. Europe Standard Time": "Europe/Berlin",
     "Pacific Standard Time": "America/Los_Angeles",
 }
+
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 def log(message: str) -> None:
@@ -83,7 +91,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Include attendance lookup (requires extra permissions).",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.browser == "safari" and sys.platform != "darwin":
+        args.browser = "chrome"
+    return args
 
 
 def month_range(month_value: str | None, timezone_name: str) -> tuple[str, str, str]:
@@ -136,8 +147,38 @@ def version_tuple(value: str) -> tuple[int, ...]:
 
 
 def executable_file(path: str | None) -> str | None:
-    if path and os.path.isfile(path) and os.access(path, os.X_OK):
+    if path and os.path.isfile(path) and (os.name == "nt" or os.access(path, os.X_OK)):
         return path
+    return None
+
+
+def selenium_cache_kind_root(kind: str) -> str:
+    return os.path.expanduser(os.path.join("~", ".cache", "selenium", kind))
+
+
+def selenium_cache_entries(kind: str) -> list[tuple[tuple[int, ...], str, str]]:
+    root = selenium_cache_kind_root(kind)
+    if not os.path.isdir(root):
+        return []
+    entries: list[tuple[tuple[int, ...], str, str]] = []
+    for arch in os.listdir(root):
+        arch_root = os.path.join(root, arch)
+        if not os.path.isdir(arch_root):
+            continue
+        for version in os.listdir(arch_root):
+            version_root = os.path.join(arch_root, version)
+            if os.path.isdir(version_root):
+                entries.append((version_tuple(version), version, version_root))
+    return sorted(entries, reverse=True)
+
+
+def find_cached_executable(root: str, names: set[str]) -> str | None:
+    for current_root, _dirs, files in os.walk(root):
+        for filename in files:
+            if filename in names:
+                found = executable_file(os.path.join(current_root, filename))
+                if found:
+                    return found
     return None
 
 
@@ -149,34 +190,67 @@ def discover_chrome_binary() -> str | None:
     )
     if env_path:
         return env_path
-    candidates = [
-        "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
-        os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
-        "/Applications/Chromium.app/Contents/MacOS/Chromium",
-    ]
+    if os.name == "nt":
+        candidates = [
+            os.path.join(os.getenv("PROGRAMFILES", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.getenv("PROGRAMFILES(X86)", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.getenv("LOCALAPPDATA", ""), "Google", "Chrome", "Application", "chrome.exe"),
+            os.path.join(os.getenv("PROGRAMFILES", ""), "Chromium", "Application", "chrome.exe"),
+        ]
+    else:
+        candidates = [
+            "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+            os.path.expanduser("~/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"),
+            "/Applications/Chromium.app/Contents/MacOS/Chromium",
+            shutil.which("google-chrome") or "",
+            shutil.which("chromium") or "",
+            shutil.which("chromium-browser") or "",
+        ]
     for candidate in candidates:
         found = executable_file(candidate)
         if found:
             return found
-    cache_root = os.path.expanduser("~/.cache/selenium/chrome/mac-arm64")
-    if not os.path.isdir(cache_root):
-        return None
-    cached = []
-    for version in os.listdir(cache_root):
-        candidate = os.path.join(
-            cache_root,
-            version,
-            "Google Chrome for Testing.app",
-            "Contents",
-            "MacOS",
-            "Google Chrome for Testing",
-        )
-        if executable_file(candidate):
-            cached.append((version_tuple(version), candidate))
-    if not cached:
-        return None
-    cached.sort(reverse=True)
-    return cached[0][1]
+    cached = cached_chrome_binaries()
+    return cached[0][2] if cached else None
+
+
+def cached_chrome_binaries() -> list[tuple[tuple[int, ...], str, str]]:
+    cached: list[tuple[tuple[int, ...], str, str]] = []
+    executable_names = {"chrome.exe"} if os.name == "nt" else {"Google Chrome for Testing", "chrome"}
+    for version_data, version, root in selenium_cache_entries("chrome"):
+        candidate = find_cached_executable(root, executable_names)
+        if candidate:
+            cached.append((version_data, version, candidate))
+    return sorted(cached, reverse=True)
+
+
+def cached_chromedrivers() -> list[tuple[tuple[int, ...], str, str]]:
+    cached: list[tuple[tuple[int, ...], str, str]] = []
+    executable_names = {"chromedriver.exe"} if os.name == "nt" else {"chromedriver"}
+    for version_data, version, root in selenium_cache_entries("chromedriver"):
+        candidate = find_cached_executable(root, executable_names)
+        if candidate:
+            cached.append((version_data, version, candidate))
+    return sorted(cached, reverse=True)
+
+
+def cached_chrome_driver_pair() -> tuple[str, str] | None:
+    drivers_by_major = {
+        version.split(".", 1)[0]: (version, path)
+        for _version_tuple, version, path in cached_chromedrivers()
+        if version
+    }
+    for _version_tuple, chrome_version, chrome_path in cached_chrome_binaries():
+        major = chrome_version.split(".", 1)[0]
+        driver = drivers_by_major.get(major)
+        if driver:
+            driver_version, driver_path = driver
+            log(
+                "Using cached Chrome for Testing pair "
+                f"chrome={chrome_version} chromedriver={driver_version}"
+            )
+            return chrome_path, driver_path
+    return None
 
 
 def chrome_binary_version(binary_path: str | None) -> str | None:
@@ -201,28 +275,20 @@ def discover_chromedriver(chrome_version: str | None) -> str | None:
     )
     if env_path:
         return env_path
-    try:
-        path = subprocess.check_output(["/usr/bin/which", "chromedriver"], text=True, timeout=5).strip()
-        found = executable_file(path)
-        if found:
-            return found
-    except Exception:
-        pass
-    cache_root = os.path.expanduser("~/.cache/selenium/chromedriver/mac-arm64")
-    if not os.path.isdir(cache_root):
-        return None
-    cached = []
+    found = executable_file(shutil.which("chromedriver"))
+    if found:
+        return found
     chrome_major = chrome_version.split(".", 1)[0] if chrome_version else None
-    for version in os.listdir(cache_root):
-        candidate = os.path.join(cache_root, version, "chromedriver")
-        if not executable_file(candidate):
-            continue
-        weight = 1 if chrome_major and version.startswith(f"{chrome_major}.") else 0
-        cached.append((weight, version_tuple(version), candidate))
-    if not cached:
-        return None
-    cached.sort(reverse=True)
-    return cached[0][2]
+    cached = [
+        (version_data, version, candidate)
+        for version_data, version, candidate in cached_chromedrivers()
+        if chrome_major and version.startswith(f"{chrome_major}.")
+    ]
+    if cached:
+        return cached[0][2]
+    if chrome_major:
+        log(f"No cached ChromeDriver matched Chrome major version {chrome_major}.")
+    return None
 
 
 def build_driver(browser: str, headless: bool):
@@ -231,6 +297,11 @@ def build_driver(browser: str, headless: bool):
         chrome_binary = discover_chrome_binary()
         chrome_version = chrome_binary_version(chrome_binary)
         chromedriver = discover_chromedriver(chrome_version)
+        if chrome_binary and chrome_version and not chromedriver:
+            pair = cached_chrome_driver_pair()
+            if pair:
+                chrome_binary, chromedriver = pair
+                chrome_version = chrome_binary_version(chrome_binary)
         if chrome_binary:
             options.binary_location = chrome_binary
             log(f"Using Chrome binary: {chrome_binary}")
@@ -243,7 +314,12 @@ def build_driver(browser: str, headless: bool):
         if profile_dir:
             options.add_argument(f"--user-data-dir={profile_dir}")
             options.add_argument("--profile-directory=Default")
-        options.add_argument("--start-maximized")
+        options.add_argument("--disable-logging")
+        options.add_argument("--log-level=3")
+        options.add_argument("--silent")
+        options.add_experimental_option("excludeSwitches", ["enable-logging"])
+        if not (os.name == "nt" and headless):
+            options.add_argument("--start-maximized")
         if headless:
             log("Background mode enabled. Running Chrome headless.")
             options.add_argument("--headless=new")
@@ -251,8 +327,12 @@ def build_driver(browser: str, headless: bool):
             options.add_argument("--disable-gpu")
             options.add_argument("--no-first-run")
             options.add_argument("--no-default-browser-check")
+            if os.name == "nt":
+                options.add_argument("--disable-features=MediaRouter,OptimizationHints,Translate")
+                options.add_argument("--remote-debugging-pipe")
         if chromedriver:
-            return webdriver.Chrome(service=ChromeService(executable_path=chromedriver), options=options)
+            service = ChromeService(executable_path=chromedriver, log_output=subprocess.DEVNULL)
+            return webdriver.Chrome(service=service, options=options)
         return webdriver.Chrome(options=options)
     return webdriver.Safari()
 
@@ -311,10 +391,10 @@ def resolve_timezone(label: str | None, default_tz: pytz.BaseTzInfo) -> pytz.Bas
 
 
 def parse_event_time(part: dict | None, output_tz: pytz.BaseTzInfo) -> datetime | None:
-    if not part:
+    if not part or not isinstance(part, dict):
         return None
     raw = part.get("dateTime")
-    if not raw:
+    if not raw or not isinstance(raw, str):
         return None
     value = normalize_iso_datetime(raw)
     try:
@@ -325,6 +405,15 @@ def parse_event_time(part: dict | None, output_tz: pytz.BaseTzInfo) -> datetime 
         source_tz = resolve_timezone(part.get("timeZone"), output_tz)
         parsed = source_tz.localize(parsed)
     return parsed.astimezone(output_tz)
+
+
+def event_subject_for_log(event: object, index: int) -> str:
+    if not isinstance(event, dict):
+        return f"event_{index + 1}"
+    subject = event.get("subject")
+    if isinstance(subject, str) and subject.strip():
+        return subject.strip()[:120]
+    return f"event_{index + 1}"
 
 
 def fetch_attendance(join_url: str | None, headers: dict) -> tuple[int, list[str]] | None:
@@ -918,19 +1007,25 @@ def click_graph_sign_in(driver) -> bool:
 
 def find_graph_explorer_window(driver) -> bool:
     for handle in driver.window_handles:
-        driver.switch_to.window(handle)
-        if "Graph Explorer" in driver.title or "developer.microsoft.com" in (driver.current_url or ""):
-            return True
+        try:
+            driver.switch_to.window(handle)
+            if "Graph Explorer" in driver.title or "developer.microsoft.com" in (driver.current_url or ""):
+                return True
+        except NoSuchWindowException:
+            continue
     return False
 
 
 def find_login_window(driver) -> bool:
     for handle in driver.window_handles:
-        driver.switch_to.window(handle)
-        title = driver.title or ""
-        current_url = driver.current_url or ""
-        if "Sign in" in title or "login.microsoftonline.com" in current_url:
-            return True
+        try:
+            driver.switch_to.window(handle)
+            title = driver.title or ""
+            current_url = driver.current_url or ""
+            if "Sign in" in title or "login.microsoftonline.com" in current_url:
+                return True
+        except NoSuchWindowException:
+            continue
     return False
 
 
@@ -953,6 +1048,9 @@ def is_browser_transport_error(exc: Exception) -> bool:
     return any(
         term in message
         for term in [
+            "no such window",
+            "target window already closed",
+            "web view not found",
             "connection reset",
             "connection refused",
             "connection broken",
@@ -1007,6 +1105,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
     username = os.getenv("MS_USERNAME", "").strip()
     password = os.getenv("MS_PASSWORD", "").strip()
     duo_clicked = False
+    auth_window_closed = False
 
     log(f"Opening {browser.title()} for Microsoft Graph authentication.")
     driver = build_driver(browser, headless)
@@ -1075,6 +1174,8 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                 except TimeoutException:
                     password_field = None
                 except (NoSuchWindowException, WebDriverException) as exc:
+                    if isinstance(exc, NoSuchWindowException) or is_browser_transport_error(exc):
+                        auth_window_closed = True
                     log(f"Password step unavailable after account selection. Continuing. reason={exc.__class__.__name__}")
 
                 password_used = False
@@ -1107,31 +1208,42 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                     except Exception:
                         log("Failed to click final sign-in button. Continuing.")
                 except (NoSuchWindowException, WebDriverException) as exc:
+                    if isinstance(exc, NoSuchWindowException) or is_browser_transport_error(exc):
+                        auth_window_closed = True
                     log(f"Microsoft continue step unavailable. Continuing. reason={exc.__class__.__name__}")
 
-                try:
-                    send_me_push_button = WebDriverWait(driver, 10).until(
-                        EC.element_to_be_clickable((By.CSS_SELECTOR, "button.auth-button.positive"))
-                    )
-                    send_me_push_button.click()
-                    duo_clicked = True
-                    log("Clicked DUO push button.")
-                    log("Waiting for DUO approval on user's phone.")
-                    driver.switch_to.default_content()
-                    time.sleep(10)
-                except TimeoutException:
-                    log("DUO push button not found. Continuing.")
-                except (WebDriverException, ProtocolError, OSError) as exc:
-                    if is_browser_transport_error(exc):
-                        log(f"Browser automation reset while checking DUO. Continuing token recovery. error={exc}")
-                    else:
-                        raise
+                if auth_window_closed:
+                    log("Microsoft auth window closed before DUO inspection. Continuing token recovery from Graph Explorer.")
+                else:
+                    try:
+                        send_me_push_button = WebDriverWait(driver, 10).until(
+                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.auth-button.positive"))
+                        )
+                        send_me_push_button.click()
+                        duo_clicked = True
+                        log("Clicked DUO push button.")
+                        log("Waiting for DUO approval on user's phone.")
+                        driver.switch_to.default_content()
+                        time.sleep(10)
+                    except TimeoutException:
+                        log("DUO push button not found. Continuing.")
+                    except (NoSuchWindowException, WebDriverException, ProtocolError, OSError) as exc:
+                        if isinstance(exc, NoSuchWindowException) or is_browser_transport_error(exc):
+                            auth_window_closed = True
+                            log(
+                                "Microsoft auth window closed while checking DUO. "
+                                "Continuing token recovery from Graph Explorer."
+                            )
+                        else:
+                            raise
 
                 if duo_clicked:
                     access_token = wait_for_microsoft_redirect_after_duo(driver, 90)
-                else:
+                elif not auth_window_closed:
                     click_stay_signed_in_confirmation(driver)
                     access_token = wait_for_access_token_in_current_url(driver, 20)
+                else:
+                    access_token = None
                 if access_token:
                     return access_token
             else:
@@ -1214,41 +1326,73 @@ def main() -> int:
 
     meetings = []
     tz = pytz.timezone(args.tz)
-    for event in all_events:
-        subject = event.get("subject", "No Subject")
-        start_part = event.get("start", {})
-        end_part = event.get("end", {})
-        attendees_raw = event.get("attendees", [])
-        attendee_names = []
-        attendee_emails = []
-        for attendee in attendees_raw:
-            email_info = attendee.get("emailAddress") or {}
-            name = email_info.get("name")
-            address = email_info.get("address")
-            if name:
-                attendee_names.append(name)
-            if address:
-                attendee_emails.append(address)
-        attendees = ", ".join(attendee_names)
-        join_url = event.get("onlineMeetingUrl") or (event.get("onlineMeeting") or {}).get("joinUrl")
-        start_local = parse_event_time(start_part, tz)
-        end_local = parse_event_time(end_part, tz)
-        if not start_local or not end_local:
-            continue
-        attendance_info = fetch_attendance(join_url, headers) if args.attendance else None
-        attendance_count = attendance_info[0] if attendance_info else None
-        attendance_emails = attendance_info[1] if attendance_info else []
-        meetings.append(
-            {
-                "subject": subject,
-                "startTime": start_local.strftime("%Y-%m-%d %H:%M:%S"),
-                "endTime": end_local.strftime("%Y-%m-%d %H:%M:%S"),
-                "participants": attendees,
-                "attendanceCount": attendance_count,
-                "attendanceEmails": attendance_emails,
-                "attendeeEmails": attendee_emails,
-            }
-        )
+    skipped_events = 0
+    for index, event in enumerate(all_events):
+        try:
+            if not isinstance(event, dict):
+                skipped_events += 1
+                log(f"Skipping malformed calendar event {index + 1}: payload is {type(event).__name__}.")
+                continue
+
+            raw_subject = event.get("subject")
+            subject = raw_subject.strip() if isinstance(raw_subject, str) and raw_subject.strip() else "No Subject"
+            start_part = event.get("start") if isinstance(event.get("start"), dict) else None
+            end_part = event.get("end") if isinstance(event.get("end"), dict) else None
+            attendees_raw = event.get("attendees")
+            if not isinstance(attendees_raw, list):
+                attendees_raw = []
+
+            attendee_names = []
+            attendee_emails = []
+            for attendee in attendees_raw:
+                if not isinstance(attendee, dict):
+                    continue
+                email_info = attendee.get("emailAddress") or {}
+                if not isinstance(email_info, dict):
+                    continue
+                name = email_info.get("name")
+                address = email_info.get("address")
+                if isinstance(name, str) and name:
+                    attendee_names.append(name)
+                if isinstance(address, str) and address:
+                    attendee_emails.append(address)
+            attendees = ", ".join(attendee_names)
+
+            online_meeting = event.get("onlineMeeting") if isinstance(event.get("onlineMeeting"), dict) else {}
+            join_url = event.get("onlineMeetingUrl") or online_meeting.get("joinUrl")
+            if not isinstance(join_url, str):
+                join_url = None
+
+            start_local = parse_event_time(start_part, tz)
+            end_local = parse_event_time(end_part, tz)
+            if not start_local or not end_local:
+                skipped_events += 1
+                log(f"Skipping calendar event without valid times: {event_subject_for_log(event, index)}.")
+                continue
+
+            attendance_info = fetch_attendance(join_url, headers) if args.attendance else None
+            attendance_count = attendance_info[0] if attendance_info else None
+            attendance_emails = attendance_info[1] if attendance_info else []
+            meetings.append(
+                {
+                    "subject": subject,
+                    "startTime": start_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    "endTime": end_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    "participants": attendees,
+                    "attendanceCount": attendance_count,
+                    "attendanceEmails": attendance_emails,
+                    "attendeeEmails": attendee_emails,
+                }
+            )
+        except Exception as exc:
+            skipped_events += 1
+            log(
+                "Skipping calendar event after normalization error: "
+                f"{event_subject_for_log(event, index)} reason={exc.__class__.__name__}: {exc}"
+            )
+
+    if skipped_events:
+        log(f"Skipped {skipped_events} malformed calendar events.")
 
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8") as csvfile:
@@ -1276,7 +1420,7 @@ def main() -> int:
                 )
 
     output = {"month": month_key, "count": len(meetings), "meetings": meetings}
-    print(json.dumps(output, ensure_ascii=False))
+    print(json.dumps(output, ensure_ascii=True))
     return 0
 
 

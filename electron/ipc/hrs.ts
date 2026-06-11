@@ -42,9 +42,18 @@ type EmployeeAccessResult = {
   hasAccess: boolean
   hasEmployees: boolean
   currentEmployeeName: string | null
+  currentEmployee: EmployeeAdminItem | null
   employees: EmployeeAdminItem[]
   allEmployeesCount: number
   source: 'directReports' | 'accessibleRows' | 'none'
+}
+
+type HrsIdentity = {
+  employeeId: string | null
+  employeeName: string | null
+  email: string | null
+  username: string | null
+  source: 'employee_admin' | 'api_payload' | 'html' | 'credentials' | 'none'
 }
 
 type EmployeeHoursEntry = {
@@ -294,6 +303,86 @@ function normalizeEmployeeIdentity(value: string | null | undefined): string {
     .trim()
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+}
+
+function readStringField(record: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === 'string' && value.trim()) return value.trim()
+    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
+  }
+  return null
+}
+
+function findIdentityInPayload(payload: unknown, depth = 0): HrsIdentity | null {
+  if (depth > 5) return null
+  if (Array.isArray(payload)) {
+    for (const item of payload) {
+      const result = findIdentityInPayload(item, depth + 1)
+      if (result?.employeeId) return result
+    }
+    return null
+  }
+  if (!isPlainObject(payload)) return null
+
+  const employeeId = readStringField(payload, [
+    'employee_id',
+    'employeeId',
+    'employee',
+    'user_id',
+    'userId',
+    'id'
+  ])
+  const employeeName = readStringField(payload, [
+    'employee_name',
+    'employeeName',
+    'full_name',
+    'fullName',
+    'name'
+  ])
+  const email = readStringField(payload, ['email', 'user_email', 'userEmail'])
+  const username = readStringField(payload, ['username', 'user_name', 'userName'])
+  if (employeeId && /^\d+$/.test(employeeId)) {
+    return {
+      employeeId,
+      employeeName,
+      email,
+      username,
+      source: 'api_payload'
+    }
+  }
+
+  for (const value of Object.values(payload)) {
+    const result = findIdentityInPayload(value, depth + 1)
+    if (result?.employeeId) return result
+  }
+  return null
+}
+
+function findIdentityInHtml(html: string): HrsIdentity | null {
+  const patterns = [
+    /\bemployee[_-]?id["']?\s*[:=]\s*["']?(\d{1,10})/i,
+    /\buser[_-]?id["']?\s*[:=]\s*["']?(\d{1,10})/i,
+    /employee_id=(\d{1,10})/i,
+    /user_id=(\d{1,10})/i
+  ]
+  for (const pattern of patterns) {
+    const employeeId = html.match(pattern)?.[1]
+    if (employeeId) {
+      return {
+        employeeId,
+        employeeName: null,
+        email: null,
+        username: null,
+        source: 'html'
+      }
+    }
+  }
+  return null
+}
+
 function parseEmployeeRows(html: string): EmployeeAdminItem[] {
   const tbody = html.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i)?.[1] ?? ''
   const rows = Array.from(tbody.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)).map(match => match[1])
@@ -536,6 +625,7 @@ async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccess
       hasAccess: false,
       hasEmployees: false,
       currentEmployeeName: null,
+      currentEmployee: null,
       employees: [],
       allEmployeesCount: 0,
       source: 'none'
@@ -556,6 +646,7 @@ async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccess
       hasAccess: false,
       hasEmployees: false,
       currentEmployeeName: null,
+      currentEmployee: null,
       employees: [],
       allEmployeesCount: 0,
       source: 'none'
@@ -584,9 +675,100 @@ async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccess
     hasAccess: true,
     hasEmployees: visibleEmployees.length > 0,
     currentEmployeeName,
+    currentEmployee: currentEmployee ?? null,
     employees: visibleEmployees,
     allEmployeesCount: employees.length,
     source: directReports.length ? 'directReports' : visibleEmployees.length ? 'accessibleRows' : 'none'
+  }
+}
+
+async function resolveHrsIdentity(): Promise<HrsIdentity> {
+  const loginSession = getLoginSession()
+  const cookieHeader = await getCookieHeader(loginSession)
+  const creds = await getHrsCredentials()
+
+  try {
+    const employeeAccess = await fetchEmployeeAccess(cookieHeader)
+    const current = employeeAccess.currentEmployee
+    if (current?.id) {
+      return {
+        employeeId: current.id,
+        employeeName: current.fullName || employeeAccess.currentEmployeeName,
+        email: current.email || null,
+        username: current.username || creds.username,
+        source: 'employee_admin'
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[HRS IDENTITY DEBUG] employee admin identity lookup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  }
+
+  try {
+    const targetDate = getLocalIsoDate()
+    const res = await fetch(
+      `${HRS_ORIGIN}/api/user_work_logs/?date=${encodeURIComponent(targetDate)}`,
+      {
+        headers: {
+          Cookie: cookieHeader,
+          Accept: 'application/json'
+        }
+      }
+    )
+    if (res.ok) {
+      const payload = await res.json()
+      const identity = findIdentityInPayload(payload)
+      if (identity?.employeeId) {
+        return {
+          ...identity,
+          username: identity.username ?? creds.username ?? null
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[HRS IDENTITY DEBUG] work-log payload identity lookup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  }
+
+  try {
+    const customAuth = await ensureCustomAuth(loginSession)
+    const reactUrl = `${HRS_ORIGIN}/react/hrs/hoursreporting/?key=${encodeURIComponent(customAuth)}`
+    const res = await fetch(reactUrl, {
+      headers: {
+        Cookie: cookieHeader,
+        Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+      }
+    })
+    if (res.ok) {
+      const html = await res.text()
+      const identity = findIdentityInHtml(html)
+      if (identity?.employeeId) {
+        return {
+          ...identity,
+          username: creds.username ?? null
+        }
+      }
+    }
+  } catch (error) {
+    console.warn(
+      `[HRS IDENTITY DEBUG] react page identity lookup failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    )
+  }
+
+  return {
+    employeeId: null,
+    employeeName: null,
+    email: null,
+    username: creds.username ?? null,
+    source: creds.username ? 'credentials' : 'none'
   }
 }
 
@@ -655,7 +837,8 @@ function invalidateHrsCache(date?: string) {
 }
 
 export function registerHrsIpc(
-  openLoginWindow: (options?: { username?: string; password?: string; autoSubmit?: boolean }) => Promise<boolean>
+  openLoginWindow: (options?: { username?: string; password?: string; autoSubmit?: boolean }) => Promise<boolean>,
+  closeLoginWindow?: () => void
 ) {
   console.log('[ipc] registerHrsIpc')
 
@@ -677,6 +860,25 @@ export function registerHrsIpc(
       hasAccess: true,
       hasEmployees: true,
       currentEmployeeName: 'E2E Manager',
+      currentEmployee: {
+        id: '1000',
+        priorityId: '1000',
+        fullName: 'E2E Manager',
+        role: 'Manager',
+        internalId: 'E2E-0',
+        username: 'e2e@hrs.local',
+        email: 'e2e@hrs.local',
+        phone: '',
+        pnl: 'E2E',
+        nextPnl: '',
+        userRoles: 'Manager',
+        reportsTo: '',
+        positionType: 'Full position',
+        maximumHours: '0',
+        isSubContractor: false,
+        isActive: true,
+        href: `${HRS_ORIGIN}/admin/sysmanage/employee/1000/change/`
+      },
       allEmployeesCount: 2,
       source: 'directReports',
       employees: [
@@ -700,6 +902,13 @@ export function registerHrsIpc(
           href: `${HRS_ORIGIN}/admin/sysmanage/employee/1001/change/`
         }
       ]
+    }))
+    ipcMain.handle('hrs:getIdentity', async () => ({
+      employeeId: '1000',
+      employeeName: 'E2E Manager',
+      email: 'e2e@hrs.local',
+      username: 'e2e@hrs.local',
+      source: 'employee_admin'
     }))
     ipcMain.handle('hrs:getEmployeeHoursReport', async (_event, payload: unknown) => {
       const safe = validateEmployeeHoursPayload(payload)
@@ -779,6 +988,7 @@ export function registerHrsIpc(
   })
 
   ipcMain.handle('hrs:clearCredentials', async () => {
+    closeLoginWindow?.()
     await clearHrsCredentials()
     return true
   })
@@ -902,6 +1112,8 @@ export function registerHrsIpc(
     setCachedValue('employees:access', result)
     return result
   })
+
+  ipcMain.handle('hrs:getIdentity', async () => resolveHrsIdentity())
 
   ipcMain.handle('hrs:getEmployeeHoursReport', async (_event, payload: unknown) => {
     const safePayload = validateEmployeeHoursPayload(payload)

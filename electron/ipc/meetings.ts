@@ -115,12 +115,27 @@ function shouldIgnoreProgressLine(line: string) {
   const value = line.trim()
   if (!value) return true
   if (value === 'Stacktrace:') return true
+  if (/Created TensorFlow Lite XNNPACK delegate for CPU/i.test(value)) return true
+  if (/google_apis[\\/]+gcm[\\/]+engine[\\/]+registration_request\.cc/i.test(value)) return true
+  if (/Registration response error message:\s*DEPRECATED_ENDPOINT/i.test(value)) return true
+  if (/cpu_probe_win\.cc/i.test(value)) return true
+  if (/PdhAddEnglishCounter/i.test(value)) return true
+  if (/\\Processor\(_Total\)\\% Processor Time/i.test(value)) return true
+  if (/DevTools listening on/i.test(value)) return true
   if (/^\d+\s+chromedriver\b/i.test(value)) return true
   if (value.includes('cxxbridge1$str$ptr')) return true
   if (value.includes('libsystem_pthread.dylib')) return true
   if (value.includes('thread_start +')) return true
   if (value.includes('_pthread_start +')) return true
   return false
+}
+
+function sanitizeScriptError(stderr: string) {
+  const lines = stderr
+    .split(/\r?\n/)
+    .map(sanitizeProgressLine)
+    .filter(line => line && !shouldIgnoreProgressLine(line))
+  return lines.join(' ').trim().slice(0, 1200)
 }
 
 export function registerMeetingsIpc() {
@@ -133,7 +148,8 @@ export function registerMeetingsIpc() {
       password?: unknown
     }>(options ?? {}, ['browser', 'headless', 'month', 'username', 'password'], 'meetings options')
     const browser = validateEnum(safe.browser, ['safari', 'chrome'] as const)
-    const headless = typeof safe.headless === 'boolean' ? safe.headless : false
+    const requestedHeadless = typeof safe.headless === 'boolean' ? safe.headless : false
+    const headless = process.platform === 'win32' ? true : requestedHeadless
     const month =
       validateOptionalString(safe.month, { min: 7, max: 7, allowNull: true }) ?? null
     if (month && !/^\d{4}-\d{2}$/.test(month)) {
@@ -200,7 +216,7 @@ export function registerMeetingsIpc() {
           event.sender.send('meetings:progress', remaining)
         }
         if (code !== 0) {
-          const safeError = sanitizeProgressLine(stderr)
+          const safeError = sanitizeScriptError(stderr)
           reject(new Error(safeError || `Meetings script failed (${code})`))
           return
         }

@@ -77,7 +77,7 @@ export function validateJiraIssueKey(key: unknown): string {
   }
   
   const clean = sanitizeString(key)
-  const jiraKeyRegex = /^[A-Z][A-Z0-9_]{0,9}-[0-9]+$/
+  const jiraKeyRegex = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
   
   if (!jiraKeyRegex.test(clean)) {
     throw new Error('Invalid Jira issue key format')

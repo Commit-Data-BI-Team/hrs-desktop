@@ -1,5 +1,6 @@
 import { execFile } from 'node:child_process'
 import fs from 'node:fs'
+import os from 'node:os'
 import path from 'node:path'
 import { promisify } from 'node:util'
 
@@ -17,6 +18,32 @@ async function run(command, args, options = {}) {
 
 async function verify(appPath) {
   await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', '--verbose=4', appPath])
+}
+
+async function stripBundleMetadata(appPath) {
+  const parentDir = path.dirname(appPath)
+  const appName = path.basename(appPath)
+  const stamp = `${process.pid}-${Date.now()}`
+  const cleanRoot = await fs.promises.mkdtemp(path.join(os.tmpdir(), `hrs-metadata-clean-${stamp}-`))
+  const archivePath = path.join(cleanRoot, `${appName}.tar`)
+  const unpackDir = path.join(cleanRoot, 'unpacked')
+  const tarEnv = { ...process.env, COPYFILE_DISABLE: '1' }
+
+  try {
+    await run('/usr/bin/tar', ['--no-xattrs', '-cf', archivePath, appName], {
+      cwd: parentDir,
+      env: tarEnv
+    })
+    await fs.promises.mkdir(unpackDir, { recursive: true })
+    await run('/usr/bin/tar', ['--no-xattrs', '-xf', archivePath], {
+      cwd: unpackDir,
+      env: tarEnv
+    })
+    await fs.promises.rm(appPath, { recursive: true, force: true })
+    await fs.promises.rename(path.join(unpackDir, appName), appPath)
+  } finally {
+    await fs.promises.rm(cleanRoot, { recursive: true, force: true })
+  }
 }
 
 export default async function afterPack(context) {
@@ -47,7 +74,11 @@ export default async function afterPack(context) {
     throw new Error(`${PREFIX} entitlements missing at ${entitlementsPath}`)
   }
 
-  await run('/usr/bin/xattr', ['-c', '-r', appPath])
+  await run('/usr/bin/xattr', ['-cr', appPath])
+  await run('/usr/sbin/dot_clean', ['-m', appPath])
+  await stripBundleMetadata(appPath)
+  await run('/usr/bin/xattr', ['-cr', appPath])
+  await run('/usr/sbin/dot_clean', ['-m', appPath])
   await run('/usr/bin/codesign', [
     '--force',
     '--deep',

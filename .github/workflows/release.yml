@@ -42,6 +42,7 @@ jobs:
           name: release-win
           path: |
             dist/*.exe
+            dist/*.blockmap
             dist/latest.yml
 
   publish-release:
@@ -50,6 +51,7 @@ jobs:
     env:
       GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
           name: release-mac
@@ -71,15 +73,30 @@ jobs:
           cp "dist-assets/release-mac/latest-mac.yml" "release-files/latest-mac.yml"
 
           cp "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe" "release-files/HRS-Desktop-Setup-${VERSION}.exe"
+          if [[ -f "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe.blockmap" ]]; then
+            cp "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe.blockmap" "release-files/HRS-Desktop-Setup-${VERSION}.exe.blockmap"
+          fi
+          if [[ -f "dist-assets/release-win/HRS Desktop-${VERSION}-portable.exe" ]]; then
+            cp "dist-assets/release-win/HRS Desktop-${VERSION}-portable.exe" "release-files/HRS-Desktop-${VERSION}-portable.exe"
+          fi
           cp "dist-assets/release-win/latest.yml" "release-files/latest.yml"
+          if [[ -f CHANGELOG.md ]]; then
+            awk "/^## ${VERSION}$/{flag=1; print; next} /^## /{flag=0} flag" CHANGELOG.md > "release-files/CHANGELOG-${VERSION}.md"
+          fi
 
           ls -lah release-files
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          NOTES_FILE="release-files/CHANGELOG-${VERSION}.md"
+          if [[ ! -s "$NOTES_FILE" ]]; then
+            printf "## %s\n\n- Automated release.\n" "$GITHUB_REF_NAME" > "$NOTES_FILE"
+          fi
           gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" >/dev/null 2>&1 || \
-          gh release create "$GITHUB_REF_NAME" -R "$GH_REPO" --title "$GITHUB_REF_NAME" --notes "Automated release $GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" -R "$GH_REPO" --title "$GITHUB_REF_NAME" --notes-file "$NOTES_FILE"
+          gh release edit "$GITHUB_REF_NAME" -R "$GH_REPO" --notes-file "$NOTES_FILE"
       - name: Keep only required assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -90,8 +107,11 @@ jobs:
             "HRS-Desktop-${VERSION}-arm64.dmg"
             "HRS-Desktop-${VERSION}.dmg"
             "HRS-Desktop-Setup-${VERSION}.exe"
+            "HRS-Desktop-Setup-${VERSION}.exe.blockmap"
+            "HRS-Desktop-${VERSION}-portable.exe"
             "HRS-Desktop-${VERSION}-arm64-mac.zip"
             "HRS-Desktop-${VERSION}-mac.zip"
+            "CHANGELOG-${VERSION}.md"
             "latest-mac.yml"
             "latest.yml"
           )

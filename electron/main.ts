@@ -22,6 +22,8 @@ import { registerNotificationIpc } from './ipc/notifications'
 import { registerMeetingsIpc } from './ipc/meetings'
 import { registerAgendaIpc } from './ipc/agenda'
 import { registerProjectManagementIpc } from './ipc/projectManagement'
+import { registerSupabaseIpc } from './ipc/supabase'
+import { registerSlackIpc } from './ipc/slack'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const nodeRequire = createRequire(import.meta.url)
@@ -54,6 +56,7 @@ let trayWindow: BrowserWindow | null = null
 let reportsWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let meetingsWindow: BrowserWindow | null = null
+let activeLoginWindow: BrowserWindow | null = null
 let tray: Tray | null = null
 let trayOpenOnReady = false
 let traySuppressBlurUntil = 0
@@ -116,7 +119,7 @@ type UpdaterLike = {
   on: (event: string, listener: (...args: unknown[]) => void) => void
 }
 
-type ThemeMode = 'dark' | 'oled' | 'liquid'
+type ThemeMode = 'dark' | 'oled' | 'liquid' | 'h4c37'
 
 let updateCheckTimer: NodeJS.Timeout | null = null
 let updaterConfigured = false
@@ -682,6 +685,7 @@ function hideMainWindowForFloating() {
 
 function restoreMainWindowFromFloating() {
   if (!mainWindow) return
+  if (process.platform === 'win32') return
   mainWindow.setSkipTaskbar(true)
   mainWindow.show()
   if (mainWindow.isMinimized()) {
@@ -1158,7 +1162,7 @@ app.whenReady().then(() => {
   }
   const trayReady = createTray()
   logInfo('[main] tray init done', `tray=${trayReady}`, `elapsed=${Date.now() - processBootAt}ms`)
-  registerHrsIpc(openLoginWindow)
+  registerHrsIpc(openLoginWindow, closeActiveLoginWindow)
   registerJiraIpc()
   registerPreferencesIpc()
   registerExportIpc()
@@ -1166,6 +1170,8 @@ app.whenReady().then(() => {
   registerMeetingsIpc()
   registerAgendaIpc()
   registerProjectManagementIpc()
+  registerSupabaseIpc()
+  registerSlackIpc()
   void setupAutoUpdater()
   ipcMain.handle('app:openMainWindow', () => {
     showMainWindow()
@@ -1205,7 +1211,7 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('app:setNativeThemeMode', (event, mode: ThemeMode) => {
-    if (mode !== 'dark' && mode !== 'oled' && mode !== 'liquid') {
+    if (mode !== 'dark' && mode !== 'oled' && mode !== 'liquid' && mode !== 'h4c37') {
       throw new Error('Invalid app:setNativeThemeMode payload')
     }
     nativeThemeMode = mode
@@ -1283,6 +1289,20 @@ type LoginOptions = {
   autoSubmit?: boolean
 }
 
+function closeActiveLoginWindow() {
+  if (!activeLoginWindow || activeLoginWindow.isDestroyed()) {
+    activeLoginWindow = null
+    return
+  }
+  try {
+    activeLoginWindow.close()
+  } catch (error) {
+    logWarn('[auth] failed to close active login window', error)
+  } finally {
+    activeLoginWindow = null
+  }
+}
+
 async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
   return new Promise((resolve, reject) => {
     const loginSession = session.fromPartition('persist:hrs')
@@ -1308,11 +1328,13 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
         allowRunningInsecureContent: false
       }
     })
+    activeLoginWindow = loginWindow
 
     logInfo('[auth] opening login window')
 
     let resolved = false
     let autoShowTimer: NodeJS.Timeout | null = null
+    let autoLoginTimeout: NodeJS.Timeout | null = null
 
     const tryAutoLogin = async () => {
       if (!shouldAutoLogin) return
@@ -1345,13 +1367,19 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
         })
 
         if (!cookies.find(c => c.name === 'sessionid')) {
+          if (shouldAutoLogin) {
+            logInfo('[auth] auto-login reached admin without session cookie yet; waiting')
+            return
+          }
           if (autoShowTimer) clearTimeout(autoShowTimer)
+          if (autoLoginTimeout) clearTimeout(autoLoginTimeout)
           reject(new Error('Session cookie not found'))
           return
         }
 
         resolved = true
         if (autoShowTimer) clearTimeout(autoShowTimer)
+        if (autoLoginTimeout) clearTimeout(autoLoginTimeout)
         loginWindow.close()
         resolve(true)
       }
@@ -1370,6 +1398,14 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
           loginWindow.show()
         }
       }, 12000)
+      autoLoginTimeout = setTimeout(() => {
+        if (!resolved) {
+          reject(new Error('Auto-login timed out waiting for DUO approval'))
+          try {
+            loginWindow.close()
+          } catch {}
+        }
+      }, 150000)
     }
 
     loginWindow.loadURL(
@@ -1377,7 +1413,11 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
     )
 
     loginWindow.on('closed', () => {
+      if (activeLoginWindow === loginWindow) {
+        activeLoginWindow = null
+      }
       if (autoShowTimer) clearTimeout(autoShowTimer)
+      if (autoLoginTimeout) clearTimeout(autoLoginTimeout)
       if (!resolved) {
         reject(new Error('Login cancelled'))
       }

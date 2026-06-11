@@ -12,6 +12,7 @@ import pytz
 import requests
 from urllib3.exceptions import ProtocolError
 from selenium.common.exceptions import (
+    NoSuchWindowException,
     StaleElementReferenceException,
     TimeoutException,
     WebDriverException,
@@ -955,6 +956,19 @@ def priority_for_row(row: dict) -> str:
 
 def infer_project_label(row: dict) -> str:
     subject = clean_subject(row.get("Title"))
+    blob = f"{subject} {row.get('Preview') or ''}".lower()
+    known_projects = [
+        ("VRPathways", ["vrpathways", "vr pathways", "vr-pathways"]),
+        ("Geotwins", ["geotwins", "geo twins", "geo-twins"]),
+        ("CBS", ["cbs price", "cbs"]),
+        ("Weizmann", ["weizmann"]),
+        ("Valinor", ["valinor"]),
+        ("AGMA", ["agma"]),
+        ("Exponet", ["exponet"]),
+    ]
+    for label, terms in known_projects:
+        if any(term in blob for term in terms):
+            return label
     owner_email = clean_text(row.get("Owner Email"), 120)
     if "|" in subject:
         return clean_text(subject.split("|", 1)[0], 120)
@@ -967,7 +981,36 @@ def infer_project_label(row: dict) -> str:
     return "General"
 
 
-def make_insight(kind: str, row: dict, title: str, summary: str, action: str, reason: str) -> dict:
+def build_thread_timeline_from_row(row: dict) -> list[dict]:
+    messages = row.get("Thread Messages", [])
+    compact = compact_thread_messages(messages if isinstance(messages, list) else [])
+    if not compact:
+        return []
+    selected = compact if len(compact) <= 3 else [compact[0], *compact[-2:]]
+    return [
+        {
+            "time": clean_text(message.get("time"), 40),
+            "from": clean_text(message.get("from"), 100),
+            "direction": clean_text(message.get("folder"), 20),
+            "preview": clean_text(message.get("preview"), 220),
+        }
+        for message in selected
+        if message.get("preview") or message.get("from") or message.get("time")
+    ]
+
+
+def make_insight(
+    kind: str,
+    row: dict,
+    title: str,
+    summary: str,
+    action: str,
+    reason: str,
+    names: list[str] | None = None,
+    tags: list[str] | None = None,
+) -> dict:
+    names = names or []
+    tags = tags or []
     category_labels = {
         "task": "Task",
         "summary": "Project signal",
@@ -999,6 +1042,13 @@ def make_insight(kind: str, row: dict, title: str, summary: str, action: str, re
         "threadKey": row.get("Conversation Id") or row.get("Message Id") or stable_item_id(row),
         "link": row.get("Link") or "",
         "sourceIds": [row.get("Message Id") or row.get("Conversation Id") or stable_item_id(row)],
+        "sourceRole": clean_text(row.get("Recipient Role"), 30),
+        "sourceType": "Outlook",
+        "directAskEvidence": clean_text(direct_ask_evidence(row, names, tags), 260),
+        "latestMessageFromIdentity": latest_message_from_identity(row, names, tags),
+        "ccOnly": row_cc_identity(row, tags) and not row_to_identity(row, tags),
+        "latestAt": clean_text(row.get("Start Date"), 40),
+        "threadTimeline": build_thread_timeline_from_row(row),
         "aiSource": "local",
     }
     insight["actionTitle"] = insight["title"]
@@ -1043,6 +1093,7 @@ def build_local_sections(
         row
         for row in related_rows
         if is_actionable_text(f"{row.get('Title') or ''} {row.get('Preview') or ''}")
+        and not latest_message_from_identity(row, names, tags)
     ]
     reply_candidates = [
         row
@@ -1055,6 +1106,7 @@ def build_local_sections(
         row
         for row in related_rows
         if row.get("Direction") == "Sent"
+        or latest_message_from_identity(row, names, tags)
         or (thread_has_identity_sent_message(row, names, tags) and is_followup_text(row_blob(row)))
     ]
     project_signal_candidates = [
@@ -1079,6 +1131,8 @@ def build_local_sections(
                 row.get("Preview") or "Mail appears to contain an action related to your configured identity.",
                 "Handle the requested action, then mark this card resolved.",
                 "Matched your configured name/tag and contains actionable language.",
+                names,
+                tags,
             )
             for row in task_candidates
         ],
@@ -1093,6 +1147,8 @@ def build_local_sections(
                 row.get("Preview") or "This thread contains a project status signal.",
                 "Review the project signal and decide whether it needs an action.",
                 "Matched project/status/risk language in a personally relevant thread.",
+                names,
+                tags,
             )
             for row in project_signal_candidates or direct_rows
         ],
@@ -1107,6 +1163,8 @@ def build_local_sections(
                 row.get("Preview") or "This related mail may need your response.",
                 "Reply, delegate, or mark resolved if no response is needed.",
                 "Related to your configured identity and no later sent reply was found.",
+                names,
+                tags,
             )
             for row in reply_candidates
         ],
@@ -1121,6 +1179,8 @@ def build_local_sections(
                 row.get("Preview") or "You sent a message in this thread and may be waiting on an answer.",
                 "Follow up or mark resolved if the dependency is no longer active.",
                 "You sent in this thread or the thread contains waiting/follow-up language.",
+                names,
+                tags,
             )
             for row in followup_candidates
         ],
@@ -1135,6 +1195,8 @@ def build_local_sections(
                 row.get("Preview") or "Upcoming meeting with configured identity or tracked tags.",
                 "Prepare decisions, blockers, and updates before this meeting.",
                 "Meeting is connected to your configured identity or tracked aliases.",
+                names,
+                tags,
             )
             for row in meeting_prep_candidates
         ],
@@ -1184,10 +1246,14 @@ def normalize_ai_insight(kind: str, value: dict) -> dict | None:
         "ownerEmail": clean_text(value.get("ownerEmail"), 160),
         "title": title,
         "summary": summary,
+        "titleHe": clean_text(value.get("titleHe"), 180),
+        "summaryHe": clean_text(value.get("summaryHe"), 420),
         "actionTitle": title,
         "brief": summary,
         "suggestedAction": clean_text(value.get("suggestedAction"), 260),
+        "suggestedActionHe": clean_text(value.get("suggestedActionHe"), 260),
         "reason": clean_text(value.get("reason"), 220),
+        "reasonHe": clean_text(value.get("reasonHe"), 220),
         "whenLabel": clean_text(value.get("whenLabel"), 40),
         "project": clean_text(value.get("project") or value.get("customer"), 120),
         "customer": clean_text(value.get("customer") or value.get("project"), 120),
@@ -1197,6 +1263,13 @@ def normalize_ai_insight(kind: str, value: dict) -> dict | None:
         "threadKey": clean_text(value.get("threadKey") or title, 120),
         "link": clean_text(value.get("link"), 500),
         "sourceIds": value.get("sourceIds") if isinstance(value.get("sourceIds"), list) else [],
+        "sourceRole": clean_text(value.get("sourceRole"), 30),
+        "sourceType": clean_text(value.get("sourceType") or "Outlook", 30),
+        "directAskEvidence": clean_text(value.get("directAskEvidence"), 260),
+        "latestMessageFromIdentity": bool(value.get("latestMessageFromIdentity")),
+        "ccOnly": bool(value.get("ccOnly")),
+        "latestAt": clean_text(value.get("latestAt") or value.get("whenLabel"), 40),
+        "threadTimeline": value.get("threadTimeline") if isinstance(value.get("threadTimeline"), list) else [],
         "aiSource": "openai",
     }
 
@@ -1330,18 +1403,22 @@ def build_ai_prompt(
             "Only include threads that are personally relevant: identitySentInThread, ownerMatchesIdentity, or directAskToIdentity.",
             "Exclude passive CC, FYI, newsletters, digests, and automated notifications. CC-only threads are not personal unless the configured person is explicitly asked in the message body.",
             "Tasks: extract concrete project/task work from the full thread. Prefer items owned by, assigned to, sent by, or explicitly requested from the configured person.",
-            "Every task needs an owner when the owner is inferable. Use the configured person only when the latest thread state actually assigns or asks them. Never infer owner from To/Cc alone.",
+                        "Every task needs an owner when the owner is inferable. Use the configured person only when the latest thread state actually assigns or asks them. Never infer owner from To/Cc alone.",
             "Follow ups: include threads where the configured person has sent something and appears to be waiting on another person.",
             "Project signals: include important project status, blocker, risk, deadline, approval, or decision updates that are personally relevant but may not require direct reply.",
             "Meeting prep: include only meetings that need preparation or decisions and connect to configured identity/project terms.",
             "Email summaries: use only for project signals; summarize the whole thread in your own words. Do not copy raw previews.",
+            "For every item, summarize the current state after reading messages chronologically. Use latest unresolved messages over older requests.",
+            "For every item, fill sourceRole, directAskEvidence when present, latestAt, and a 2-3 entry threadTimeline with chronological current-state milestones.",
             "Need Reply: include only threads with directAskToIdentity=true and directAskEvidence showing an unresolved ask to the configured person. Exclude CC-only threads, team-wide discussion, FYI, product/data updates, and unrelated people.",
             "For Need Reply, reason must cite the actual ask evidence. Do not write 'Direct ask to Dror' unless the message text actually asks Dror/configured identity to do something.",
+            "If latestMessageFromIdentity=true or the newest chronological message is Sent, the configured person already answered. Do not classify that thread as a Task or Need Reply unless a newer inbound direct ask exists. Use Follow ups only when waiting on someone else; otherwise use Project signals.",
             "Brief: write 1-2 practical sentences about the most important project actions/decisions/replies. Do not say 'agenda brief' or describe analysis counts.",
             "Focus: 2-3 bullets with concrete next actions, project names, owners, blockers, or decisions. No generic prioritization advice.",
             "Use userTuning. Treat importantTerms as stronger relevance hints. Hidden senders and hidden threads were removed before this prompt because the user marked them not relevant.",
-            "Do not write generic output. Mention the concrete subject, owner, project, blocker, decision, or requested action.",
-            "Deduplicate inside this batch by threadKey. Prefer specific meaningful items over literal email listings.",
+                "Do not write generic output. Mention the concrete subject, owner, project, blocker, decision, or requested action.",
+                "For every item, include English fields title, summary, suggestedAction, reason and Hebrew equivalents titleHe, summaryHe, suggestedActionHe, reasonHe. Hebrew must be natural business Hebrew, not transliteration.",
+                "Deduplicate inside this batch by threadKey. Prefer specific meaningful items over literal email listings.",
             "Do not include mail just because it exists in the inbox, To, or Cc.",
         ],
         "counts": {"unansweredCandidateEmails": total_threads, "meetingsThisWeek": meeting_count},
@@ -1482,6 +1559,41 @@ def filter_need_reply_items(items: list[dict], thread_context: dict[str, dict]) 
     return filtered
 
 
+def enrich_ai_item_with_thread_context(item: dict, thread_context: dict[str, dict]) -> dict:
+    key = clean_text(item.get("threadKey"), 120)
+    context = thread_context.get(key)
+    if not context:
+        return item
+    timeline_messages = context.get("threadMessages") if isinstance(context.get("threadMessages"), list) else []
+    timeline = [
+        {
+            "time": clean_text(message.get("time"), 40),
+            "from": clean_text(message.get("from"), 100),
+            "direction": clean_text(message.get("folder"), 20),
+            "preview": clean_text(message.get("preview"), 220),
+        }
+        for message in (timeline_messages if len(timeline_messages) <= 3 else [timeline_messages[0], *timeline_messages[-2:]])
+        if isinstance(message, dict)
+    ]
+    return {
+        **item,
+        "sourceRole": item.get("sourceRole") or context.get("recipientRole") or "",
+        "sourceType": item.get("sourceType") or "Outlook",
+        "directAskEvidence": item.get("directAskEvidence") or context.get("directAskEvidence") or "",
+        "latestMessageFromIdentity": bool(context.get("latestMessageFromIdentity")),
+        "ccOnly": bool(context.get("ccOnly")),
+        "latestAt": item.get("latestAt") or context.get("received") or item.get("whenLabel") or "",
+        "threadTimeline": item.get("threadTimeline") or timeline,
+    }
+
+
+def enrich_ai_sections_with_thread_context(sections: dict, thread_context: dict[str, dict]) -> dict:
+    return {
+        key: [enrich_ai_item_with_thread_context(item, thread_context) for item in items]
+        for key, items in sections.items()
+    }
+
+
 def call_openai_agenda_batch(api_key: str, prompt: dict, batch_index: int, total_batches: int) -> dict:
     payload_chars = len(json.dumps(prompt, ensure_ascii=False))
     log(
@@ -1498,9 +1610,11 @@ def call_openai_agenda_batch(api_key: str, prompt: dict, batch_index: int, total
                 "content": (
                     "You are an agenda triage agent for work email. Return strict JSON with keys: "
                     "brief, focus, sections. sections has arrays tasks, emailSummaries, needReply, "
-                    "followUps, projectSignals, meetingPrep. "
-                    "Each item: id, threadKey, title, priority, owner, ownerEmail, summary, suggestedAction, reason, "
-                    "whenLabel, link, sourceIds, project, customer, sourceSender, sourceSenderEmail, relevanceScore. "
+                        "followUps, projectSignals, meetingPrep. "
+                        "Each item: id, threadKey, title, priority, owner, ownerEmail, summary, suggestedAction, reason, "
+                        "titleHe, summaryHe, suggestedActionHe, reasonHe, "
+                        "whenLabel, link, sourceIds, project, customer, sourceSender, sourceSenderEmail, relevanceScore, "
+                    "sourceRole, sourceType, directAskEvidence, latestAt, threadTimeline. "
                     "Be selective, concrete, person-aware, and avoid generic filler."
                 ),
             },
@@ -1718,6 +1832,7 @@ def try_ai_build_sections(
             )
             if not all_focus:
                 all_focus.extend(local_focus[:2])
+        sections = enrich_ai_sections_with_thread_context(sections, thread_context)
         if not any(sections.values()):
             raise RuntimeError("AI agenda pipeline returned no usable sections.")
         brief = normalize_agenda_brief(
@@ -1815,6 +1930,8 @@ def wait_for_graph_explorer_after_duo(driver, timeout_seconds: int = 60) -> bool
 
 
 def click_token_controls_like_meetings_script(driver) -> str | None:
+    if sys.platform != "darwin":
+        return None
     try:
         WebDriverWait(driver, 20).until(
             EC.presence_of_element_located(
@@ -1871,9 +1988,12 @@ def restart_graph_driver(driver, browser: str, headless: bool, reason: str):
 
 
 def obtain_graph_token_via_browser() -> str:
-    browser = os.getenv("AGENDA_BROWSER", "safari").strip().lower() or "safari"
+    default_browser = "safari" if sys.platform == "darwin" else "chrome"
+    browser = os.getenv("AGENDA_BROWSER", default_browser).strip().lower() or default_browser
     if browser not in {"safari", "chrome"}:
-        browser = "safari"
+        browser = default_browser
+    if browser == "safari" and sys.platform != "darwin":
+        browser = "chrome"
     headless = os.getenv("AGENDA_HEADLESS", "").strip().lower() in {"1", "true", "yes"}
     username = os.getenv("MS_USERNAME", "").strip()
     password = os.getenv("MS_PASSWORD", "").strip()
@@ -1939,6 +2059,9 @@ def obtain_graph_token_via_browser() -> str:
                     )
                 except TimeoutException:
                     password_field = None
+                except (NoSuchWindowException, WebDriverException) as exc:
+                    password_field = None
+                    log(f"Password step unavailable after account selection. Continuing. reason={exc.__class__.__name__}")
 
                 password_used = False
                 if password_field:
@@ -1969,6 +2092,8 @@ def obtain_graph_token_via_browser() -> str:
                         sign_in_button_after_password.click()
                     except Exception:
                         log("Failed to click final sign-in button. Continuing.")
+                except (NoSuchWindowException, WebDriverException) as exc:
+                    log(f"Microsoft continue step unavailable. Continuing. reason={exc.__class__.__name__}")
 
                 try:
                     send_me_push_button = WebDriverWait(driver, 10).until(
@@ -1981,6 +2106,8 @@ def obtain_graph_token_via_browser() -> str:
                     time.sleep(10)
                 except TimeoutException:
                     log("DUO push button not found. Continuing.")
+                except NoSuchWindowException as exc:
+                    log(f"DUO step unavailable because auth window closed. Continuing token recovery. reason={exc.__class__.__name__}")
                 except (WebDriverException, ProtocolError, OSError) as exc:
                     if is_browser_transport_error(exc):
                         log(f"Browser automation reset while checking DUO. Continuing token recovery. error={exc}")
@@ -1994,6 +2121,8 @@ def obtain_graph_token_via_browser() -> str:
                     stay_signed_in_button.click()
                 except TimeoutException:
                     pass
+                except NoSuchWindowException as exc:
+                    log(f"Stay-signed-in prompt unavailable because auth window closed. Continuing. reason={exc.__class__.__name__}")
                 except (WebDriverException, ProtocolError, OSError) as exc:
                     if is_browser_transport_error(exc):
                         log(f"Browser automation reset while checking stay-signed-in prompt. Continuing. error={exc}")
@@ -2077,6 +2206,11 @@ def main() -> None:
         "Content-Type": "application/json",
         "Prefer": 'outlook.timezone="Asia/Jerusalem"',
     }
+    log(
+        "Agenda mail window configured for the last 7 days: "
+        f"{mail_start_local.strftime('%Y-%m-%d %H:%M:%S')} -> "
+        f"{mail_end_local.strftime('%Y-%m-%d %H:%M:%S')}."
+    )
 
     inbox_url = (
         "https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages"
@@ -2159,45 +2293,50 @@ def main() -> None:
         received = parse_graph_timestamp(received_raw)
         cid = message.get("conversationId")
         last_reply = sent_latest_by_conversation.get(cid)
-        if last_reply is None or received is None or last_reply <= received:
-            sender = message.get("from", {}).get("emailAddress", {})
-            to_names = recipient_names(message.get("toRecipients"))
-            to_emails = recipient_emails(message.get("toRecipients"))
-            cc_names = recipient_names(message.get("ccRecipients"))
-            cc_emails = recipient_emails(message.get("ccRecipients"))
-            recipient_role = "Other"
-            if any(term and "@" in term and term in to_emails.lower() for term in tags):
-                recipient_role = "To"
-            elif any(term and "@" in term and term in cc_emails.lower() for term in tags):
-                recipient_role = "Cc"
-            email_rows.append({
-                "Type": "Email Mission",
-                "Direction": "Inbox",
-                "Message Id": message.get("id"),
-                "Conversation Id": message.get("conversationId"),
-                "Title": message.get("subject"),
-                "Owner": sender.get("name"),
-                "Owner Email": sender.get("address"),
-                "To": to_names,
-                "To Emails": to_emails,
-                "Cc": cc_names,
-                "Cc Emails": cc_emails,
-                "Recipient Role": recipient_role,
-                "Start Date": convert_graph_datetime_to_israel(received_raw),
-                "Priority": message.get("importance"),
-                "Status": "Unread" if message.get("isRead") is False else "Read",
-                "Preview": message_body_text(message, 1600),
-                "Thread Messages": thread_messages_by_conversation.get(cid, []),
-                "Link": message.get("webLink"),
-                "Customer": infer_project_label({"Title": message.get("subject"), "Owner Email": sender.get("address")}),
-                "Project": infer_project_label({"Title": message.get("subject"), "Owner Email": sender.get("address")}),
-                "Identity Sent In Thread": thread_has_identity_sent_message(
-                    {"Thread Messages": thread_messages_by_conversation.get(cid, [])},
-                    names,
-                    tags,
-                ),
-                "Mission Reason": "No sent reply found after received time",
-            })
+        sender = message.get("from", {}).get("emailAddress", {})
+        to_names = recipient_names(message.get("toRecipients"))
+        to_emails = recipient_emails(message.get("toRecipients"))
+        cc_names = recipient_names(message.get("ccRecipients"))
+        cc_emails = recipient_emails(message.get("ccRecipients"))
+        recipient_role = "Other"
+        if any(term and "@" in term and term in to_emails.lower() for term in tags):
+            recipient_role = "To"
+        elif any(term and "@" in term and term in cc_emails.lower() for term in tags):
+            recipient_role = "Cc"
+        has_later_sent_reply = last_reply is not None and received is not None and last_reply > received
+        email_rows.append({
+            "Type": "Email Mission",
+            "Direction": "Inbox",
+            "Message Id": message.get("id"),
+            "Conversation Id": message.get("conversationId"),
+            "Title": message.get("subject"),
+            "Owner": sender.get("name"),
+            "Owner Email": sender.get("address"),
+            "To": to_names,
+            "To Emails": to_emails,
+            "Cc": cc_names,
+            "Cc Emails": cc_emails,
+            "Recipient Role": recipient_role,
+            "Start Date": convert_graph_datetime_to_israel(received_raw),
+            "Priority": message.get("importance"),
+            "Status": "Unread" if message.get("isRead") is False else "Read",
+            "Preview": message_body_text(message, 1600),
+            "Thread Messages": thread_messages_by_conversation.get(cid, []),
+            "Link": message.get("webLink"),
+            "Customer": infer_project_label({"Title": message.get("subject"), "Owner Email": sender.get("address")}),
+            "Project": infer_project_label({"Title": message.get("subject"), "Owner Email": sender.get("address")}),
+            "Identity Sent In Thread": thread_has_identity_sent_message(
+                {"Thread Messages": thread_messages_by_conversation.get(cid, [])},
+                names,
+                tags,
+            ),
+            "Has Later Sent Reply": has_later_sent_reply,
+            "Mission Reason": (
+                "Configured identity already sent a later reply"
+                if has_later_sent_reply
+                else "No sent reply found after received time"
+            ),
+        })
 
     for message in sent:
         sent_raw = message.get("sentDateTime")
@@ -2212,8 +2351,6 @@ def main() -> None:
         cc_emails = recipient_emails(message.get("ccRecipients"))
         subject = message.get("subject")
         preview = message_body_text(message, 1600)
-        if not is_actionable_text(f"{subject or ''} {preview or ''}") and not is_followup_text(f"{subject or ''} {preview or ''}"):
-            continue
         email_rows.append({
             "Type": "Email Follow Up",
             "Direction": "Sent",
@@ -2296,6 +2433,7 @@ def main() -> None:
         me_profile,
         tuning,
     )
+    log(f"Finalizing agenda output with provider={ai_provider}.")
     missions = [
         *agenda_sections.get("tasks", []),
         *agenda_sections.get("needReply", []),

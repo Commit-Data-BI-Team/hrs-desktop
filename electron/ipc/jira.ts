@@ -258,6 +258,21 @@ type JiraEpic = {
   summary: string
 }
 
+type JiraIssueCreatePayload = {
+  parentIssueKey: string
+  summary: string
+  description?: string
+  estimateSeconds?: number | null
+}
+
+type JiraCreatedIssue = {
+  id?: string
+  key: string
+  summary: string
+  parentIssueKey: string
+  estimateSeconds: number
+}
+
 const E2E_EPICS: JiraEpic[] = [
   { key: 'VDA-98', summary: 'Weizmann Institute of Science' },
   { key: 'VDA-147', summary: 'Microsoft' }
@@ -340,6 +355,169 @@ function validateEpicKey(value: unknown): string {
   return key
 }
 
+function adfTextDocument(text: string) {
+  const paragraphs = text
+    .split(/\n{2,}/)
+    .map(paragraph => paragraph.trim())
+    .filter(Boolean)
+
+  return {
+    type: 'doc',
+    version: 1,
+    content: (paragraphs.length ? paragraphs : ['']).map(paragraph => ({
+      type: 'paragraph',
+      content: paragraph
+        ? [
+            {
+              type: 'text',
+              text: paragraph
+            }
+          ]
+        : []
+    }))
+  }
+}
+
+function clearWorkItemCaches(parentIssueKey: string) {
+  for (const key of Array.from(jiraCache.keys())) {
+    if (key.includes(parentIssueKey)) {
+      jiraCache.delete(key)
+    }
+  }
+  const detailsStore = jiraStore.get('workItemDetails') ?? {}
+  delete detailsStore[parentIssueKey]
+  jiraStore.set('workItemDetails', detailsStore)
+  const lightStore = jiraStore.get('workItemsLight') ?? {}
+  delete lightStore[parentIssueKey]
+  jiraStore.set('workItemsLight', lightStore)
+}
+
+function validateCreateIssuePayload(payload: unknown): JiraIssueCreatePayload {
+  const safe = validateExactObject<{
+    parentIssueKey?: unknown
+    summary?: unknown
+    description?: unknown
+    estimateSeconds?: unknown
+  }>(
+    payload ?? {},
+    ['parentIssueKey', 'summary', 'description', 'estimateSeconds'],
+    'jira issue create payload'
+  )
+  const estimateSeconds =
+    safe.estimateSeconds === null || safe.estimateSeconds === undefined
+      ? null
+      : validateNumberRange(safe.estimateSeconds, 0, 60 * 60 * 24 * 365, { integer: true })
+  return {
+    parentIssueKey: validateEpicKey(safe.parentIssueKey),
+    summary: validateStringLength(safe.summary, 1, 255),
+    description: validateOptionalString(safe.description, { min: 0, max: 10000 }) ?? undefined,
+    estimateSeconds
+  }
+}
+
+function formatJiraEstimateText(seconds: number) {
+  const totalMinutes = Math.max(1, Math.round(seconds / 60))
+  const hours = Math.floor(totalMinutes / 60)
+  const minutes = totalMinutes % 60
+  if (hours > 0 && minutes > 0) return `${hours}h ${minutes}m`
+  if (hours > 0) return `${hours}h`
+  return `${minutes}m`
+}
+
+async function fetchJiraIssueEstimateSeconds(issueKey: string) {
+  const issue = (await jiraRequest(
+    `/rest/api/3/issue/${encodeURIComponent(issueKey)}?fields=timeoriginalestimate,timetracking`
+  )) as {
+    fields?: {
+      timeoriginalestimate?: number | null
+      timetracking?: {
+        originalEstimateSeconds?: number | null
+      } | null
+    }
+  }
+  return (
+    issue.fields?.timeoriginalestimate ??
+    issue.fields?.timetracking?.originalEstimateSeconds ??
+    0
+  )
+}
+
+async function setJiraIssueOriginalEstimate(issueKey: string, estimateSeconds: number) {
+  const estimateText = formatJiraEstimateText(estimateSeconds)
+  console.log(
+    '[FICTIVE TASK JIRA ESTIMATE]',
+    `issue=${issueKey}`,
+    `estimateSeconds=${estimateSeconds}`,
+    `estimateText=${estimateText}`
+  )
+  await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}`, {
+    method: 'PUT',
+    body: JSON.stringify({
+      fields: {
+        timetracking: {
+          originalEstimate: estimateText,
+          remainingEstimate: estimateText
+        }
+      }
+    })
+  })
+  const storedEstimateSeconds = await fetchJiraIssueEstimateSeconds(issueKey)
+  console.log(
+    '[FICTIVE TASK JIRA ESTIMATE]',
+    `issue=${issueKey}`,
+    `storedEstimateSeconds=${storedEstimateSeconds}`
+  )
+  if (storedEstimateSeconds !== estimateSeconds) {
+    throw new Error(
+      `Jira created ${issueKey}, but stored original estimate is ${formatJiraEstimateText(storedEstimateSeconds)} instead of ${estimateText}. Check that Time Tracking is editable for this Jira issue type.`
+    )
+  }
+}
+
+async function createJiraIssueUnderParent(payload: JiraIssueCreatePayload): Promise<JiraCreatedIssue> {
+  const parent = (await jiraRequest(
+    `/rest/api/3/issue/${encodeURIComponent(payload.parentIssueKey)}?fields=project,issuetype`
+  )) as {
+    fields?: {
+      project?: {
+        key?: string | null
+      } | null
+    }
+  }
+  const projectKey = parent.fields?.project?.key
+  if (!projectKey) {
+    throw new Error(`Jira parent ${payload.parentIssueKey} does not expose a project key`)
+  }
+
+  const fields: Record<string, unknown> = {
+    project: { key: projectKey },
+    parent: { key: payload.parentIssueKey },
+    summary: payload.summary,
+    issuetype: { name: 'Task' },
+    description: adfTextDocument(payload.description || payload.summary)
+  }
+  const created = (await jiraRequest('/rest/api/3/issue', {
+    method: 'POST',
+    body: JSON.stringify({ fields })
+  })) as { id?: string; key?: string }
+
+  if (!created.key) {
+    throw new Error('Jira did not return a key for the created issue')
+  }
+  const createdIssueKey = validateJiraIssueKey(created.key)
+  if (payload.estimateSeconds && payload.estimateSeconds > 0) {
+    await setJiraIssueOriginalEstimate(createdIssueKey, payload.estimateSeconds)
+  }
+  clearWorkItemCaches(payload.parentIssueKey)
+  return {
+    id: created.id,
+    key: createdIssueKey,
+    summary: payload.summary,
+    parentIssueKey: payload.parentIssueKey,
+    estimateSeconds: payload.estimateSeconds ?? 0
+  }
+}
+
 export function registerJiraIpc() {
   if (JIRA_E2E) {
     let mappings: Record<string, string> = {
@@ -399,6 +577,33 @@ export function registerJiraIpc() {
     ipcMain.handle('jira:getWorkItemDetails', async (_event, epicKey: string) => {
       const safeEpicKey = validateEpicKey(epicKey)
       return { items: E2E_WORK_ITEMS_BY_EPIC[safeEpicKey] ?? [], partial: false }
+    })
+    ipcMain.handle('jira:createIssue', async (_event, payload: unknown) => {
+      const safe = validateCreateIssuePayload(payload)
+      const issueKey = `${safe.parentIssueKey.split('-')[0]}-${Date.now()}`
+      const created: JiraWorkItem = {
+        key: issueKey,
+        summary: safe.summary,
+        timespent: 0,
+        estimateSeconds: safe.estimateSeconds ?? 0,
+        assigneeName: 'Unassigned',
+        statusName: 'To Do',
+        subtasks: [],
+        worklogs: [],
+        worklogTotal: 0,
+        lastWorklog: null
+      }
+      E2E_WORK_ITEMS_BY_EPIC[safe.parentIssueKey] = [
+        created,
+        ...(E2E_WORK_ITEMS_BY_EPIC[safe.parentIssueKey] ?? [])
+      ]
+      return {
+        id: `e2e-${Date.now()}`,
+        key: created.key,
+        summary: created.summary,
+        parentIssueKey: safe.parentIssueKey,
+        estimateSeconds: created.estimateSeconds
+      }
     })
     ipcMain.handle('jira:getIssueWorklogs', async () => [])
     ipcMain.handle('jira:addWorklog', async () => ({
@@ -740,6 +945,10 @@ export function registerJiraIpc() {
     const safeIssueKey = validateJiraIssueKey(issueKey)
     const worklogs = await fetchAllWorklogs(safeIssueKey)
     return normalizeWorklogs(worklogs)
+  })
+
+  ipcMain.handle('jira:createIssue', async (_event, payload: unknown) => {
+    return createJiraIssueUnderParent(validateCreateIssuePayload(payload))
   })
 
   ipcMain.handle(

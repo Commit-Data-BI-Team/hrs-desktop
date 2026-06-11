@@ -19,6 +19,7 @@ import {
   Popover,
   Progress,
   Select,
+  SegmentedControl,
   SimpleGrid,
   Stack,
   Switch,
@@ -44,6 +45,8 @@ import {
   IconSettings,
   IconUsers,
   IconTrash,
+  IconPencil,
+  IconX,
   IconChevronDown,
   IconChevronRight,
   IconInfoCircle
@@ -129,7 +132,23 @@ type AgendaItem = {
   sourceSender?: string
   sourceSenderEmail?: string
   relevanceScore?: number
+  sourceRole?: string
+  sourceType?: string
+  directAskEvidence?: string
+  latestMessageFromIdentity?: boolean
+  ccOnly?: boolean
+  latestAt?: string
+  threadTimeline?: Array<{
+    time?: string
+    from?: string
+    direction?: string
+    preview?: string
+  }>
   aiSource?: 'openai' | 'local' | string
+  titleHe?: string
+  summaryHe?: string
+  suggestedActionHe?: string
+  reasonHe?: string
 }
 
 type AgendaSections = {
@@ -157,6 +176,42 @@ type MonthlyReport = {
   weekend: string
 }
 
+type ReportSource = 'hrs' | 'supabase'
+
+type SupabaseProfile = {
+  id: string
+  email: string
+  employee_id: number | null
+  display_name: string | null
+  role: 'manager' | 'employee'
+}
+
+type SupabaseStatus = {
+  configured: boolean
+  url: string
+  hasPublishableKey: boolean
+  email: string | null
+  profile: SupabaseProfile | null
+}
+
+type SupabaseWorkReportRow = {
+  id: string
+  employee_id: number
+  employee_name: string
+  customer: string
+  project: string | null
+  task_id: number | null
+  task_name: string
+  report_date: string
+  seconds: number
+  comment: string | null
+  reporting_from: string | null
+  from_time: string | null
+  to_time: string | null
+  source: string
+  synced_at?: string
+}
+
 type EmployeeAdminItem = {
   id: string
   priorityId: string
@@ -181,9 +236,18 @@ type EmployeeAccessResult = {
   hasAccess: boolean
   hasEmployees: boolean
   currentEmployeeName: string | null
+  currentEmployee: EmployeeAdminItem | null
   employees: EmployeeAdminItem[]
   allEmployeesCount: number
   source: 'directReports' | 'accessibleRows' | 'none'
+}
+
+type HrsIdentity = {
+  employeeId: string | null
+  employeeName: string | null
+  email: string | null
+  username: string | null
+  source: 'employee_admin' | 'api_payload' | 'html' | 'credentials' | 'none'
 }
 
 type EmployeeHoursEntry = {
@@ -504,12 +568,17 @@ const AGENDA_HIDDEN_SENDERS_STORAGE_KEY = 'hrs-agenda-hidden-senders'
 const AGENDA_IMPORTANT_STORAGE_KEY = 'hrs-agenda-important'
 const AGENDA_CONVERTED_TASKS_STORAGE_KEY = 'hrs-agenda-converted-tasks'
 const AGENDA_CACHE_STORAGE_KEY = 'hrs-agenda-cache-v1'
+const AGENDA_LANGUAGE_STORAGE_KEY = 'hrs-agenda-language'
+const AGENDA_UI_ENABLED = false
 const HRS_CREDENTIAL_RESET_REQUEST_KEY = 'hrs-credential-reset-request'
+const REPORT_CUSTOMER_ALIASES_STORAGE_KEY = 'hrs-report-customer-aliases-v1'
+const REPORT_MISSION_MAP_STORAGE_KEY = 'hrs-report-mission-map-v1'
+const MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY = 'hrs-meeting-excluded-subjects-v1'
 const EMPLOYEE_REPORT_ALL_VALUE = '__all_employees__'
 const EXCLUDED_EMPLOYEE_NAMES = new Set(['ronen amsalem'])
 const THEME_MODE_STORAGE_KEY = 'hrs-theme-mode'
 
-type ThemeMode = 'dark' | 'oled' | 'liquid'
+type ThemeMode = 'dark' | 'oled' | 'liquid' | 'h4c37'
 
 const THEME_MODE_OPTIONS: Array<{ value: ThemeMode; label: string; description: string }> = [
   {
@@ -524,24 +593,31 @@ const THEME_MODE_OPTIONS: Array<{ value: ThemeMode; label: string; description: 
   },
   {
     value: 'liquid',
-    label: 'Liquid Glass',
-    description: 'Layered translucent surfaces with stronger depth.'
+    label: 'Black&White',
+    description: 'Sharp monochrome glass with clean contrast.'
+  },
+  {
+    value: 'h4c37',
+    label: 'H4C37',
+    description: 'Terminal-grade command stream with green, white, and red signal colors.'
   }
 ]
 
-const AGENDA_LOADING_MESSAGES = [
-  'Sorting the signal from the inbox noise.',
-  'Looking for threads where you own the next move.',
-  'Separating FYI updates from real project work.',
-  'Finding replies, blockers, decisions, and follow-ups.',
-  'Letting OpenAI compress the messy parts into action.',
-  'Removing passive CC threads and stale notifications.'
+const AGENDA_FALLBACK_FACTS = [
+  'Octopuses have blue blood because they use copper-rich hemocyanin to move oxygen.',
+  'The oldest known writing systems appeared in Mesopotamia and Egypt more than 5,000 years ago.',
+  'A teaspoon of neutron-star matter would weigh billions of tons on Earth.',
+  'The Suez Canal opened in 1869 and shortened sea travel between Europe and Asia dramatically.',
+  'Honey rarely spoils because it has low water content, high acidity, and natural antimicrobial compounds.',
+  'The word algorithm comes from the name of the Persian mathematician Al-Khwarizmi.',
+  'Bananas are berries botanically, while strawberries are not true berries.',
+  'The first programmable computer concept was described by Charles Babbage in the 1830s.'
 ]
 
 function readThemeMode(): ThemeMode {
   try {
     const storedMode = localStorage.getItem(THEME_MODE_STORAGE_KEY)
-    if (storedMode === 'dark' || storedMode === 'oled' || storedMode === 'liquid') {
+    if (storedMode === 'dark' || storedMode === 'oled' || storedMode === 'liquid' || storedMode === 'h4c37') {
       return storedMode
     }
     return localStorage.getItem('hrs-oled') === '1' ? 'oled' : 'dark'
@@ -574,6 +650,47 @@ function safeGetLocalStorageRecord(key: string): Record<string, boolean> {
   }
 }
 
+function safeGetLocalStorageStringRecord(key: string): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([entryKey, value]) => [entryKey, String(value ?? '').trim()] as const)
+        .filter(([entryKey, value]) => entryKey.trim() && value)
+    )
+  } catch {
+    return {}
+  }
+}
+
+function safeGetLocalStorageStringArrayRecord(key: string): Record<string, string[]> {
+  try {
+    const raw = localStorage.getItem(key)
+    if (!raw) return {}
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return {}
+    return Object.fromEntries(
+      Object.entries(parsed)
+        .map(([entryKey, value]) => [
+          entryKey,
+          Array.from(
+            new Set(
+              (Array.isArray(value) ? value : [])
+                .map(item => String(item ?? '').trim())
+                .filter(Boolean)
+            )
+          )
+        ] as const)
+        .filter(([entryKey, value]) => entryKey.trim() && value.length)
+    )
+  } catch {
+    return {}
+  }
+}
+
 function getAgendaItemKey(item: AgendaItem): string {
   return [
     item.kind || item.category || item.Type || 'agenda',
@@ -594,6 +711,20 @@ function getAgendaThreadKey(item: AgendaItem): string {
   return normalizeText(item.threadKey || item.id || item.Title || item.title || '')
 }
 
+function getAgendaDedupeKey(item: AgendaItem): string {
+  const sourceIds = Array.isArray(item.sourceIds) ? item.sourceIds.filter(Boolean).join('|') : ''
+  return normalizeText(
+    item.threadKey ||
+      sourceIds ||
+      item.id ||
+      item.sourceTitle ||
+      item.Title ||
+      item.title ||
+      item.actionTitle ||
+      ''
+  )
+}
+
 function getAgendaSenderKey(item: AgendaItem): string {
   return normalizeText(
     item.sourceSenderEmail ||
@@ -607,6 +738,32 @@ function getAgendaSenderKey(item: AgendaItem): string {
 }
 
 function getAgendaProjectLabel(item: AgendaItem): string {
+  const blob = [
+    item.project,
+    item.customer,
+    item.sourceTitle,
+    item.Title,
+    item.title,
+    item.actionTitle,
+    item.summary,
+    item.brief,
+    item.Preview
+  ]
+    .filter(Boolean)
+    .join(' ')
+    .toLowerCase()
+  const knownProjects: Array<[string, string[]]> = [
+    ['VRPathways', ['vrpathways', 'vr pathways', 'vr-pathways']],
+    ['Geotwins', ['geotwins', 'geo twins', 'geo-twins']],
+    ['CBS', ['cbs price', 'cbs']],
+    ['Weizmann', ['weizmann']],
+    ['Valinor', ['valinor']],
+    ['AGMA', ['agma']],
+    ['Exponet', ['exponet']]
+  ]
+  for (const [label, terms] of knownProjects) {
+    if (terms.some(term => blob.includes(term))) return label
+  }
   const label =
     item.project ||
     item.customer ||
@@ -617,26 +774,72 @@ function getAgendaProjectLabel(item: AgendaItem): string {
   return label.trim() || 'General'
 }
 
-function agendaCategoryColor(category: string | undefined): string {
-  switch (category) {
-    case 'reply':
-      return 'blue'
-    case 'task':
-      return 'orange'
-    case 'followup':
-      return 'yellow'
-    case 'meetingPrep':
-      return 'teal'
-    case 'projectSignal':
-    case 'summary':
-      return 'grape'
-    case 'meeting':
-      return 'teal'
-    case 'info':
-      return 'gray'
-    default:
-      return 'cyan'
-  }
+function agendaPriorityRank(item: AgendaItem): number {
+  const priority = String(item.priority || item.Priority || '').toLowerCase()
+  if (priority === 'high') return 0
+  if (priority === 'medium') return 1
+  if (priority === 'low') return 2
+  return 3
+}
+
+function agendaItemIsFyi(item: AgendaItem): boolean {
+  const category = item.category || item.kind
+  if (category === 'projectSignal' && agendaPriorityRank(item) > 1) return true
+  return Boolean(item.ccOnly && !item.directAskEvidence && category !== 'followup')
+}
+
+function agendaItemTimestamp(item: AgendaItem): string {
+  return item.latestAt || item.whenLabel || item['Start Date'] || ''
+}
+
+function getAgendaSourceLabel(item: AgendaItem): string {
+  const source = item.sourceType || (item.aiSource === 'openai' || item.aiSource === 'local' ? 'Outlook' : 'Source')
+  const role = item.sourceRole ? ` · ${item.sourceRole}` : ''
+  const date = agendaItemTimestamp(item)
+  return [source + role, date].filter(Boolean).join(' · ')
+}
+
+function getAgendaStatusBullet(item: AgendaItem): string {
+  const raw =
+    item.suggestedAction ||
+    item.actionTitle ||
+    item.summary ||
+    item.brief ||
+    item.Preview ||
+    item.title ||
+    item.Title ||
+    'Review latest update.'
+  const normalized = raw
+    .replace(/\s+/g, ' ')
+    .replace(/^[-•\s]+/, '')
+    .trim()
+  const sentence = normalized.split(/(?<=[.!?])\s+/)[0] || normalized
+  if (sentence.length <= 118) return sentence
+  return `${sentence.slice(0, 115).trim()}...`
+}
+
+function getAgendaItemTitle(item: AgendaItem, language: 'en' | 'he'): string {
+  if (language === 'he' && item.titleHe?.trim()) return item.titleHe.trim()
+  return item.title || item.actionTitle || item.Title || item.sourceTitle || 'Untitled agenda item'
+}
+
+function getAgendaItemSummary(item: AgendaItem, language: 'en' | 'he'): string {
+  if (language === 'he' && item.summaryHe?.trim()) return item.summaryHe.trim()
+  return item.summary || item.brief || item.Preview || 'No summary available.'
+}
+
+function getAgendaItemAction(item: AgendaItem, language: 'en' | 'he'): string {
+  if (language === 'he' && item.suggestedActionHe?.trim()) return item.suggestedActionHe.trim()
+  return item.suggestedAction || ''
+}
+
+function getAgendaItemReason(item: AgendaItem, language: 'en' | 'he'): string {
+  if (language === 'he' && item.reasonHe?.trim()) return item.reasonHe.trim()
+  return item.reason || item.directAskEvidence || ''
+}
+
+function getAgendaSourceLink(item: AgendaItem): string {
+  return item.link || item.Link || ''
 }
 
 function splitAgendaTerms(value: string): string[] {
@@ -831,6 +1034,85 @@ function normalizeHoursInputToHHMM(value: string): string | null {
   const minutes = parseHoursInputToMinutes(value)
   if (!minutes) return null
   return minutesToHHMM(minutes)
+}
+
+function secondsToHHMM(seconds: number): string {
+  const safeSeconds = Number.isFinite(seconds) && seconds > 0 ? seconds : 0
+  return minutesToHHMM(Math.round(safeSeconds / 60))
+}
+
+function createEmptyMonthlyReport(startDate: string, endDate: string): MonthlyReport {
+  const start = dayjs(startDate)
+  const end = dayjs(endDate)
+  const days: WorkReportDay[] = []
+  let cursor = start
+  while (cursor.isBefore(end) || cursor.isSame(end, 'day')) {
+    days.push({
+      date: cursor.format('YYYY-MM-DD'),
+      minWorkLog: 9,
+      isHoliday: false,
+      reports: []
+    })
+    cursor = cursor.add(1, 'day')
+  }
+  return {
+    totalHoursNeeded: 0,
+    totalHours: 0,
+    closed_date: '',
+    totalDays: days.length,
+    days,
+    weekend: 'Fri-Sat'
+  }
+}
+
+function monthlyReportFromSupabaseRows(
+  rows: SupabaseWorkReportRow[],
+  startDate: string,
+  endDate: string
+): MonthlyReport {
+  const report = createEmptyMonthlyReport(startDate, endDate)
+  const dayMap = new Map(report.days.map(day => [day.date, day]))
+  for (const row of rows) {
+    const dateKey = normalizeReportDateKey(row.report_date)
+    const day = dayMap.get(dateKey)
+    if (!day) continue
+    day.reports.push({
+      taskId: row.task_id ?? 0,
+      taskName: row.task_name,
+      projectInstance: row.project || row.customer,
+      hours_HHMM: secondsToHHMM(row.seconds),
+      comment: row.comment || '',
+      reporting_from: row.reporting_from || '',
+      from: row.from_time || undefined,
+      to: row.to_time || undefined
+    })
+  }
+  report.totalHours = recalculateMonthlyHours(report.days)
+  return report
+}
+
+function buildSupabaseReportId(parts: {
+  employeeId: string | number
+  date: string
+  taskId: string | number
+  customer: string
+  project: string
+  externalTaskKey?: string | null
+  comment: string
+  index: number
+}) {
+  const raw = [
+    'hrs',
+    parts.employeeId,
+    parts.date,
+    parts.taskId,
+    normalizeText(parts.customer).slice(0, 80),
+    normalizeText(parts.project).slice(0, 80),
+    normalizeText(parts.externalTaskKey ?? '').slice(0, 80),
+    normalizeText(parts.comment).slice(0, 80),
+    parts.index
+  ].join('|')
+  return raw.replace(/\s+/g, ' ').trim()
 }
 
 function formatTimeFromDate(date: Date): string {
@@ -1096,6 +1378,10 @@ function getMeetingKey(meeting: MeetingItem) {
 
 function normalizeText(value: string) {
   return value.trim().toLowerCase().replace(/\s+/g, ' ')
+}
+
+function getCustomerAliasKey(customer: string) {
+  return normalizeText(customer || 'No customer').toLowerCase()
 }
 
 function getMeetingSubjectKey(subject: string) {
@@ -1370,11 +1656,59 @@ function getMissionCommentMarker(mission: ProjectMission) {
   return `[HRS-PM:${mission.id}]`
 }
 
+function getMissionIdFromCommentMarker(comment?: string | null) {
+  const match = (comment ?? '').match(/\[HRS-PM:([^\]]+)\]/i)
+  return match?.[1]?.trim() || null
+}
+
 function stripMissionCommentMarkers(comment?: string | null) {
   return (comment ?? '')
-    .replace(/\s*\[HRS-PM:[^\]]+\]\s*/g, ' ')
+    .replace(/\s*\[HRS-PM:[^\]]+\]\s*/gi, ' ')
     .replace(/\s+/g, ' ')
     .trim()
+}
+
+function buildReportMissionMapKey(parts: {
+  date: string
+  taskId: number | string
+  hoursHHMM: string
+  comment?: string | null
+  reportingFrom?: string | null
+}) {
+  return [
+    dayjs(parts.date).format('YYYY-MM-DD'),
+    String(parts.taskId),
+    parts.hoursHHMM,
+    normalizeText(stripMissionCommentMarkers(parts.comment)).toLowerCase(),
+    normalizeText(parts.reportingFrom ?? '').toLowerCase()
+  ].join('|')
+}
+
+function findMappedMissionForReport(
+  missions: ProjectMission[],
+  missionMap: Record<string, string>,
+  parts: {
+    date: string
+    taskId: number | string
+    hoursHHMM: string
+    comment?: string | null
+    reportingFrom?: string | null
+  }
+) {
+  const legacyMissionId = getMissionIdFromCommentMarker(parts.comment)
+  const missionId =
+    legacyMissionId ||
+    missionMap[
+      buildReportMissionMapKey({
+        date: parts.date,
+        taskId: parts.taskId,
+        hoursHHMM: parts.hoursHHMM,
+        comment: parts.comment,
+        reportingFrom: parts.reportingFrom
+      })
+    ]
+  if (!missionId) return null
+  return missions.find(mission => mission.id === missionId) ?? null
 }
 
 function formatLastWorklog(lastWorklog?: JiraWorklogEntry | null) {
@@ -1506,6 +1840,8 @@ const JIRA_EPICS_RETRY_MS = 60000
 const SESSION_TIMEOUT_MS = 30000
 const SESSION_RETRY_LIMIT = 2
 const AUTO_LOGIN_RETRY_COOLDOWN_MS = 60000
+const AUTO_LOGIN_DUO_POLL_MS = 3500
+const AUTO_LOGIN_DUO_WAIT_MS = 120000
 const CURRENT_MONTH_REFRESH_INTERVAL_MS = 60000
 const JIRA_PREFETCH_TIMEOUT_MS = 120000
 const JIRA_LIGHT_PREFETCH_TIMEOUT_MS = 45000
@@ -1609,6 +1945,7 @@ export default function App() {
     setThemeMode(current => {
       if (current === 'dark') return 'oled'
       if (current === 'oled') return 'liquid'
+      if (current === 'liquid') return 'h4c37'
       return 'dark'
     })
   }
@@ -1720,6 +2057,24 @@ export default function App() {
   const [monthlyReport, setMonthlyReport] = useState<MonthlyReport | null>(null)
   const [currentMonthReport, setCurrentMonthReport] = useState<MonthlyReport | null>(null)
   const [currentMonthKey, setCurrentMonthKey] = useState<string | null>(null)
+  const [reportSource, setReportSource] = useState<ReportSource>('hrs')
+  const [supabaseStatus, setSupabaseStatus] = useState<SupabaseStatus | null>(null)
+  const [supabaseUrl, setSupabaseUrl] = useState('https://qyafofkruvflczsxhqbt.supabase.co')
+  const [supabasePublishableKey, setSupabasePublishableKey] = useState(
+    'sb_publishable_kK0PgoUdPPovoKWd6S3MWw_2ZeKNajY'
+  )
+  const [supabaseEmail, setSupabaseEmail] = useState('')
+  const [supabasePassword, setSupabasePassword] = useState('')
+  const [supabaseDisplayName, setSupabaseDisplayName] = useState('')
+  const [supabaseEmployeeId, setSupabaseEmployeeId] = useState('')
+  const [supabaseHrsIdentity, setSupabaseHrsIdentity] = useState<HrsIdentity | null>(null)
+  const [supabaseIdentityLoading, setSupabaseIdentityLoading] = useState(false)
+  const [supabaseLoading, setSupabaseLoading] = useState(false)
+  const [supabaseSyncing, setSupabaseSyncing] = useState(false)
+  const [supabaseError, setSupabaseError] = useState<string | null>(null)
+  const [supabaseMessage, setSupabaseMessage] = useState<string | null>(null)
+  const supabaseAutoSetupRef = useRef('')
+  const [supabaseReportRows, setSupabaseReportRows] = useState<SupabaseWorkReportRow[]>([])
   const [reportWorkLogsByDate, setReportWorkLogsByDate] = useState<
     Record<string, ReportLogEntry[]>
   >({})
@@ -1802,6 +2157,15 @@ export default function App() {
   const [projectManagementAudit, setProjectManagementAudit] = useState<SyncAuditEntry[]>([])
   const [projectManagementLoading, setProjectManagementLoading] = useState(false)
   const [projectManagementError, setProjectManagementError] = useState<string | null>(null)
+  const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null)
+  const [slackToken, setSlackToken] = useState('')
+  const [slackChannels, setSlackChannels] = useState<SlackChannelOption[]>([])
+  const [slackLoading, setSlackLoading] = useState(false)
+  const [slackError, setSlackError] = useState<string | null>(null)
+  const [slackMessage, setSlackMessage] = useState<string | null>(null)
+  const [slackMappingCustomer, setSlackMappingCustomer] = useState<string | null>(null)
+  const [slackMappingChannel, setSlackMappingChannel] = useState<string | null>(null)
+  const [slackManualChannelId, setSlackManualChannelId] = useState('')
   const [projectDashboardCustomer, setProjectDashboardCustomer] = useState<string | null>(null)
   const [projectDashboardProject, setProjectDashboardProject] = useState<string | null>(null)
   const [missionName, setMissionName] = useState('')
@@ -1820,6 +2184,7 @@ export default function App() {
   const [quickFictiveCappedHours, setQuickFictiveCappedHours] = useState<string | number>('')
   const [quickFictiveNotes, setQuickFictiveNotes] = useState('')
   const [quickFictiveError, setQuickFictiveError] = useState<string | null>(null)
+  const [quickFictiveJiraParentKey, setQuickFictiveJiraParentKey] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
   const [jiraLoggedEntries, setJiraLoggedEntries] = useState<
     Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
@@ -1855,6 +2220,7 @@ export default function App() {
   const [meetingsProgress, setMeetingsProgress] = useState<string | null>(null)
   const [meetingsProgressLog, setMeetingsProgressLog] = useState<string[]>([])
   const [meetingsFetchPhase, setMeetingsFetchPhase] = useState<MeetingsFetchPhase>('idle')
+  const [meetingsDuoPromptActive, setMeetingsDuoPromptActive] = useState(false)
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [trayMeetingsProgressOpen, setTrayMeetingsProgressOpen] = useState(false)
@@ -1865,9 +2231,10 @@ export default function App() {
     Record<string, { updatedAt: string; meetings: MeetingItem[] }>
   >({})
   const [meetingClientMappings, setMeetingClientMappings] = useState<Record<string, string>>({})
-  const [meetingExcludedSubjects, setMeetingExcludedSubjects] = useState<Record<string, string[]>>({})
+  const [meetingExcludedSubjects, setMeetingExcludedSubjects] = useState<Record<string, string[]>>(() =>
+    safeGetLocalStorageStringArrayRecord(MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY)
+  )
   const [meetingDomainFilter, setMeetingDomainFilter] = useState<string | null>(null)
-  const [agendaSettingsOpen, setAgendaSettingsOpen] = useState(false)
   const [agendaLoading, setAgendaLoading] = useState(false)
   const [agendaError, setAgendaError] = useState<string | null>(null)
   const [agendaProgress, setAgendaProgress] = useState<string | null>(null)
@@ -1922,8 +2289,15 @@ export default function App() {
     if (typeof window === 'undefined') return {}
     return safeGetLocalStorageRecord(AGENDA_CONVERTED_TASKS_STORAGE_KEY)
   })
+  const [agendaLanguage, setAgendaLanguage] = useState<'en' | 'he'>(() => {
+    if (typeof window === 'undefined') return 'en'
+    return safeGetLocalStorageString(AGENDA_LANGUAGE_STORAGE_KEY) === 'he' ? 'he' : 'en'
+  })
   const [agendaShowResolved, setAgendaShowResolved] = useState(false)
-  const [agendaLoadingMessageIndex, setAgendaLoadingMessageIndex] = useState(0)
+  const [agendaFact, setAgendaFact] = useState(
+    () => AGENDA_FALLBACK_FACTS[Math.floor(Math.random() * AGENDA_FALLBACK_FACTS.length)]
+  )
+  const [agendaCustomerFilter, setAgendaCustomerFilter] = useState<string | null>(null)
   const [agendaSummary, setAgendaSummary] = useState<{
     mailWindow: string
     meetingWindow: string
@@ -1931,9 +2305,10 @@ export default function App() {
     meetingsThisWeek: number
     outputDir: string
     brief?: string
-    focus?: string[]
-    aiProvider?: string
-  } | null>(null)
+	    focus?: string[]
+	    aiProvider?: string
+	    savedAt?: string
+	  } | null>(null)
   const [meetingMappingOpen, setMeetingMappingOpen] = useState(false)
   const [meetingMappingMeeting, setMeetingMappingMeeting] = useState<MeetingItem | null>(null)
   const [meetingMappingMeetings, setMeetingMappingMeetings] = useState<MeetingItem[]>([])
@@ -1993,12 +2368,46 @@ export default function App() {
   const [employeeWorkloadEmployeeFilter, setEmployeeWorkloadEmployeeFilter] = useState<string | null>(null)
   const [employeeWorkloadCustomerFilter, setEmployeeWorkloadCustomerFilter] = useState<string | null>(null)
   const [employeeWorkloadTaskFilter, setEmployeeWorkloadTaskFilter] = useState<string | null>(null)
+  const [reportCustomerAliases, setReportCustomerAliases] = useState<Record<string, string>>(() =>
+    safeGetLocalStorageStringRecord(REPORT_CUSTOMER_ALIASES_STORAGE_KEY)
+  )
+  const [reportMissionMap, setReportMissionMap] = useState<Record<string, string>>(() =>
+    safeGetLocalStorageStringRecord(REPORT_MISSION_MAP_STORAGE_KEY)
+  )
+  const [editingCustomerAliasKey, setEditingCustomerAliasKey] = useState<string | null>(null)
+  const [customerAliasDraft, setCustomerAliasDraft] = useState('')
+  const getAgendaCustomerDisplayName = (customer: string | null | undefined) => {
+    const original = customer?.trim() || 'No customer'
+    const alias = reportCustomerAliases[getCustomerAliasKey(original)]?.trim()
+    return alias || original
+  }
+  const openCustomerAliasEditor = (customer: string | null | undefined) => {
+    const original = customer?.trim() || 'No customer'
+    setEditingCustomerAliasKey(getCustomerAliasKey(original))
+    setCustomerAliasDraft(getAgendaCustomerDisplayName(original))
+  }
+  const saveCustomerAlias = (customer: string | null | undefined) => {
+    const original = customer?.trim() || 'No customer'
+    const key = getCustomerAliasKey(original)
+    const nextName = customerAliasDraft.trim()
+    setReportCustomerAliases(prev => {
+      const next = { ...prev }
+      if (!nextName || nextName === original) {
+        delete next[key]
+      } else {
+        next[key] = nextName
+      }
+      return next
+    })
+    setEditingCustomerAliasKey(null)
+    setCustomerAliasDraft('')
+  }
   const [employeeReport, setEmployeeReport] = useState<EmployeeHoursReport | null>(null)
   const [employeeReportLoading, setEmployeeReportLoading] = useState(false)
   const [employeeReportError, setEmployeeReportError] = useState<string | null>(null)
   const [employeeReportSelectedDate, setEmployeeReportSelectedDate] = useState(() => dayjs().format('YYYY-MM-DD'))
   const [trayReportExpandedEpic, setTrayReportExpandedEpic] = useState<string | null>(null)
-  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'mapping' | 'updates'>('access')
+  const [traySettingsTab, setTraySettingsTab] = useState<'access' | 'updates'>('access')
   const [appVersion, setAppVersion] = useState('')
   const [trayDayEditorOpen, setTrayDayEditorOpen] = useState(false)
   const [trayDayEditorDateKey, setTrayDayEditorDateKey] = useState<string | null>(null)
@@ -2084,6 +2493,14 @@ export default function App() {
 
   useEffect(() => {
     try {
+      localStorage.setItem(AGENDA_LANGUAGE_STORAGE_KEY, agendaLanguage)
+    } catch {
+      // Ignore storage errors.
+    }
+  }, [agendaLanguage])
+
+  useEffect(() => {
+    try {
       localStorage.setItem(AGENDA_PERSON_ENGLISH_STORAGE_KEY, agendaPersonEnglish)
       localStorage.setItem(AGENDA_PERSON_HEBREW_STORAGE_KEY, agendaPersonHebrew)
       localStorage.setItem(AGENDA_PERSON_TAGS_STORAGE_KEY, agendaPersonTags)
@@ -2096,11 +2513,12 @@ export default function App() {
     try {
       const raw = localStorage.getItem(AGENDA_CACHE_STORAGE_KEY)
       if (!raw) return
-      const cached = JSON.parse(raw) as {
-        summary?: typeof agendaSummary
-        sections?: Partial<AgendaSections>
-        items?: AgendaItem[]
-      }
+	      const cached = JSON.parse(raw) as {
+	        summary?: typeof agendaSummary
+	        sections?: Partial<AgendaSections>
+	        items?: AgendaItem[]
+	        savedAt?: string
+	      }
       if (!cached || typeof cached !== 'object') return
       const nextSections: AgendaSections = {
         tasks: cached.sections?.tasks ?? [],
@@ -2121,11 +2539,14 @@ export default function App() {
           ...nextSections.emailSummaries
         ]
       )
-      if (cached.summary) {
-        setAgendaSummary(cached.summary)
-        setAgendaFetchPhase('done')
-        setAgendaProgress('Agenda loaded from cache.')
-      }
+	      if (cached.summary) {
+	        setAgendaSummary({
+	          ...cached.summary,
+	          savedAt: cached.summary.savedAt || cached.savedAt
+	        })
+	        setAgendaFetchPhase('done')
+	        setAgendaProgress('Agenda loaded from cache.')
+	      }
     } catch {
       // Ignore malformed agenda cache.
     }
@@ -2176,7 +2597,7 @@ export default function App() {
     }
   }, [agendaConvertedTaskKeys, agendaImportantKeys, agendaSections])
 
-  const agendaItemIsHidden = (item: AgendaItem) => {
+	  const agendaItemIsHidden = (item: AgendaItem) => {
     const itemKey = getAgendaItemKey(item)
     const threadKey = getAgendaThreadKey(item)
     const senderKey = getAgendaSenderKey(item)
@@ -2184,39 +2605,116 @@ export default function App() {
       (itemKey && agendaHiddenItems[itemKey]) ||
         (threadKey && agendaHiddenThreads[threadKey]) ||
         (senderKey && agendaHiddenSenders[senderKey])
-    )
-  }
+	    )
+	  }
 
-  const visibleAgendaItems = useMemo(() => {
-    const items = [
-      ...enhancedAgendaSections.tasks,
-      ...enhancedAgendaSections.needReply,
-      ...enhancedAgendaSections.followUps,
-      ...enhancedAgendaSections.meetingPrep,
-      ...enhancedAgendaSections.projectSignals
-    ]
-    return items.filter(item => {
-      if (agendaItemIsHidden(item)) return false
-      if (!agendaShowResolved && agendaResolvedKeys[getAgendaItemKey(item)]) return false
-      return true
-    })
-  }, [
-    agendaHiddenSenders,
-    agendaHiddenItems,
-    agendaHiddenThreads,
-    agendaResolvedKeys,
-    agendaShowResolved,
-    enhancedAgendaSections
-  ])
+	  const allEnhancedAgendaItems = useMemo(
+	    () => [
+	      ...enhancedAgendaSections.tasks,
+	      ...enhancedAgendaSections.needReply,
+	      ...enhancedAgendaSections.followUps,
+	      ...enhancedAgendaSections.meetingPrep,
+	      ...enhancedAgendaSections.projectSignals
+	    ],
+	    [enhancedAgendaSections]
+	  )
 
-  const visibleAgendaSections = useMemo<AgendaSections>(() => {
-    const filterItems = (items: AgendaItem[]) =>
-      items.filter(item => {
-        if (agendaItemIsHidden(item)) return false
-        if (!agendaShowResolved && agendaResolvedKeys[getAgendaItemKey(item)]) return false
-        return true
-      })
-    return {
+	  const agendaItemsBeforeCustomerFilter = useMemo(() => {
+	    const seen = new Set<string>()
+	    return allEnhancedAgendaItems.filter(item => {
+	      if (agendaItemIsHidden(item)) return false
+	      if (!agendaShowResolved && agendaResolvedKeys[getAgendaItemKey(item)]) return false
+	      const dedupeKey = getAgendaDedupeKey(item)
+	      if (dedupeKey && seen.has(dedupeKey)) return false
+	      if (dedupeKey) seen.add(dedupeKey)
+	      return true
+	    })
+	  }, [
+	    allEnhancedAgendaItems,
+	    agendaHiddenSenders,
+	    agendaHiddenItems,
+	    agendaHiddenThreads,
+	    agendaResolvedKeys,
+	    agendaShowResolved
+	  ])
+
+		  const agendaCustomerOptions = useMemo(() => {
+		    const counts = new Map<string, number>()
+		    for (const item of agendaItemsBeforeCustomerFilter) {
+		      const label = getAgendaProjectLabel(item)
+		      if (!label) continue
+		      counts.set(label, (counts.get(label) ?? 0) + 1)
+		    }
+		    return Array.from(counts.entries())
+		      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+		      .map(([label, count]) => ({
+		        value: label,
+		        label: `${getAgendaCustomerDisplayName(label)} (${count})`
+		      }))
+		  }, [agendaItemsBeforeCustomerFilter, reportCustomerAliases])
+
+	  useEffect(() => {
+	    if (!agendaCustomerOptions.length) {
+	      setAgendaCustomerFilter(null)
+	      return
+	    }
+	    if (
+	      !agendaCustomerFilter ||
+	      !agendaCustomerOptions.some(option => option.value === agendaCustomerFilter)
+	    ) {
+	      setAgendaCustomerFilter(agendaCustomerOptions[0].value)
+	    }
+	  }, [agendaCustomerFilter, agendaCustomerOptions])
+
+	  const visibleAgendaItems = useMemo(() => {
+	    if (!agendaCustomerFilter) return []
+	    return agendaItemsBeforeCustomerFilter.filter(
+	      item => getAgendaProjectLabel(item) === agendaCustomerFilter
+	    )
+	  }, [agendaCustomerFilter, agendaItemsBeforeCustomerFilter])
+
+	  const agendaCustomerBriefSections = useMemo(() => {
+	    if (!agendaCustomerFilter) return []
+	    const bullets: string[] = []
+	    const seen = new Set<string>()
+	    for (const item of visibleAgendaItems) {
+	      if (agendaItemIsFyi(item)) continue
+	      const bullet = getAgendaStatusBullet(item)
+	      const key = normalizeText(bullet)
+	      if (!key || seen.has(key)) continue
+	      seen.add(key)
+	      bullets.push(bullet)
+	      if (bullets.length >= 4) break
+	    }
+	    if (!bullets.length) {
+	      for (const item of visibleAgendaItems) {
+	        const bullet = getAgendaStatusBullet(item)
+	        const key = normalizeText(bullet)
+	        if (!key || seen.has(key)) continue
+	        seen.add(key)
+	        bullets.push(bullet)
+	        if (bullets.length >= 3) break
+	      }
+	    }
+		    return bullets.length
+		      ? [{ customer: getAgendaCustomerDisplayName(agendaCustomerFilter), bullets }]
+		      : []
+		  }, [agendaCustomerFilter, reportCustomerAliases, visibleAgendaItems])
+
+	  const visibleAgendaSections = useMemo<AgendaSections>(() => {
+	    const filterItems = (items: AgendaItem[]) => {
+	      const seen = new Set<string>()
+	      return items.filter(item => {
+	        if (agendaItemIsHidden(item)) return false
+	        if (!agendaShowResolved && agendaResolvedKeys[getAgendaItemKey(item)]) return false
+	        if (!agendaCustomerFilter || getAgendaProjectLabel(item) !== agendaCustomerFilter) return false
+	        const dedupeKey = getAgendaDedupeKey(item)
+	        if (dedupeKey && seen.has(dedupeKey)) return false
+	        if (dedupeKey) seen.add(dedupeKey)
+	        return true
+	      })
+	    }
+	    return {
       tasks: filterItems(enhancedAgendaSections.tasks),
       emailSummaries: filterItems(enhancedAgendaSections.emailSummaries),
       needReply: filterItems(enhancedAgendaSections.needReply),
@@ -2227,53 +2725,71 @@ export default function App() {
   }, [
     agendaHiddenSenders,
     agendaHiddenItems,
-    agendaHiddenThreads,
-    agendaResolvedKeys,
-    agendaShowResolved,
-    enhancedAgendaSections
-  ])
-
-  const agendaResolvedCount = useMemo(
-    () => agendaItems.filter(item => agendaResolvedKeys[getAgendaItemKey(item)]).length,
-    [agendaItems, agendaResolvedKeys]
-  )
+	    agendaHiddenThreads,
+	    agendaResolvedKeys,
+	    agendaCustomerFilter,
+	    agendaShowResolved,
+	    enhancedAgendaSections
+	  ])
 
   const agendaHiddenCount = useMemo(
     () => agendaItems.filter(item => agendaItemIsHidden(item)).length,
     [agendaHiddenItems, agendaHiddenSenders, agendaHiddenThreads, agendaItems]
   )
 
-  const agendaCategoryCounts = useMemo(() => {
-    return {
-      task: visibleAgendaSections.tasks.length,
-      reply: visibleAgendaSections.needReply.length,
-      followup: visibleAgendaSections.followUps.length,
-      meetingPrep: visibleAgendaSections.meetingPrep.length,
-      signal: visibleAgendaSections.projectSignals.length
-    }
-  }, [visibleAgendaSections])
-
-  const agendaProjectGroups = useMemo(() => {
-    const groups = new Map<string, AgendaItem[]>()
-    for (const item of visibleAgendaItems) {
-      const label = getAgendaProjectLabel(item)
-      groups.set(label, [...(groups.get(label) || []), item])
-    }
-    return Array.from(groups.entries())
-      .map(([label, items]) => ({
-        label,
-        items: [...items].sort((a, b) => {
-          const importantA = agendaImportantKeys[getAgendaItemKey(a)] ? 0 : 1
-          const importantB = agendaImportantKeys[getAgendaItemKey(b)] ? 0 : 1
-          return (
-            importantA - importantB ||
-            ['High', 'Medium', 'Low'].indexOf(a.priority || 'Low') -
-              ['High', 'Medium', 'Low'].indexOf(b.priority || 'Low')
-          )
-        })
-      }))
-      .sort((a, b) => b.items.length - a.items.length || a.label.localeCompare(b.label))
-  }, [agendaImportantKeys, visibleAgendaItems])
+	  const agendaCommandSections = useMemo(() => {
+		    const used = new Set<string>()
+			    const addUnique = (items: AgendaItem[], limit = 12) => {
+		      const output: AgendaItem[] = []
+		      for (const item of items) {
+		        const key = getAgendaDedupeKey(item) || getAgendaItemKey(item)
+		        if (!key || used.has(key)) continue
+		        used.add(key)
+	        output.push(item)
+	        if (output.length >= limit) break
+	      }
+	      return output
+	    }
+		    const sortByUrgency = (items: AgendaItem[]) =>
+		      [...items].sort((a, b) => {
+	        const importantDelta =
+	          Number(!agendaImportantKeys[getAgendaItemKey(a)]) -
+	          Number(!agendaImportantKeys[getAgendaItemKey(b)])
+	        if (importantDelta !== 0) return importantDelta
+	        const priorityDelta = agendaPriorityRank(a) - agendaPriorityRank(b)
+	        if (priorityDelta !== 0) return priorityDelta
+		        return (b.relevanceScore ?? 0) - (a.relevanceScore ?? 0)
+		      })
+		    return [
+		      {
+		        key: 'needReply',
+		        title: 'Mail to answer',
+		        color: 'blue',
+		        icon: 'reply',
+		        items: addUnique(sortByUrgency(visibleAgendaSections.needReply), 20)
+		      },
+		      {
+		        key: 'tasks',
+		        title: 'Tasks',
+		        color: 'orange',
+		        icon: 'task',
+		        items: addUnique(
+		          sortByUrgency([
+		            ...visibleAgendaSections.tasks,
+		            ...visibleAgendaSections.followUps,
+		            ...visibleAgendaSections.meetingPrep
+		          ]),
+		          28
+		        )
+		      }
+		    ].filter(section => section.items.length)
+		  }, [
+		    agendaImportantKeys,
+		    visibleAgendaSections.followUps,
+		    visibleAgendaSections.meetingPrep,
+		    visibleAgendaSections.needReply,
+		    visibleAgendaSections.tasks
+		  ])
 
   const agendaFetchSteps = useMemo(
     () => [
@@ -2339,19 +2855,37 @@ export default function App() {
     [agendaFetchPhase, agendaLoading]
   )
 
-  const agendaLoadingMessage = useMemo(() => {
-    return AGENDA_LOADING_MESSAGES[agendaLoadingMessageIndex % AGENDA_LOADING_MESSAGES.length]
-  }, [agendaLoadingMessageIndex])
+  const agendaSavedAtDate = useMemo(() => {
+    if (!agendaSummary?.savedAt) return null
+    const savedAt = dayjs(agendaSummary.savedAt)
+    return savedAt.isValid() ? savedAt : null
+  }, [agendaSummary?.savedAt])
+
+  const agendaHeaderDateLabel = agendaSavedAtDate
+    ? agendaSavedAtDate.format('DD/MM')
+    : dayjs().format('DD/MM')
+  const agendaIsStale = Boolean(agendaSavedAtDate && !agendaSavedAtDate.isSame(dayjs(), 'day'))
 
   useEffect(() => {
-    if (!agendaLoading) {
-      setAgendaLoadingMessageIndex(0)
-      return
+    if (!agendaLoading) return
+    let cancelled = false
+    const loadFact = async () => {
+      const fallback = AGENDA_FALLBACK_FACTS[Math.floor(Math.random() * AGENDA_FALLBACK_FACTS.length)]
+      try {
+        const fact = await window.hrs?.getAgendaFact?.()
+        if (!cancelled) setAgendaFact(fact || fallback)
+      } catch {
+        if (!cancelled) setAgendaFact(fallback)
+      }
     }
+    void loadFact()
     const intervalId = window.setInterval(() => {
-      setAgendaLoadingMessageIndex(prev => prev + 1)
-    }, 2600)
-    return () => window.clearInterval(intervalId)
+      void loadFact()
+    }, 8500)
+    return () => {
+      cancelled = true
+      window.clearInterval(intervalId)
+    }
   }, [agendaLoading])
 
   useEffect(() => {
@@ -2363,6 +2897,44 @@ export default function App() {
         return next.length > 80 ? next.slice(next.length - 80) : next
       })
       const normalized = message.toLowerCase()
+      const isActualDuoPrompt =
+        normalized.includes('clicked duo push button') ||
+        normalized.includes("waiting for duo approval on user's phone") ||
+        normalized.includes('waiting for duo approval on your phone')
+      const hasMovedPastDuo =
+        normalized.includes('after duo approval') ||
+        normalized.includes('after duo redirect') ||
+        normalized.includes('graph access token') ||
+        normalized.includes('access token acquired') ||
+        normalized.includes('waiting for graph access token') ||
+        normalized.includes('token request') ||
+        normalized.includes('calendarview') ||
+        normalized.includes('microsoft graph returned') ||
+        normalized.includes('raw calendar events')
+
+      if (isActualDuoPrompt) {
+        setMeetingsDuoPromptActive(true)
+      } else if (hasMovedPastDuo) {
+        setMeetingsDuoPromptActive(false)
+      }
+
+      if (
+        normalized.includes('fetching calendarview') ||
+        normalized.includes('microsoft graph returned') ||
+        normalized.includes('raw calendar events')
+      ) {
+        setMeetingsDuoPromptActive(false)
+        setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'query'))
+        return
+      }
+      if (
+        normalized.includes('graph access token acquired') ||
+        normalized.includes('microsoft graph token acquired')
+      ) {
+        setMeetingsDuoPromptActive(false)
+        setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'query'))
+        return
+      }
       if (
         normalized.includes('graph explorer loaded') ||
         normalized.includes('background mode enabled')
@@ -2381,13 +2953,6 @@ export default function App() {
       ) {
         setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
         return
-      }
-      if (
-        normalized.includes('fetching calendarview') ||
-        normalized.includes('microsoft graph returned') ||
-        normalized.includes('raw calendar events')
-      ) {
-        setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'query'))
       }
     })
     return () => {
@@ -2477,6 +3042,28 @@ export default function App() {
     }
   }
 
+  async function clearAgendaAiSettings() {
+    if (!window.hrs?.clearAgendaAiConfig) return
+    setAgendaAiSaving(true)
+    try {
+      const config = await window.hrs.clearAgendaAiConfig()
+      setAgendaAiHasApiKey(config.hasApiKey)
+      setAgendaAiModel(config.model || 'gpt-4o-mini')
+      setAgendaAiApiKey('')
+    } finally {
+      setAgendaAiSaving(false)
+    }
+  }
+
+  function clearMeetingsCredentials() {
+    setMeetingsUsername('')
+    setMeetingsPassword('')
+    void window.hrs?.setPreferences?.({
+      meetingsUsername: '',
+      meetingsPassword: ''
+    })
+  }
+
   function hideAgendaItem(item: AgendaItem, options: { hideThread?: boolean; hideSender?: boolean } = {}) {
     const itemKey = getAgendaItemKey(item)
     const threadKey = getAgendaThreadKey(item)
@@ -2507,7 +3094,7 @@ export default function App() {
     })
   }
 
-  function toggleAgendaImportant(item: AgendaItem) {
+	  function toggleAgendaImportant(item: AgendaItem) {
     const itemKey = getAgendaItemKey(item)
     if (!itemKey) return
     setAgendaImportantKeys(prev => {
@@ -2518,10 +3105,10 @@ export default function App() {
         next[itemKey] = true
       }
       return next
-    })
-  }
+	    })
+	  }
 
-  async function fetchAgenda() {
+	  async function fetchAgenda() {
     setAgendaLoading(true)
     setAgendaError(null)
     setAgendaFetchPhase('init')
@@ -2552,15 +3139,16 @@ export default function App() {
         projectSignals: [],
         meetingPrep: []
       }
-      const normalizedSections: AgendaSections = {
-        tasks: nextSections.tasks || [],
-        emailSummaries: nextSections.emailSummaries || [],
-        needReply: nextSections.needReply || [],
-        followUps: nextSections.followUps || [],
-        projectSignals: nextSections.projectSignals || [],
-        meetingPrep: nextSections.meetingPrep || []
-      }
-      setAgendaSections(normalizedSections)
+	      const normalizedSections: AgendaSections = {
+	        tasks: nextSections.tasks || [],
+	        emailSummaries: nextSections.emailSummaries || [],
+	        needReply: nextSections.needReply || [],
+	        followUps: nextSections.followUps || [],
+	        projectSignals: nextSections.projectSignals || [],
+	        meetingPrep: nextSections.meetingPrep || []
+	      }
+	      const agendaSavedAt = new Date().toISOString()
+	      setAgendaSections(normalizedSections)
       setAgendaItems(result.missions || [
         ...normalizedSections.tasks,
         ...normalizedSections.needReply,
@@ -2574,26 +3162,28 @@ export default function App() {
         meetingWindow: result.meetingWindow,
         unansweredEmails: result.unansweredEmails,
         meetingsThisWeek: result.meetingsThisWeek,
-        outputDir: result.outputDir,
-        brief: result.brief,
-        focus: result.focus,
-        aiProvider: result.aiProvider
-      })
+	        outputDir: result.outputDir,
+	        brief: result.brief,
+	        focus: result.focus,
+	        aiProvider: result.aiProvider,
+	        savedAt: agendaSavedAt
+	      })
       try {
         localStorage.setItem(
           AGENDA_CACHE_STORAGE_KEY,
           JSON.stringify({
-            savedAt: new Date().toISOString(),
-            summary: {
-              mailWindow: result.mailWindow,
-              meetingWindow: result.meetingWindow,
-              unansweredEmails: result.unansweredEmails,
-              meetingsThisWeek: result.meetingsThisWeek,
-              outputDir: result.outputDir,
-              brief: result.brief,
-              focus: result.focus,
-              aiProvider: result.aiProvider
-            },
+	            savedAt: agendaSavedAt,
+	            summary: {
+	              mailWindow: result.mailWindow,
+	              meetingWindow: result.meetingWindow,
+	              unansweredEmails: result.unansweredEmails,
+	              meetingsThisWeek: result.meetingsThisWeek,
+	              outputDir: result.outputDir,
+	              brief: result.brief,
+	              focus: result.focus,
+	              aiProvider: result.aiProvider,
+	              savedAt: agendaSavedAt
+	            },
             sections: normalizedSections,
             items: result.missions || [
               ...normalizedSections.tasks,
@@ -2723,6 +3313,7 @@ export default function App() {
   const reportsCacheRef = useRef<Map<string, MonthlyReport>>(new Map())
   const reportsPrefetchRef = useRef<Set<string>>(new Set())
   const currentMonthTrackerRef = useRef(dayjs().format('YYYY-MM'))
+  const lastPanelRefreshRef = useRef<Record<string, number>>({})
   const [reportListWidth, setReportListWidth] = useState(0)
   const [hoursTooltip, setHoursTooltip] = useState<{
     x: number
@@ -2842,12 +3433,47 @@ export default function App() {
       setMeetings(cached.meetings ?? [])
       setMeetingsMonth(monthKey)
       setMeetingsUpdatedAt(cached.updatedAt ?? null)
+      setMeetingsFetchPhase('done')
+      setMeetingsProgress('Meetings loaded from cache.')
       return
     }
     setMeetings([])
     setMeetingsMonth(monthKey)
     setMeetingsUpdatedAt(null)
+    if (!meetingsLoading) {
+      setMeetingsFetchPhase('idle')
+      setMeetingsProgress(null)
+    }
   }, [isMeetingsWindow, preferencesLoaded, reportMonth, meetingsCache])
+
+  useEffect(() => {
+    if (!window.hrs?.getSupabaseStatus) return
+    void (async () => {
+      const status = await loadSupabaseStatus()
+      if (status?.email) {
+        await syncSupabaseProfileFromHrs(status)
+      }
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (!loggedIn || !supabaseStatus?.email) return
+    const key = [
+      supabaseStatus.email,
+      supabaseStatus.profile?.employee_id ?? '',
+      supabaseStatus.profile?.role ?? ''
+    ].join(':')
+    if (supabaseAutoSetupRef.current === key) return
+    supabaseAutoSetupRef.current = key
+    void syncSupabaseProfileFromHrs(supabaseStatus).catch(error => {
+      setSupabaseError(getSupabaseErrorMessage(error))
+    })
+  }, [
+    loggedIn,
+    supabaseStatus?.email,
+    supabaseStatus?.profile?.employee_id,
+    supabaseStatus?.profile?.role
+  ])
 
   useEffect(() => {
     if (!preferencesLoaded) return
@@ -2857,6 +3483,7 @@ export default function App() {
     setMeetings(cached.meetings ?? [])
     setMeetingsMonth(monthKey)
     setMeetingsUpdatedAt(cached.updatedAt ?? null)
+    setMeetingsFetchPhase('done')
     setMeetingsProgress('Meetings loaded from cache.')
   }, [preferencesLoaded, reportMonth, meetingsCache])
 
@@ -2870,6 +3497,15 @@ export default function App() {
     if (isAuxWindow) {
       return preferencesLoaded && jiraStatusLoaded
     }
+    if (
+      isTray &&
+      !loggedIn &&
+      preferencesLoaded &&
+      jiraStatusLoaded &&
+      (checkingSession || duoPending || Boolean(sessionError) || hasStoredPassword)
+    ) {
+      return true
+    }
     if (!bootComplete || !preferencesLoaded || !jiraStatusLoaded) return false
     if (!loggedIn) return true
     if (shouldLoadJiraEpics && jiraConfigured && !jiraPrefetchDone) return false
@@ -2881,10 +3517,15 @@ export default function App() {
   }, [
     isFloating,
     isAuxWindow,
+    isTray,
     bootComplete,
     preferencesLoaded,
     jiraStatusLoaded,
     loggedIn,
+    checkingSession,
+    duoPending,
+    sessionError,
+    hasStoredPassword,
     shouldLoadJiraEpics,
     shouldLoadLogData,
     isMainWindow,
@@ -2962,6 +3603,44 @@ export default function App() {
     }
   }
 
+  async function waitForAutoLoginSession(reason: string): Promise<boolean> {
+    const startedAt = Date.now()
+    setDuoPending(true)
+    setDuoHint(true)
+    setBootStatus('Waiting for DUO approval…')
+    setSessionError('Waiting for DUO approval. Auto-login will continue automatically…')
+
+    while (Date.now() - startedAt < AUTO_LOGIN_DUO_WAIT_MS) {
+      await new Promise(resolve => window.setTimeout(resolve, AUTO_LOGIN_DUO_POLL_MS))
+      setBootStatus('Rechecking approved HRS session…')
+      try {
+        const ok = await withTimeout(
+          window.hrs.checkSession(),
+          SESSION_TIMEOUT_MS,
+          'Session recheck'
+        )
+        if (ok) {
+          autoLoginAttemptedRef.current = false
+          sessionRetryCount.current = 0
+          setLoggedIn(true)
+          setDuoPending(false)
+          setDuoHint(false)
+          setSessionError(null)
+          setBootStatus('Session restored.')
+          return true
+        }
+      } catch {
+        // Keep polling through transient redirects or slow DUO completion.
+      }
+    }
+
+    setLoggedIn(false)
+    setDuoPending(false)
+    setDuoHint(true)
+    setSessionError(`${reason} DUO approval was not detected. Try again or reset credentials.`)
+    return false
+  }
+
   async function tryAutoLogin(reason: string): Promise<boolean | null> {
     const autoLoginActive = hasStoredPassword && (autoLoginEnabled || isTray)
     if (!autoLoginActive) return null
@@ -2984,9 +3663,7 @@ export default function App() {
       const autoLogged = await window.hrs.autoLogin()
       setDuoPending(false)
       if (!autoLogged) {
-        setLoggedIn(false)
-        setSessionError(`${reason} Auto-login retrying…`)
-        return false
+        return await waitForAutoLoginSession(reason)
       }
       setBootStatus('Rechecking session…')
       const recheck = await window.hrs.checkSession()
@@ -2996,13 +3673,9 @@ export default function App() {
         setSessionError(null)
         return true
       }
-      setSessionError('Waiting for DUO approval. Auto-login will retry…')
-      return false
+      return await waitForAutoLoginSession(reason)
     } catch {
-      setDuoPending(false)
-      setLoggedIn(false)
-      setSessionError(`${reason} Auto-login retrying…`)
-      return false
+      return await waitForAutoLoginSession(reason)
     } finally {
       autoLoginInFlightRef.current = false
     }
@@ -3063,12 +3736,21 @@ export default function App() {
   function switchTrayPanel(
     nextPanel: 'log' | 'clockify' | 'meetings' | 'agenda' | 'employees' | 'reports' | 'settings'
   ) {
+    if (nextPanel === 'agenda' && !AGENDA_UI_ENABLED) {
+      setTrayPanel('log')
+      return
+    }
+    if (nextPanel === 'clockify') {
+      setTrayPanel('log')
+      return
+    }
     if (nextPanel === trayPanel) return
     setTrayPanel(nextPanel)
+    void refreshPanelData(nextPanel, { force: true, reason: 'enter' })
   }
 
   async function loadEmployees(options: { silent?: boolean } = {}) {
-    if (!window.hrs?.getEmployees) return
+    if (!window.hrs?.getEmployees) return null
     if (!options.silent) setEmployeesError(null)
     setEmployeesLoading(true)
     try {
@@ -3078,14 +3760,51 @@ export default function App() {
       if (!result.hasAccess || !result.hasEmployees) {
         if (trayPanel === 'employees') setTrayPanel('log')
       }
+      return result
     } catch (err) {
       setEmployeesAccessChecked(true)
       setEmployeesResult(null)
       const message = err instanceof Error ? err.message : String(err)
       setEmployeesError(message)
       if (trayPanel === 'employees') setTrayPanel('log')
+      return null
     } finally {
       setEmployeesLoading(false)
+    }
+  }
+
+  async function refreshPanelData(
+    panel: typeof trayPanel,
+    options: { force?: boolean; reason?: 'enter' | 'focus' | 'timer' } = {}
+  ) {
+    if (!loggedIn) return
+    if (panel === 'agenda' || panel === 'settings' || panel === 'clockify') return
+    const key = `${panel}:${dayjs(reportMonth).format('YYYY-MM')}:${reportSource}`
+    const now = Date.now()
+    const minAge = options.reason === 'focus' ? 20_000 : 0
+    if (!options.force && minAge && now - (lastPanelRefreshRef.current[key] ?? 0) < minAge) {
+      return
+    }
+    lastPanelRefreshRef.current[key] = now
+
+    if (panel === 'log') {
+      await loadReportsForMonth(reportMonth, { force: true })
+      return
+    }
+
+    if (panel === 'employees') {
+      const result = await loadEmployees({ silent: true })
+      if (result?.hasAccess && getReportableEmployees(result).length) {
+        setEmployeeReport(null)
+        if (!employeeReportEmployeeId) setEmployeeReportEmployeeId(EMPLOYEE_REPORT_ALL_VALUE)
+      }
+      return
+    }
+
+    if (panel === 'reports') {
+      void loadEmployees({ silent: true })
+      setEmployeeReport(null)
+      await loadReportsForMonth(reportMonth, { force: true })
     }
   }
 
@@ -3102,6 +3821,19 @@ export default function App() {
 
   function shiftEmployeeReportMonth(delta: number) {
     setEmployeeReportPeriod(dayjs(employeeReportMonth).add(delta, 'month').toDate())
+  }
+
+  function getReportableEmployees(result: EmployeeAccessResult | null = employeesResult) {
+    const byId = new Map<string, EmployeeAdminItem>()
+    const addEmployee = (employee: EmployeeAdminItem | null | undefined) => {
+      if (!employee?.id || isExcludedEmployeeName(employee.fullName)) return
+      byId.set(employee.id, employee)
+    }
+    addEmployee(result?.currentEmployee)
+    for (const employee of result?.employees ?? []) {
+      addEmployee(employee)
+    }
+    return Array.from(byId.values()).sort((a, b) => a.fullName.localeCompare(b.fullName))
   }
 
   function mergeEmployeeReports(reports: EmployeeHoursReport[]): EmployeeHoursReport {
@@ -3137,9 +3869,7 @@ export default function App() {
     setEmployeeReportLoading(true)
     setEmployeeReportError(null)
     try {
-      const employees = (employeesResult?.employees ?? []).filter(
-        employee => !isExcludedEmployeeName(employee.fullName)
-      )
+      const employees = getReportableEmployees()
       let result: EmployeeHoursReport
       if (employeeReportEmployeeId === EMPLOYEE_REPORT_ALL_VALUE) {
         const reports: EmployeeHoursReport[] = []
@@ -3229,35 +3959,44 @@ export default function App() {
     }
   }
 
-  async function loadReportsForMonth(month: Date) {
+  async function loadReportsForMonth(month: Date, options: { force?: boolean } = {}) {
     const requestId = ++reportsRequestId.current
     const monthKey = dayjs(month).format('YYYY-MM')
     const isCurrentMonth = dayjs(month).isSame(dayjs(), 'month')
-    const cached = reportsCacheRef.current.get(monthKey)
-    if (cached) {
+    const cacheKey = `${reportSource}:${monthKey}`
+    const cached = reportsCacheRef.current.get(cacheKey)
+    if (cached && !options.force) {
       setMonthlyReport(cached)
       setReportsLoading(false)
       setReportsLoaded(true)
-      if (!isCurrentMonth) return
+      if (!isCurrentMonth || reportSource === 'supabase') return
     }
     setReportsLoading(true)
     setReportsError(null)
-    setBootStatus('Loading monthly report…')
+    setBootStatus(reportSource === 'supabase' ? 'Loading synced reports…' : 'Loading monthly report…')
     try {
       const { start, end } = getMonthRange(month)
-      const data = await withTimeout(
-        window.hrs.getReports(start, end),
-        BOOT_TIMEOUT_MS,
-        'Loading reports'
-      )
+      let data: MonthlyReport
+      if (reportSource === 'supabase') {
+        const rows = await withTimeout(
+          window.hrs.getSupabaseWorkReports(start, end),
+          BOOT_TIMEOUT_MS,
+          'Loading Supabase reports'
+        )
+        setSupabaseReportRows(rows)
+        data = monthlyReportFromSupabaseRows(rows, start, end)
+      } else {
+        setSupabaseReportRows([])
+        data = await withTimeout(window.hrs.getReports(start, end), BOOT_TIMEOUT_MS, 'Loading reports')
+      }
       if (requestId !== reportsRequestId.current) return
       const report = data as MonthlyReport
-      reportsCacheRef.current.set(monthKey, report)
+      reportsCacheRef.current.set(cacheKey, report)
       setMonthlyReport(report)
     } catch (err) {
       if (requestId !== reportsRequestId.current) return
       const message = err instanceof Error ? err.message : String(err)
-      if (message === 'AUTH_REQUIRED') {
+      if (reportSource === 'hrs' && message === 'AUTH_REQUIRED') {
         setBootStatus('Session expired. Reconnecting…')
         const ok = await checkSession()
         if (ok) {
@@ -3269,7 +4008,9 @@ export default function App() {
               'Loading reports'
             )
             if (requestId === reportsRequestId.current) {
-              setMonthlyReport(data as MonthlyReport)
+              const report = data as MonthlyReport
+              reportsCacheRef.current.set(cacheKey, report)
+              setMonthlyReport(report)
             }
             return
           } catch (retryErr) {
@@ -3316,6 +4057,372 @@ export default function App() {
     message.includes('JIRA_AUTH_REQUIRED') ||
     message.includes('JIRA 401') ||
     message.includes('JIRA 403')
+
+  async function loadSupabaseStatus() {
+    if (!window.hrs?.getSupabaseStatus) return null
+    try {
+      const status = await window.hrs.getSupabaseStatus()
+      setSupabaseStatus(status)
+      setSupabaseUrl(status.url)
+      if (status.email) setSupabaseEmail(status.email)
+      if (status.profile?.display_name) setSupabaseDisplayName(status.profile.display_name)
+      if (status.profile?.employee_id) setSupabaseEmployeeId(String(status.profile.employee_id))
+      return status
+    } catch (error) {
+      setSupabaseError(error instanceof Error ? error.message : String(error))
+      return null
+    }
+  }
+
+  function getSupabaseErrorMessage(error: unknown) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (message.toLowerCase().includes('email not confirmed')) {
+      return 'Email is not confirmed yet. Open the Supabase confirmation email, or resend the confirmation link below.'
+    }
+    return message
+  }
+
+  async function loadHrsIdentityForSupabase() {
+    if (!window.hrs?.getHrsIdentity) return null
+    setSupabaseIdentityLoading(true)
+    try {
+      const identity = await window.hrs.getHrsIdentity()
+      setSupabaseHrsIdentity(identity)
+      if (identity.employeeId) {
+        setSupabaseEmployeeId(identity.employeeId)
+      }
+      if (identity.employeeName && !supabaseDisplayName.trim()) {
+        setSupabaseDisplayName(identity.employeeName)
+      }
+      return identity
+    } catch (error) {
+      setSupabaseError(getSupabaseErrorMessage(error))
+      return null
+    } finally {
+      setSupabaseIdentityLoading(false)
+    }
+  }
+
+  async function syncSupabaseProfileFromHrs(statusOverride?: SupabaseStatus | null) {
+    const status = statusOverride ?? supabaseStatus
+    if (!status?.email || !window.hrs?.updateSupabaseProfile) return null
+    const identity = await loadHrsIdentityForSupabase()
+    if (!identity?.employeeId) return identity
+
+    const displayName = identity.employeeName || supabaseDisplayName || status.profile?.display_name || status.email
+    const currentEmployeeId = status.profile?.employee_id ? String(status.profile.employee_id) : ''
+    let hasDirectReports = false
+    if (window.hrs?.getEmployees) {
+      try {
+        const employeeAccess = await window.hrs.getEmployees()
+        setEmployeesResult(employeeAccess)
+        setEmployeesAccessChecked(true)
+        hasDirectReports = employeeAccess.source === 'directReports' && employeeAccess.hasEmployees
+      } catch {
+        hasDirectReports = false
+      }
+    }
+
+    if (hasDirectReports && status.profile?.role !== 'manager' && window.hrs?.claimSupabaseManager) {
+      try {
+        await window.hrs.claimSupabaseManager({
+          displayName,
+          employeeId: identity.employeeId
+        })
+        setSupabaseDisplayName(displayName)
+        setSupabaseEmployeeId(identity.employeeId)
+        await loadSupabaseStatus()
+        return identity
+      } catch (error) {
+        const message = getSupabaseErrorMessage(error)
+        if (!message.toLowerCase().includes('manager already exists')) {
+          throw error
+        }
+      }
+    }
+
+    const shouldUpdate =
+      currentEmployeeId !== identity.employeeId ||
+      (!status.profile?.display_name && Boolean(displayName))
+
+    if (shouldUpdate) {
+      await window.hrs.updateSupabaseProfile({
+        displayName,
+        employeeId: identity.employeeId
+      })
+      setSupabaseDisplayName(displayName)
+      setSupabaseEmployeeId(identity.employeeId)
+      await loadSupabaseStatus()
+    }
+    return identity
+  }
+
+  async function saveSupabaseConfig() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      await window.hrs.setSupabaseConfig(supabaseUrl, supabasePublishableKey)
+      await loadSupabaseStatus()
+      setSupabaseMessage('Supabase config saved.')
+    } catch (error) {
+      setSupabaseError(getSupabaseErrorMessage(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  async function signInSupabase() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      await window.hrs.signInSupabase(supabaseEmail, supabasePassword)
+      const status = await loadSupabaseStatus()
+      await syncSupabaseProfileFromHrs(status)
+      setSupabasePassword('')
+      setSupabaseMessage('Supabase connected.')
+    } catch (error) {
+      setSupabaseError(getSupabaseErrorMessage(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  async function signUpSupabase() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      const result = await window.hrs.signUpSupabase(supabaseEmail, supabasePassword)
+      const status = await loadSupabaseStatus()
+      if (status?.email) {
+        await syncSupabaseProfileFromHrs(status)
+      }
+      setSupabasePassword('')
+      setSupabaseMessage(
+        result.needsConfirmation
+          ? 'Supabase user created. Confirm email, then sign in.'
+          : 'Supabase user created and connected.'
+      )
+    } catch (error) {
+      setSupabaseError(getSupabaseErrorMessage(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  async function resendSupabaseConfirmation() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      await window.hrs.resendSupabaseConfirmation(supabaseEmail)
+      setSupabaseMessage('Confirmation email sent. Open the link from your inbox, then sign in.')
+    } catch (error) {
+      setSupabaseError(getSupabaseErrorMessage(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  async function signOutSupabase() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      await window.hrs.signOutSupabase()
+      await loadSupabaseStatus()
+      setSupabaseMessage('Supabase disconnected.')
+    } catch (error) {
+      setSupabaseError(getSupabaseErrorMessage(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  async function saveSupabaseProfile() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      const identity = await loadHrsIdentityForSupabase()
+      if (!identity?.employeeId) {
+        throw new Error('Could not resolve your HRS employee ID automatically. Make sure HRS is logged in, then try again.')
+      }
+      await window.hrs.updateSupabaseProfile({
+        displayName: identity.employeeName || supabaseDisplayName,
+        employeeId: identity.employeeId
+      })
+      await loadSupabaseStatus()
+      setSupabaseMessage('Supabase profile saved.')
+    } catch (error) {
+      setSupabaseError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  async function claimSupabaseManager() {
+    setSupabaseLoading(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      const identity = await loadHrsIdentityForSupabase()
+      if (!identity?.employeeId) {
+        throw new Error('Could not resolve your HRS employee ID automatically. Make sure HRS is logged in, then try again.')
+      }
+      await window.hrs.claimSupabaseManager({
+        displayName: identity.employeeName || supabaseDisplayName,
+        employeeId: identity.employeeId
+      })
+      await loadSupabaseStatus()
+      setSupabaseMessage('This Supabase user is now the first manager.')
+    } catch (error) {
+      setSupabaseError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSupabaseLoading(false)
+    }
+  }
+
+  function buildSupabaseRowsFromMonthlyReport(
+    report: MonthlyReport,
+    missionMapOverride: Record<string, string> = reportMissionMap
+  ) {
+    const profile = supabaseStatus?.profile
+    const employeeId = profile?.employee_id
+    if (!employeeId) {
+      throw new Error('Set your Supabase profile employee_id before syncing reports.')
+    }
+    const employeeName =
+      profile.display_name || supabaseStatus?.email || storedUsername || `Employee ${employeeId}`
+    const rows: Array<Record<string, unknown>> = []
+    const missions = projectManagementConfig?.missions ?? []
+    for (const day of report.days) {
+      day.reports.forEach((entry, index) => {
+        const meta = taskMetaById.get(entry.taskId)
+        const cleanComment = stripMissionCommentMarkers(entry.comment)
+        const mission = findMappedMissionForReport(missions, missionMapOverride, {
+          date: day.date,
+          taskId: entry.taskId,
+          hoursHHMM: entry.hours_HHMM,
+          comment: entry.comment,
+          reportingFrom: entry.reporting_from
+        })
+        const customer = meta?.customerName || entry.projectInstance || 'Unknown'
+        const project = meta?.projectName || entry.projectInstance || customer
+        const externalTaskName = mission?.virtual ? mission.name : entry.taskName
+        const externalTaskKey = mission?.virtual
+          ? mission.jiraIssueKey || mission.id
+          : null
+        const seconds = parseHoursHHMMToMinutes(entry.hours_HHMM) * 60
+        rows.push({
+          id: buildSupabaseReportId({
+            employeeId,
+            date: day.date,
+            taskId: entry.taskId,
+            customer,
+            project,
+            externalTaskKey,
+            comment: cleanComment,
+            index
+          }),
+          employee_id: employeeId,
+          employee_name: employeeName,
+          customer,
+          project,
+          task_id: entry.taskId,
+          task_name: externalTaskName,
+          report_date: day.date,
+          seconds,
+          comment: cleanComment || null,
+          reporting_from: entry.reporting_from || null,
+          from_time: entry.from || null,
+          to_time: entry.to || null,
+          source: 'hrs'
+        })
+      })
+    }
+    return rows
+  }
+
+  async function syncHrsMonthToSupabase(
+    month: Date,
+    options: { silent?: boolean; missionMapOverride?: Record<string, string> } = {}
+  ) {
+    if (!window.hrs?.getReports || !window.hrs?.syncSupabaseWorkReports) {
+      return { synced: 0, error: 'Supabase sync APIs are not available.' }
+    }
+    const employeeId = supabaseStatus?.profile?.employee_id
+    if (!employeeId) {
+      const message = 'Supabase profile is missing an HRS employee identity.'
+      console.warn('[SUPABASE SYNC]', message)
+      if (!options.silent) setSupabaseError(message)
+      return { synced: 0, error: message }
+    }
+
+    if (!options.silent) {
+      setSupabaseSyncing(true)
+      setSupabaseError(null)
+      setSupabaseMessage(null)
+    }
+
+    try {
+      const { start, end } = getMonthRange(month)
+      const report = (await window.hrs.getReports(start, end)) as MonthlyReport
+      const rows = buildSupabaseRowsFromMonthlyReport(report, options.missionMapOverride)
+      const result = await window.hrs.syncSupabaseWorkReports({
+        startDate: start,
+        endDate: end,
+        employeeId,
+        rows
+      })
+      console.log(
+        '[SUPABASE SYNC]',
+        `month=${dayjs(month).format('YYYY-MM')}`,
+        `rows=${rows.length}`,
+        `synced=${result.synced}`
+      )
+      const monthKey = dayjs(month).format('YYYY-MM')
+      reportsCacheRef.current.delete(`supabase:${monthKey}`)
+      if (!options.silent) {
+        setSupabaseMessage(`Synced ${result.synced} report rows to Supabase.`)
+      }
+      return { synced: result.synced, error: null }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (options.silent) {
+        console.warn('[SUPABASE SYNC]', message)
+      } else {
+        setSupabaseError(message)
+      }
+      return { synced: 0, error: message }
+    } finally {
+      if (!options.silent) setSupabaseSyncing(false)
+    }
+  }
+
+  async function syncCurrentReportsToSupabase() {
+    if (!monthlyReport) return
+    setSupabaseSyncing(true)
+    setSupabaseError(null)
+    setSupabaseMessage(null)
+    try {
+      const { start, end } = getMonthRange(reportMonth)
+      const rows = buildSupabaseRowsFromMonthlyReport(monthlyReport)
+      const result = await window.hrs.syncSupabaseWorkReports({
+        startDate: start,
+        endDate: end,
+        employeeId: supabaseStatus?.profile?.employee_id ?? undefined,
+        rows
+      })
+      setSupabaseMessage(`Synced ${result.synced} report rows to Supabase.`)
+    } catch (error) {
+      setSupabaseError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSupabaseSyncing(false)
+    }
+  }
 
   const handleJiraAuthError = (message: string) => {
     console.error('[jira]', message)
@@ -3448,7 +4555,10 @@ export default function App() {
       setMeetingClientMappings(normalizedMeetingMappings)
       const rawExcludedSubjects = prefs.meetingExcludedSubjects ?? {}
       const normalizedExcludedSubjects = Object.fromEntries(
-        Object.entries(rawExcludedSubjects).map(([monthKey, subjects]) => [
+        Object.entries({
+          ...safeGetLocalStorageStringArrayRecord(MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY),
+          ...rawExcludedSubjects
+        }).map(([monthKey, subjects]) => [
           monthKey,
           Array.from(
             new Set(
@@ -3480,6 +4590,8 @@ export default function App() {
         setMeetings(cachedMeetings.meetings ?? [])
         setMeetingsMonth(monthKey)
         setMeetingsUpdatedAt(cachedMeetings.updatedAt ?? null)
+        setMeetingsFetchPhase('done')
+        setMeetingsProgress('Meetings loaded from cache.')
       }
       setSmartDefaults(prefs.smartDefaults)
       setPreferencesLoaded(true)
@@ -3504,6 +4616,152 @@ export default function App() {
     } finally {
       setProjectManagementLoading(false)
     }
+  }
+
+  async function loadSlackStatus(options?: { loadChannels?: boolean }) {
+    if (!window.hrs?.getSlackStatus) return null
+    try {
+      const status = await window.hrs.getSlackStatus()
+      setSlackStatus(status)
+      if (status.configured && options?.loadChannels && window.hrs?.getSlackChannels) {
+        const channels = await window.hrs.getSlackChannels()
+        setSlackChannels(channels)
+      }
+      return status
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : String(err))
+      return null
+    }
+  }
+
+  async function saveSlackToken() {
+    if (!window.hrs?.setSlackToken) return
+    setSlackLoading(true)
+    setSlackError(null)
+    setSlackMessage(null)
+    try {
+      const status = await window.hrs.setSlackToken(slackToken)
+      setSlackStatus(status)
+      setSlackToken('')
+      const channels = await window.hrs.getSlackChannels()
+      setSlackChannels(channels)
+      setSlackMessage('Slack connected.')
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSlackLoading(false)
+    }
+  }
+
+  async function clearSlackSettings() {
+    if (!window.hrs?.clearSlack) return
+    setSlackLoading(true)
+    setSlackError(null)
+    setSlackMessage(null)
+    try {
+      const status = await window.hrs.clearSlack()
+      setSlackStatus(status)
+      setSlackToken('')
+      setSlackChannels([])
+      setSlackMessage('Slack disconnected.')
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSlackLoading(false)
+    }
+  }
+
+  async function refreshSlackChannels() {
+    if (!window.hrs?.getSlackChannels) return
+    setSlackLoading(true)
+    setSlackError(null)
+    try {
+      const channels = await window.hrs.getSlackChannels()
+      setSlackChannels(channels)
+      setSlackMessage('Slack channels refreshed.')
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSlackLoading(false)
+    }
+  }
+
+  async function saveSlackCustomerMapping() {
+    if (!window.hrs?.setSlackCustomerMapping || !slackMappingCustomer) {
+      return
+    }
+    const manualChannelId = slackManualChannelId.trim().toUpperCase()
+    const channel = slackMappingChannel
+      ? slackChannels.find(item => item.id === slackMappingChannel)
+      : null
+    const channelId = channel?.id ?? manualChannelId
+    const channelName = channel?.name ?? manualChannelId
+    if (!channelId) {
+      setSlackError('Choose a Slack channel or paste a private channel ID.')
+      return
+    }
+    if (!/^[A-Z0-9]+$/.test(channelId)) {
+      setSlackError('Slack channel ID should contain only uppercase letters and numbers.')
+      return
+    }
+    setSlackLoading(true)
+    setSlackError(null)
+    setSlackMessage(null)
+    try {
+      await window.hrs.setSlackCustomerMapping({
+        customerName: slackMappingCustomer,
+        channelId,
+        channelName
+      })
+      await loadSlackStatus()
+      setSlackManualChannelId('')
+      setSlackMessage(`Mapped ${slackMappingCustomer} to ${channel ? `#${channel.name}` : channelId}.`)
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSlackLoading(false)
+    }
+  }
+
+  async function removeSlackCustomerMapping(customer: string) {
+    if (!window.hrs?.removeSlackCustomerMapping) return
+    setSlackLoading(true)
+    setSlackError(null)
+    setSlackMessage(null)
+    try {
+      await window.hrs.removeSlackCustomerMapping(customer)
+      await loadSlackStatus()
+      setSlackMessage(`Removed Slack mapping for ${customer}.`)
+    } catch (err) {
+      setSlackError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setSlackLoading(false)
+    }
+  }
+
+  async function postSlackCustomerUpdate(payload: {
+    customer: string
+    title: string
+    lines: string[]
+    metrics?: SlackUpdateMetrics | null
+  }) {
+    if (!window.hrs?.postSlackCustomerUpdate || !slackStatus?.configured) return null
+    if (!slackStatus.mappings[payload.customer]) return null
+    try {
+      return await window.hrs.postSlackCustomerUpdate(payload)
+    } catch (err) {
+      console.error('[slack]', err)
+      return null
+    }
+  }
+
+  function getCurrentReporterName() {
+    return (
+      supabaseHrsIdentity?.employeeName ||
+      supabaseStatus?.profile?.display_name ||
+      credentialsUsername ||
+      'User'
+    )
   }
 
   async function updateProjectReportingSource(source: ReportingSource) {
@@ -3565,6 +4823,289 @@ export default function App() {
     } finally {
       setProjectManagementLoading(false)
     }
+  }
+
+  function renderSupabaseSettingsCard(compact = false) {
+    const connected = Boolean(supabaseStatus?.email)
+    const role = supabaseStatus?.profile?.role ?? 'employee'
+    const needsConfirmation = Boolean(
+      supabaseError?.toLowerCase().includes('email is not confirmed') ||
+        supabaseMessage?.toLowerCase().includes('confirm email')
+    )
+    return (
+      <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
+        <Stack gap={compact ? 'xs' : 'sm'}>
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Text fw={700} size={compact ? 'sm' : 'md'}>
+              Supabase
+            </Text>
+            <Group gap="xs" wrap="nowrap">
+              <Badge color={connected ? 'teal' : 'gray'} variant="light">
+                {connected ? 'Connected' : 'Disconnected'}
+              </Badge>
+              {connected && (
+                <Badge color={role === 'manager' ? 'blue' : 'gray'} variant="light">
+                  {role}
+                </Badge>
+              )}
+            </Group>
+          </Group>
+
+          {connected ? (
+            <Group justify="flex-end" align="center">
+              <Button
+                size={compact ? 'xs' : 'sm'}
+                variant="subtle"
+                color="red"
+                loading={supabaseLoading}
+                onClick={() => void signOutSupabase()}
+              >
+                Disconnect
+              </Button>
+            </Group>
+          ) : (
+            <>
+              <SimpleGrid cols={compact ? 1 : 2} spacing="xs">
+                <TextInput
+                  label="Email"
+                  value={supabaseEmail}
+                  onChange={event => setSupabaseEmail(event.currentTarget.value)}
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <PasswordInput
+                  label="Password"
+                  value={supabasePassword}
+                  onChange={event => setSupabasePassword(event.currentTarget.value)}
+                  size={compact ? 'xs' : 'sm'}
+                />
+              </SimpleGrid>
+              <Group justify="space-between" align="center">
+                {needsConfirmation ? (
+                  <Button
+                    size={compact ? 'xs' : 'sm'}
+                    variant="subtle"
+                    disabled={!supabaseEmail.trim()}
+                    loading={supabaseLoading}
+                    onClick={() => void resendSupabaseConfirmation()}
+                  >
+                    Resend email
+                  </Button>
+                ) : (
+                  <Button
+                    size={compact ? 'xs' : 'sm'}
+                    variant="subtle"
+                    disabled={!supabaseEmail.trim() || !supabasePassword}
+                    loading={supabaseLoading}
+                    onClick={() => void signInSupabase()}
+                  >
+                    Sign in
+                  </Button>
+                )}
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  loading={supabaseLoading}
+                  disabled={!supabaseEmail.trim() || !supabasePassword}
+                  onClick={() => void signUpSupabase()}
+                >
+                  Create account
+                </Button>
+              </Group>
+            </>
+          )}
+
+          {supabaseMessage && (
+            <Alert color="teal" variant="light" radius="md">
+              {supabaseMessage}
+            </Alert>
+          )}
+          {supabaseError && (
+            <Alert color="red" variant="light" radius="md">
+              {supabaseError}
+            </Alert>
+          )}
+        </Stack>
+      </Card>
+    )
+  }
+
+  function renderSlackSettingsCard(compact = false) {
+    const connected = Boolean(slackStatus?.configured)
+    const mappings = Object.values(slackStatus?.mappings ?? {}).sort((a, b) =>
+      a.customerName.localeCompare(b.customerName)
+    )
+    const customerData = Array.from(
+      new Set([
+        ...uniqueCustomers,
+        ...customerOptions.map(option => option.value),
+        ...mappings.map(mapping => mapping.customerName)
+      ])
+    )
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .map(customer => ({ value: customer, label: customer }))
+    const channelData = slackChannels.map(channel => ({
+      value: channel.id,
+      label: channel.label
+    }))
+    return (
+      <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
+        <Stack gap={compact ? 'xs' : 'sm'}>
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Text fw={700} size={compact ? 'sm' : 'md'}>
+              Slack
+            </Text>
+            <Badge color={connected ? 'teal' : 'gray'} variant="light">
+              {connected ? 'Connected' : 'Disconnected'}
+            </Badge>
+          </Group>
+
+          {connected ? (
+            <>
+              <Group justify="space-between" align="center">
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  variant="subtle"
+                  onClick={() => void refreshSlackChannels()}
+                  loading={slackLoading}
+                >
+                  Refresh channels
+                </Button>
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  variant="subtle"
+                  color="red"
+                  onClick={() => void clearSlackSettings()}
+                  loading={slackLoading}
+                >
+                  Disconnect
+                </Button>
+              </Group>
+              <SimpleGrid cols={compact ? 1 : 2} spacing="xs">
+                <Select
+                  label="Customer"
+                  placeholder="Choose customer"
+                  data={customerData}
+                  value={slackMappingCustomer}
+                  onChange={setSlackMappingCustomer}
+                  searchable
+                  size={compact ? 'xs' : 'sm'}
+                />
+                <Select
+                  label="Slack channel"
+                  placeholder="#customer-channel"
+                  data={channelData}
+                  value={slackMappingChannel}
+                  onChange={setSlackMappingChannel}
+                  searchable
+                  size={compact ? 'xs' : 'sm'}
+                  nothingFoundMessage="No channels loaded"
+                />
+              </SimpleGrid>
+              <TextInput
+                label="Private channel ID"
+                placeholder="Paste channel ID if it does not appear above"
+                value={slackManualChannelId}
+                onChange={event => {
+                  setSlackManualChannelId(event.currentTarget.value)
+                  if (event.currentTarget.value.trim()) setSlackMappingChannel(null)
+                }}
+                size={compact ? 'xs' : 'sm'}
+              />
+              <Text size="xs" c="dimmed">
+                For private channels, add the bot to the channel and paste the channel ID if Slack
+                does not return it in the picker.
+              </Text>
+              <Group justify="flex-end">
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  onClick={() => void saveSlackCustomerMapping()}
+                  loading={slackLoading}
+                  disabled={!slackMappingCustomer || (!slackMappingChannel && !slackManualChannelId.trim())}
+                >
+                  Save mapping
+                </Button>
+              </Group>
+              <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
+                <Stack gap={6}>
+                  <Text fw={700} size={compact ? 'xs' : 'sm'}>
+                    Posted to Slack
+                  </Text>
+                  {[
+                    'Customer and mapped channel',
+                    'Event type: task created or hours logged',
+                    'Reporter name',
+                    'Fictive task name when selected',
+                    'Original HRS task',
+                    'Logged hours and date',
+                    'Capped task usage when available',
+                    'Jira work item when available',
+                    'User comment'
+                  ].map(item => (
+                    <Checkbox
+                      key={item}
+                      size={compact ? 'xs' : 'sm'}
+                      checked
+                      disabled
+                      label={item}
+                    />
+                  ))}
+                </Stack>
+              </Card>
+              {mappings.length > 0 && (
+                <Stack gap={6}>
+                  {mappings.map(mapping => (
+                    <Group key={mapping.customerName} justify="space-between" wrap="nowrap">
+                      <Text size={compact ? 'xs' : 'sm'} truncate>
+                        {`${mapping.customerName} -> #${mapping.channelName}`}
+                      </Text>
+                      <Button
+                        size="compact-xs"
+                        variant="subtle"
+                        color="red"
+                        onClick={() => void removeSlackCustomerMapping(mapping.customerName)}
+                      >
+                        Remove
+                      </Button>
+                    </Group>
+                  ))}
+                </Stack>
+              )}
+            </>
+          ) : (
+            <>
+              <PasswordInput
+                label="Bot token"
+                placeholder="xoxb-..."
+                value={slackToken}
+                onChange={event => setSlackToken(event.currentTarget.value)}
+                size={compact ? 'xs' : 'sm'}
+              />
+              <Group justify="flex-end">
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  loading={slackLoading}
+                  disabled={!slackToken.trim()}
+                  onClick={() => void saveSlackToken()}
+                >
+                  Connect Slack
+                </Button>
+              </Group>
+            </>
+          )}
+
+          {slackMessage && (
+            <Alert color="teal" variant="light" radius="md">
+              {slackMessage}
+            </Alert>
+          )}
+          {slackError && (
+            <Alert color="red" variant="light" radius="md">
+              {slackError}
+            </Alert>
+          )}
+        </Stack>
+      </Card>
+    )
   }
 
   function renderProjectManagementCard(compact = false) {
@@ -3728,8 +5269,14 @@ export default function App() {
     try {
       await clearHrsCredentials()
       autoLoginAttemptedRef.current = false
+      autoLoginLastAttemptAtRef.current = 0
+      autoLoginInFlightRef.current = false
+      sessionRetryCount.current = 0
+      sessionRetryErrorRef.current = null
       setLoggedIn(false)
+      setCheckingSession(false)
       setDuoPending(false)
+      setDuoHint(false)
       setSessionError('Saved HRS credentials were reset. Enter and save credentials on the login page.')
       if (isTray) {
         try {
@@ -3762,6 +5309,7 @@ export default function App() {
     setMeetingsLoading(true)
     setMeetingsError(null)
     setMeetingsFetchPhase('init')
+    setMeetingsDuoPromptActive(false)
     if (!background) {
       setMeetingsProgressLog(['Preparing browser session…'])
       setTrayMeetingsProgressOpen(true)
@@ -3780,6 +5328,7 @@ export default function App() {
         setMeetingsUpdatedAt(cached.updatedAt ?? null)
         setMeetingsProgress('Using cached meetings.')
         setMeetingsFetchPhase('done')
+        setMeetingsDuoPromptActive(false)
         return
       }
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
@@ -3802,6 +5351,7 @@ export default function App() {
         [monthKey]: { updatedAt, meetings: result.meetings || [] }
       }))
       setMeetingsProgress('Meetings ready.')
+      setMeetingsDuoPromptActive(false)
       setMeetingsProgressLog(prev => {
         const message = `Completed fetch (${(result.meetings || []).length} meetings).`
         const next = prev[prev.length - 1] === message ? prev : [...prev, message]
@@ -3814,6 +5364,7 @@ export default function App() {
       setMeetingsError(message)
       setMeetingsProgress('Fetch failed.')
       setMeetingsFetchPhase('error')
+      setMeetingsDuoPromptActive(false)
       setTrayMeetingsProgressOpen(true)
     } finally {
       setMeetingsLoading(false)
@@ -4329,6 +5880,7 @@ export default function App() {
         })
 
         await window.hrs.logWork({ date: dateKey, workLogs })
+        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
 
         setReportWorkLogsByDate(prev => {
           const existing = prev[dateKey] ?? []
@@ -4677,6 +6229,14 @@ export default function App() {
     try {
       const mappings = await window.hrs.setJiraMapping(customer, epicKey)
       setJiraMappings(mappings as Record<string, string>)
+      if (epicKey) {
+        setJiraManualBudgets(prev => {
+          if (!prev[customer]) return prev
+          const next = { ...prev }
+          delete next[customer]
+          return next
+        })
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       reportJiraError(message)
@@ -5403,7 +6963,7 @@ export default function App() {
           customerName: customer,
           projectName: entry.projectInstance || 'Project'
         },
-        entry.comment || ''
+        stripMissionCommentMarkers(entry.comment)
       )
       const createdWorklog = await window.hrs.addJiraWorklog({
         issueKey,
@@ -5504,16 +7064,12 @@ export default function App() {
       ? baseComment
       : applyCommentRules(baseComment, effectiveTask, commentRules)
     const trimmedComment = ruledComment.trim()
-    if (trimmedComment.length < 3) {
+    const apiComment = stripMissionCommentMarkers(trimmedComment)
+    if (apiComment.length < 3) {
       setLogError('Add a short, informative comment before logging.')
       return false
     }
     const effectiveMission = overrides?.mission ?? null
-    const missionMarker = effectiveMission?.virtual ? getMissionCommentMarker(effectiveMission) : ''
-    const apiComment =
-      missionMarker && !trimmedComment.includes(missionMarker)
-        ? `${missionMarker} ${trimmedComment}`
-        : trimmedComment
     const effectiveFromTime = overrides?.fromTime ?? fromTime
     const effectiveToTime = overrides?.toTime ?? toTime
     const effectiveReportingFrom = overrides?.reportingFrom ?? reportingFrom
@@ -5523,7 +7079,7 @@ export default function App() {
       ? jiraMappings[effectiveCustomerName] ?? null
       : null
     const effectiveJiraIssueKey =
-      overrides?.jiraIssueKey ?? jiraIssueKey ?? mappedEpicForLog
+      overrides?.jiraIssueKey ?? effectiveMission?.jiraIssueKey ?? jiraIssueKey ?? mappedEpicForLog
     setLogLoading(true)
     setLogError(null)
     setLogSuccess(null)
@@ -5616,10 +7172,22 @@ export default function App() {
             )
         for (const mission of matchingCappedMissions) {
           const missionTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
-          const marker = mission.virtual ? getMissionCommentMarker(mission) : ''
           const usedMinutes = capSourceReports.reduce((sum, report) => {
             if (!missionTaskIds.has(String(report.taskId))) return sum
-            if (marker && !report.comment?.includes(marker)) return sum
+            if (mission.virtual) {
+              const mappedMission = findMappedMissionForReport(
+                projectManagementConfig?.missions ?? [],
+                reportMissionMap,
+                {
+                  date: report.dateKey,
+                  taskId: report.taskId,
+                  hoursHHMM: report.hours_HHMM,
+                  comment: report.comment,
+                  reportingFrom: report.reporting_from
+                }
+              )
+              if (mappedMission?.id !== mission.id) return sum
+            }
             return sum + parseHoursHHMMToMinutes(report.hours_HHMM)
           }, 0)
           const capMinutes = Math.round((mission.cappedHours ?? 0) * 60)
@@ -5720,6 +7288,23 @@ export default function App() {
         workLogs
       }
       await window.hrs.logWork(payload)
+      let missionMapForSync = reportMissionMap
+      if (effectiveMission?.virtual) {
+        const missionMapKey = buildReportMissionMapKey({
+          date,
+          taskId,
+          hoursHHMM: duration.hoursHHMM,
+          comment: apiComment,
+          reportingFrom: effectiveReportingFrom
+        })
+        missionMapForSync = { ...reportMissionMap, [missionMapKey]: effectiveMission.id }
+        setReportMissionMap(missionMapForSync)
+      }
+      const supabaseSyncResult = await syncHrsMonthToSupabase(dayjs(effectiveDate).toDate(), {
+        silent: true,
+        missionMapOverride: missionMapForSync
+      })
+      const supabaseFailure = supabaseSyncResult?.error ?? null
       setReportWorkLogsByDate(prev => {
         const existing = prev[dateKey] ?? []
         const projectInstance =
@@ -5743,8 +7328,9 @@ export default function App() {
     try {
       const started = buildJiraStarted(effectiveDate, effectiveFromTime)
       const seconds = Math.max(1, Math.round(duration.minutes * 60))
+      const externalComment = stripMissionCommentMarkers(apiComment)
       const jiraComment =
-        overrides?.jiraCommentOverride ?? buildJiraComment(effectiveTask, apiComment)
+        overrides?.jiraCommentOverride ?? buildJiraComment(effectiveTask, externalComment)
       const createdWorklog = await window.hrs.addJiraWorklog({
         issueKey: effectiveJiraIssueKey,
         started,
@@ -5781,8 +7367,53 @@ export default function App() {
       }
     }
       }
+      if (effectiveCustomerName) {
+        const employeeName = getCurrentReporterName()
+        let slackMetrics: SlackUpdateMetrics | null = null
+        const slackLines = [
+          `Employee: ${employeeName}`,
+          `Task: ${effectiveMission?.name ?? effectiveTask?.taskName ?? 'Task'}`,
+          effectiveMission?.virtual && effectiveTask?.taskName
+            ? `Original HRS task: ${effectiveTask.taskName}`
+            : '',
+          `Hours: ${duration.hoursHHMM}`,
+          `Date: ${date}`,
+          effectiveJiraIssueKey ? `Jira: ${effectiveJiraIssueKey}` : '',
+          apiComment ? `Comment: ${apiComment}` : ''
+        ]
+        if (effectiveMission?.virtual && effectiveMission.cappedHours) {
+          const capMinutes = Math.round(effectiveMission.cappedHours * 60)
+          if (capMinutes > 0) {
+            const usedMinutes =
+              getMissionUsedMinutesFromReports(effectiveMission, allReportItems) + duration.minutes
+            const percent = Math.round((usedMinutes / capMinutes) * 100)
+            const remainingMinutes = Math.max(0, capMinutes - usedMinutes)
+            slackMetrics = {
+              capLabel: formatMinutesToLabel(capMinutes),
+              usedLabel: minutesToHHMM(usedMinutes),
+              remainingLabel: minutesToHHMM(remainingMinutes),
+              usedPercent: percent
+            }
+            slackLines.splice(
+              4,
+              0,
+              `Cap: ${formatMinutesToLabel(capMinutes)}`,
+              `Used: ${minutesToHHMM(usedMinutes)} (${percent}%)`,
+              `Remaining: ${minutesToHHMM(remainingMinutes)}`
+            )
+          }
+        }
+        void postSlackCustomerUpdate({
+          customer: effectiveCustomerName,
+          title: 'Hours logged',
+          lines: slackLines,
+          metrics: slackMetrics
+        })
+      }
       if (jiraFailure) {
         setLogError(`HRS saved, Jira failed: ${jiraFailure}`)
+      } else if (supabaseFailure) {
+        setLogError(`HRS saved, Supabase sync failed: ${supabaseFailure}`)
       } else {
         setLogSuccess('Work log saved.')
       }
@@ -6060,6 +7691,7 @@ export default function App() {
         await window.hrs.logWork(payload)
         setLogSuccess(`Log removed for ${dateKey}.`)
       }
+      void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
       if (monthlyReport) {
         const updated = updateMonthlyReportDay(monthlyReport, dateKey, remaining)
         setMonthlyReport(updated)
@@ -6103,7 +7735,7 @@ export default function App() {
               }
             : null
           const expectedComment = removedEntry
-            ? buildJiraComment(meta, removedEntry.comment || '')
+            ? buildJiraComment(meta, stripMissionCommentMarkers(removedEntry.comment))
             : ''
           let worklogIds: string[] = []
           if (jiraEntry.worklogId) {
@@ -6116,7 +7748,7 @@ export default function App() {
               expectedStarted: started,
               seconds,
               expectedComment,
-              rawComment: removedEntry.comment || ''
+              rawComment: stripMissionCommentMarkers(removedEntry.comment)
             })
             worklogIds = candidates.map(entry => entry.id).filter(Boolean)
           }
@@ -6343,6 +7975,7 @@ export default function App() {
           )
           await window.hrs.logWork(payload)
         }
+        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
         affectedMonths.add(dayjs(dateKey).format('YYYY-MM'))
         void refreshReportWorkLogsForDate(dateKey)
       }
@@ -6430,6 +8063,7 @@ export default function App() {
           detailed
         )
         await window.hrs.logWork(payload)
+        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
         void refreshReportWorkLogsForDate(dateKey)
       }
       if (nextJiraEntries !== jiraLoggedEntries) {
@@ -6655,6 +8289,19 @@ export default function App() {
     setLogSuccess(`Loaded from history: ${meta?.taskName ?? item.taskName}`)
   }
 
+  function applyRecentQuickLogFilters(item: {
+    projectName: string
+    customerName: string
+    taskValue: string
+  }) {
+    filtersTouchedRef.current = true
+    setSuppressCustomerAutoSelect(false)
+    setSuppressTaskAutoSelect(false)
+    setProjectName(item.projectName)
+    setCustomerName(item.customerName)
+    setTaskName(item.taskValue)
+  }
+
   function openReview() {
     setReviewChecks({
       task: false,
@@ -6716,7 +8363,17 @@ export default function App() {
   }
 
   function shiftReportMonth(delta: number) {
-    beginMonthTransition(dayjs(reportMonth).add(delta, 'month').toDate())
+    const currentMonth = dayjs().startOf('month')
+    const requestedMonth = dayjs(reportMonth).add(delta, 'month').startOf('month')
+    const nextMonth = requestedMonth.isAfter(currentMonth, 'month') ? currentMonth : requestedMonth
+    beginMonthTransition(nextMonth.toDate())
+  }
+
+  function switchReportSource(source: ReportSource) {
+    setReportSource(source)
+    setReportsLoaded(false)
+    setReportsError(null)
+    reportsRequestId.current += 1
   }
 
   const projectOptions = useMemo(() => buildOptions(logs, log => log.projectName), [logs])
@@ -6785,13 +8442,24 @@ export default function App() {
     reports: Array<ReportItem | WorkReportEntry>
   ) => {
     const hrsTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
-    const missionMarker = mission.virtual ? getMissionCommentMarker(mission) : ''
     return reports.reduce((sum, item) => {
       const taskMatch = hrsTaskIds.size ? hrsTaskIds.has(String(item.taskId)) : false
-      if (taskMatch && missionMarker && !item.comment?.includes(missionMarker)) {
-        return sum
+      if (!taskMatch) return sum
+      if (mission.virtual) {
+        const dateKey = 'dateKey' in item ? item.dateKey : null
+        const mappedMission = dateKey
+          ? findMappedMissionForReport(projectManagementConfig?.missions ?? [], reportMissionMap, {
+              date: dateKey,
+              taskId: item.taskId,
+              hoursHHMM: item.hours_HHMM,
+              comment: item.comment,
+              reportingFrom: item.reporting_from
+            })
+          : null
+        const legacyMissionId = getMissionIdFromCommentMarker(item.comment)
+        if (mappedMission?.id !== mission.id && legacyMissionId !== mission.id) return sum
       }
-      return taskMatch ? sum + parseHoursHHMMToMinutes(item.hours_HHMM) : sum
+      return sum + parseHoursHHMMToMinutes(item.hours_HHMM)
     }, 0)
   }
 
@@ -6862,7 +8530,8 @@ export default function App() {
     customerName,
     projectName,
     activeTaskScope,
-    allReportItems
+    allReportItems,
+    reportMissionMap
   ])
 
   const taskSelectRenderOption: SelectProps['renderOption'] = ({ option, checked }) => {
@@ -7149,7 +8818,7 @@ export default function App() {
       setJiraMappingCustomer(null)
     }
   }, [jiraMappingProject, jiraProjectCustomerOptions, jiraMappingCustomer])
-  const mappedEpicKey = customerName ? jiraMappings[customerName] ?? null : null
+  const mappedEpicKey = getMappedJiraParentForNames([customerName, projectName])
 
   const retryJiraFetch = () => {
     setJiraEpicsFailedAt(null)
@@ -7461,6 +9130,7 @@ export default function App() {
     void loadJiraStatus()
     void loadPreferences()
     void loadProjectManagementConfig()
+    void loadSlackStatus()
     void loadHrsCredentials()
     void loadJiraLoggedEntries()
   }, [])
@@ -7566,7 +9236,7 @@ export default function App() {
   useEffect(() => {
     if (!loggedIn || !shouldLoadLogData) return
     loadReportsForMonth(reportMonth)
-  }, [loggedIn, shouldLoadLogData, reportMonth])
+  }, [loggedIn, shouldLoadLogData, reportMonth, reportSource])
 
   useEffect(() => {
     const syncMonthOnRollover = () => {
@@ -7589,7 +9259,7 @@ export default function App() {
       })
 
       if (loggedIn && shouldLoadLogData) {
-        void loadReportsForMonth(nextDate)
+        void loadReportsForMonth(nextDate, { force: true })
       }
     }
 
@@ -7615,30 +9285,34 @@ export default function App() {
     if (!loggedIn || !shouldLoadLogData) return
     if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
     const intervalId = window.setInterval(() => {
-      void loadReportsForMonth(reportMonth)
+      void loadReportsForMonth(reportMonth, { force: true })
     }, CURRENT_MONTH_REFRESH_INTERVAL_MS)
     const onFocus = () => {
-      void loadReportsForMonth(reportMonth)
+      if (isTray) {
+        void refreshPanelData(trayPanel, { reason: 'focus' })
+      } else {
+        void loadReportsForMonth(reportMonth, { force: true })
+      }
     }
     window.addEventListener('focus', onFocus)
     return () => {
       window.clearInterval(intervalId)
       window.removeEventListener('focus', onFocus)
     }
-  }, [loggedIn, shouldLoadLogData, reportMonth])
+  }, [loggedIn, shouldLoadLogData, reportMonth, isTray, trayPanel])
 
   useEffect(() => {
     if (!isTray || !loggedIn) return
     const onVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return
       if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
-      void loadReportsForMonth(reportMonth)
+      void refreshPanelData(trayPanel, { reason: 'focus' })
     }
     document.addEventListener('visibilitychange', onVisibilityChange)
     return () => {
       document.removeEventListener('visibilitychange', onVisibilityChange)
     }
-  }, [isTray, loggedIn, reportMonth])
+  }, [isTray, loggedIn, reportMonth, trayPanel])
 
   useEffect(() => {
     if (!isTray || !window.hrs?.onTrayOpened) return
@@ -7656,7 +9330,7 @@ export default function App() {
       }, 220)
       if (!loggedIn) return
       if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
-      void loadReportsForMonth(reportMonth)
+      void refreshPanelData(trayPanel, { reason: 'focus' })
     })
     const disposeClosing = window.hrs?.onTrayClosing?.(() => {
       if (trayEnterTimeoutRef.current) {
@@ -7669,7 +9343,7 @@ export default function App() {
       disposeOpen?.()
       disposeClosing?.()
     }
-  }, [isTray, loggedIn, reportMonth])
+  }, [isTray, loggedIn, reportMonth, trayPanel])
 
   useEffect(() => {
     if (!isTray || !loggedIn || trayPanel !== 'meetings') return
@@ -7679,11 +9353,17 @@ export default function App() {
       setMeetings(cached.meetings ?? [])
       setMeetingsMonth(monthKey)
       setMeetingsUpdatedAt(cached.updatedAt ?? null)
+      setMeetingsFetchPhase('done')
+      setMeetingsProgress('Meetings loaded from cache.')
       return
     }
     setMeetings([])
     setMeetingsMonth(monthKey)
     setMeetingsUpdatedAt(null)
+    if (!meetingsLoading) {
+      setMeetingsFetchPhase('idle')
+      setMeetingsProgress(null)
+    }
   }, [isTray, loggedIn, trayPanel, reportMonth, meetingsCache])
 
   useEffect(() => {
@@ -7699,9 +9379,7 @@ export default function App() {
   }, [trayPanel, employeesResult, employeesAccessChecked])
 
   useEffect(() => {
-    const employees = (employeesResult?.employees ?? []).filter(
-      employee => !isExcludedEmployeeName(employee.fullName)
-    )
+    const employees = getReportableEmployees()
     if (!employees.length) {
       setEmployeeReportEmployeeId(null)
       return
@@ -7721,7 +9399,7 @@ export default function App() {
 
   useEffect(() => {
     if (!isTray || !loggedIn || trayPanel !== 'reports') return
-    if (!employeesResult?.hasAccess || !employeesResult.hasEmployees) return
+    if (!employeesResult?.hasAccess || !getReportableEmployees().length) return
     if (!employeeReportEmployeeId) return
 
     const range = getEmployeeMonthRange(reportMonth)
@@ -7764,10 +9442,10 @@ export default function App() {
 
   useEffect(() => {
     if (!isTray || !loggedIn || trayPanel !== 'reports') return
-    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    const monthKey = `${reportSource}:${dayjs(reportMonth).format('YYYY-MM')}`
     if (reportsCacheRef.current.has(monthKey)) return
-    void loadReportsForMonth(reportMonth)
-  }, [isTray, loggedIn, trayPanel, reportMonth])
+    void loadReportsForMonth(reportMonth, { force: true })
+  }, [isTray, loggedIn, trayPanel, reportMonth, reportSource])
 
   useEffect(() => {
     if (!isTray || !loggedIn) return
@@ -8192,6 +9870,18 @@ export default function App() {
     smartDefaults,
     preferencesLoaded
   ])
+
+  useEffect(() => {
+    if (!preferencesLoaded) return
+    try {
+      localStorage.setItem(
+        MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY,
+        JSON.stringify(meetingExcludedSubjects)
+      )
+    } catch {
+      // Ignore unavailable local storage.
+    }
+  }, [meetingExcludedSubjects, preferencesLoaded])
 
   useEffect(() => {
     if (!shouldLoadJiraEpics) return
@@ -8887,14 +10577,8 @@ export default function App() {
   )
 
   const meetingsDuoWaiting = useMemo(() => {
-    if (!meetingsLoading || !meetingsProgress) return false
-    const normalized = meetingsProgress.toLowerCase()
-    return (
-      normalized.includes('duo') ||
-      normalized.includes("approval on user's phone") ||
-      normalized.includes('approval on your phone')
-    )
-  }, [meetingsLoading, meetingsProgress])
+    return meetingsLoading && meetingsDuoPromptActive
+  }, [meetingsDuoPromptActive, meetingsLoading])
 
   const quickMeetingSyncIcon = meetingsDuoWaiting ? (
     <IconAlertTriangle size={16} />
@@ -8932,7 +10616,7 @@ export default function App() {
 
   const quickLogMeetingsPanel = (
     <Stack gap="xs" className="quick-meetings-panel">
-      <Group justify="space-between" align="center" wrap="nowrap">
+      <Group className="quick-meetings-actions" justify="space-between" align="stretch" wrap="nowrap">
         <Popover
           opened={quickMeetingNamesMenuOpen && canOpenQuickMeetingNames}
           onChange={setQuickMeetingNamesMenuOpen}
@@ -8996,6 +10680,17 @@ export default function App() {
             {meetingSubjectFilterContent}
           </Popover.Dropdown>
         </Popover>
+	        <Button
+	          size="xs"
+	          variant="light"
+	          className="quick-floating-timer-button"
+	          leftSection={<IconClock size={15} stroke={2.2} />}
+          onClick={() => {
+	            void openFloatingTimer()
+	          }}
+	        >
+	          Clockify
+	        </Button>
       </Group>
 
       {meetingsError && (
@@ -9175,15 +10870,23 @@ export default function App() {
 
   const getMissionUsedMinutes = (mission: ProjectMission) => {
     const hrsTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
-    const missionMarker = mission.virtual ? getMissionCommentMarker(mission) : ''
     return selectedProjectReportItems.reduce((sum, item) => {
       const taskMatch = hrsTaskIds.size
         ? hrsTaskIds.has(String(item.taskId))
         : (taskMetaById.get(item.taskId)?.taskName || item.taskName) === mission.name
-      if (taskMatch && missionMarker && !item.comment?.includes(missionMarker)) {
-        return sum
+      if (!taskMatch) return sum
+      if (mission.virtual) {
+        const mappedMission = findMappedMissionForReport(projectManagementConfig?.missions ?? [], reportMissionMap, {
+          date: item.dateKey,
+          taskId: item.taskId,
+          hoursHHMM: item.hours_HHMM,
+          comment: item.comment,
+          reportingFrom: item.reporting_from
+        })
+        const legacyMissionId = getMissionIdFromCommentMarker(item.comment)
+        if (mappedMission?.id !== mission.id && legacyMissionId !== mission.id) return sum
       }
-      return taskMatch ? sum + parseHoursHHMMToMinutes(item.hours_HHMM) : sum
+      return sum + parseHoursHHMMToMinutes(item.hours_HHMM)
     }, 0)
   }
 
@@ -9211,7 +10914,7 @@ export default function App() {
                       : null
       return { mission, usedMinutes, usedHours, cap, utilization, warning }
     })
-  }, [selectedProjectMissions, selectedProjectReportItems, taskMetaById])
+  }, [selectedProjectMissions, selectedProjectReportItems, taskMetaById, projectManagementConfig, reportMissionMap])
 
   const selectedProjectJiraIssueOptions = useMemo(() => {
     const options = new Map<string, string>()
@@ -9241,17 +10944,31 @@ export default function App() {
     return Number.isFinite(parsed) ? parsed : null
   }
 
-  function getDefaultJiraIssueForCustomer(customer?: string | null) {
-    if (!customer) return 'HRS-UI'
-    const mapping = projectManagementConfig?.customerMappings.find(
-      item => item.hrsCustomerName === customer
+  function getMappedJiraParentForNames(names: Array<string | null | undefined>) {
+    const candidates = Array.from(
+      new Set(names.map(name => name?.trim()).filter((name): name is string => Boolean(name)))
     )
-    return (
-      mapping?.defaultJiraIssueKey ||
-      mapping?.jiraEpicKeys[0] ||
-      jiraMappings[customer] ||
-      'HRS-UI'
-    )
+    for (const name of candidates) {
+      const mapping = projectManagementConfig?.customerMappings.find(
+        item => item.hrsCustomerName === name
+      )
+      const issueKey =
+        mapping?.defaultJiraIssueKey ||
+        mapping?.jiraEpicKeys[0] ||
+        jiraMappings[name] ||
+        jiraManualBudgets[name]
+      if (issueKey) return issueKey
+    }
+    return null
+  }
+
+  function getMappedJiraParentForTask(task: WorkLog, fallbackCustomer?: string | null) {
+    return getMappedJiraParentForNames([
+      task.customerName,
+      fallbackCustomer,
+      task.projectName,
+      task.projectInstance
+    ])
   }
 
   function openQuickFictiveTaskModal() {
@@ -9266,6 +10983,7 @@ export default function App() {
     setQuickFictiveCappedHours('')
     setQuickFictiveNotes('')
     setQuickFictiveError(null)
+    setQuickFictiveJiraParentKey(null)
     setQuickFictiveModalOpen(true)
   }
 
@@ -9308,23 +11026,65 @@ export default function App() {
       return
     }
 
+    const parentIssueKey = getMappedJiraParentForTask(originalTask, customer)
+    const selectedParentIssueKey = quickFictiveJiraParentKey ?? parentIssueKey
+    if (!selectedParentIssueKey) {
+      setQuickFictiveError('Select the Jira epic for this customer.')
+      return
+    }
+    if (!jiraConfigured) {
+      setQuickFictiveError('Connect Jira before adding this task.')
+      return
+    }
+
+    const plannedHours = parseMissionHoursInput(quickFictivePlannedHours)
+    const cappedHours = parseMissionHoursInput(quickFictiveCappedHours)
+    const description =
+      quickFictiveNotes.trim() ||
+      `UI task for ${originalTask.taskName || `HRS task ${quickFictiveOriginalTaskId}`}`
+
     setProjectManagementLoading(true)
     setQuickFictiveError(null)
     try {
+      console.log(
+        '[FICTIVE TASK JIRA SYNC]',
+        `parent=${selectedParentIssueKey}`,
+        `customer=${customer}`,
+        `originalTaskId=${quickFictiveOriginalTaskId}`,
+        `capHours=${cappedHours ?? 'none'}`
+      )
+      if (quickFictiveJiraParentKey && quickFictiveJiraParentKey !== parentIssueKey) {
+        await updateJiraMapping(customer, quickFictiveJiraParentKey)
+      }
+      const createdIssue = await window.hrs.createJiraIssue({
+        parentIssueKey: selectedParentIssueKey,
+        summary: safeName,
+        description,
+        estimateSeconds:
+          cappedHours && cappedHours > 0
+            ? Math.round(cappedHours * 3600)
+            : plannedHours && plannedHours > 0
+              ? Math.round(plannedHours * 3600)
+              : null
+      })
+      console.log(
+        '[FICTIVE TASK JIRA SYNC]',
+        `createdIssue=${createdIssue.key}`,
+        `parent=${createdIssue.parentIssueKey}`,
+        `estimateSeconds=${createdIssue.estimateSeconds}`
+      )
       const mission = await window.hrs.upsertProjectMission({
         customerName: customer,
         name: safeName,
-        jiraIssueKey: getDefaultJiraIssueForCustomer(customer),
+        jiraIssueKey: createdIssue.key,
         hrsTaskIds: [quickFictiveOriginalTaskId],
         virtual: true,
         assignedEmployees: [],
-        plannedHours: parseMissionHoursInput(quickFictivePlannedHours),
-        cappedHours: parseMissionHoursInput(quickFictiveCappedHours),
+        plannedHours,
+        cappedHours,
         status: 'in_progress',
         dependencies: [],
-        notes:
-          quickFictiveNotes.trim() ||
-          `UI-only task for ${originalTask.taskName || `Task ${quickFictiveOriginalTaskId}`}`
+        notes: description
       })
       await window.hrs.addProjectSyncAuditEntry({
         action: 'create',
@@ -9335,8 +11095,35 @@ export default function App() {
         taskName: mission.name,
         jiraIssueKey: mission.jiraIssueKey,
         hrsTaskId: quickFictiveOriginalTaskId,
-        message: `Quick-log UI task created from HRS task ${quickFictiveOriginalTaskId}.`
+        message: `Quick-log task created under ${selectedParentIssueKey} from HRS task ${quickFictiveOriginalTaskId}.`
       })
+      const reporterName = getCurrentReporterName()
+      const createdCapMinutes = cappedHours && cappedHours > 0 ? Math.round(cappedHours * 60) : 0
+      void postSlackCustomerUpdate({
+        customer,
+        title: 'Task created',
+        lines: [
+          `Reporter: ${reporterName}`,
+          `Task: ${mission.name}`,
+          `Jira: ${mission.jiraIssueKey}`,
+          createdCapMinutes > 0 ? `Cap: ${formatMinutesToLabel(createdCapMinutes)}` : '',
+          createdCapMinutes > 0 ? `Used: 00:00 (0%)` : '',
+          createdCapMinutes > 0 ? `Remaining: ${minutesToHHMM(createdCapMinutes)}` : '',
+          plannedHours && plannedHours > 0 ? `Planned: ${plannedHours}h` : '',
+          `Original HRS task: ${originalTask.taskName}`,
+          description ? `Notes: ${description}` : ''
+        ],
+        metrics:
+          createdCapMinutes > 0
+            ? {
+                capLabel: formatMinutesToLabel(createdCapMinutes),
+                usedLabel: '00:00',
+                remainingLabel: minutesToHHMM(createdCapMinutes),
+                usedPercent: 0
+              }
+            : null
+      })
+      void loadJiraWorkItems(selectedParentIssueKey, true)
       await loadProjectManagementConfig()
       setTaskName(getMissionOptionValue(mission.id))
       setSuppressTaskAutoSelect(false)
@@ -9441,6 +11228,27 @@ export default function App() {
             style={{ '--quick-fictive-progress': width } as CSSProperties}
           />
         </div>
+      </div>
+    )
+  }
+
+  function renderRecentQuickLogShortcuts(compact = false) {
+    if (!recentQuickLogItems.length) return null
+    return (
+      <div className={`quicklog-recent-shortcuts${compact ? ' is-compact' : ''}`}>
+        {recentQuickLogItems.map(item => (
+          <button
+            key={item.id}
+            type="button"
+            className="quicklog-recent-shortcut"
+            onClick={() => applyRecentQuickLogFilters(item)}
+            title={`${item.customerLabel} -> ${item.taskLabel}`}
+          >
+            <span className="quicklog-recent-route">
+              {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
+            </span>
+          </button>
+        ))}
       </div>
     )
   }
@@ -9836,6 +11644,58 @@ export default function App() {
       }))
   }, [allReportItems, taskMetaById, jiraCustomerAliases])
 
+  const recentQuickLogItems = useMemo(() => {
+    const distinctItems: Array<{
+      id: string
+      projectName: string
+      customerName: string
+      customerLabel: string
+      taskValue: string
+      taskLabel: string
+      isVirtual: boolean
+    }> = []
+    const seenRoutes = new Set<string>()
+    for (const item of [...allReportItems]
+      .sort((a, b) => {
+        const aTime = dayjs(`${a.dateKey}T${a.from ?? '00:00'}`).valueOf()
+        const bTime = dayjs(`${b.dateKey}T${b.from ?? '00:00'}`).valueOf()
+        return bTime - aTime
+      })) {
+      const mappedMission = findMappedMissionForReport(projectManagementConfig?.missions ?? [], reportMissionMap, {
+        date: item.dateKey,
+        taskId: item.taskId,
+        hoursHHMM: item.hours_HHMM,
+        comment: item.comment,
+        reportingFrom: item.reporting_from
+      })
+      const mission = mappedMission?.virtual ? mappedMission : null
+      const meta = taskMetaById.get(item.taskId)
+      const missionOriginalTaskId = mission?.hrsTaskIds?.[0]
+      const missionOriginalTask = missionOriginalTaskId
+        ? taskMetaById.get(Number(missionOriginalTaskId))
+        : null
+      const sourceTask = missionOriginalTask ?? meta
+      const rawCustomer = mission?.customerName || sourceTask?.customerName || meta?.customerName || 'Customer'
+      const project = sourceTask?.projectName || meta?.projectName || item.projectInstance || 'Project'
+      const taskValue = mission ? getMissionOptionValue(mission.id) : meta?.taskName || item.taskName
+      const taskLabel = mission?.name || meta?.taskName || item.taskName
+      const routeKey = [project, rawCustomer, taskValue].map(normalizeText).join('|')
+      if (seenRoutes.has(routeKey)) continue
+      seenRoutes.add(routeKey)
+      distinctItems.push({
+        id: `${item.dateKey}-${item.dayIndex}-${item.taskId}-${mission?.id ?? 'hrs'}`,
+        projectName: project,
+        customerName: rawCustomer,
+        customerLabel: getCustomerDisplayName(rawCustomer),
+        taskValue,
+        taskLabel,
+        isVirtual: Boolean(mission)
+      })
+      if (distinctItems.length >= 4) break
+    }
+    return distinctItems
+  }, [allReportItems, taskMetaById, projectManagementConfig, jiraCustomerAliases, reportMissionMap])
+
   const clockHistoryTotalMinutes = useMemo(
     () => clockHistoryItems.reduce((sum, item) => sum + parseHoursHHMMToMinutes(item.hours_HHMM), 0),
     [clockHistoryItems]
@@ -9920,8 +11780,7 @@ export default function App() {
 
   const employeeReportEmployeeOptions = useMemo(
     () => {
-      const employees = (employeesResult?.employees ?? [])
-        .filter(employee => !isExcludedEmployeeName(employee.fullName))
+      const employees = getReportableEmployees()
         .map(employee => ({
           value: employee.id,
           label: `${employee.fullName}${employee.role ? ` · ${employee.role}` : ''}`
@@ -10034,12 +11893,155 @@ export default function App() {
     }).length
   }, [employeeReport, employeeReportDaysByDate, monthlyReport])
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(REPORT_CUSTOMER_ALIASES_STORAGE_KEY, JSON.stringify(reportCustomerAliases))
+    } catch {
+      // Ignore unavailable local storage.
+    }
+  }, [reportCustomerAliases])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(REPORT_MISSION_MAP_STORAGE_KEY, JSON.stringify(reportMissionMap))
+    } catch {
+      // Ignore unavailable local storage.
+    }
+  }, [reportMissionMap])
+
+	  const getReportCustomerAliasKey = (customer: string) => getCustomerAliasKey(customer)
+
+  const getReportCustomerDisplayName = (customer: string) => {
+    const original = customer?.trim() || 'No customer'
+    const alias = reportCustomerAliases[getReportCustomerAliasKey(original)]?.trim()
+    return alias || original
+  }
+
+  const openReportCustomerAliasEditor = (customer: string) => {
+    const original = customer?.trim() || 'No customer'
+    const key = getReportCustomerAliasKey(original)
+    setEditingCustomerAliasKey(key)
+    setCustomerAliasDraft(reportCustomerAliases[key] || original)
+  }
+
+  const saveReportCustomerAlias = (customer: string) => {
+    const original = customer?.trim() || 'No customer'
+    const key = getReportCustomerAliasKey(original)
+    const nextName = customerAliasDraft.trim()
+    setReportCustomerAliases(prev => {
+      const next = { ...prev }
+      if (!nextName || nextName === original) {
+        delete next[key]
+      } else {
+        next[key] = nextName
+      }
+      return next
+    })
+    setEditingCustomerAliasKey(null)
+    setCustomerAliasDraft('')
+  }
+
+  const resetReportCustomerAlias = (customer: string) => {
+    const key = getReportCustomerAliasKey(customer?.trim() || 'No customer')
+    setReportCustomerAliases(prev => {
+      if (!prev[key]) return prev
+      const next = { ...prev }
+      delete next[key]
+      return next
+    })
+    setEditingCustomerAliasKey(null)
+    setCustomerAliasDraft('')
+  }
+
+  const getEmployeeWorkloadProjectKey = (entry: {
+    rawCustomer?: string
+    customer?: string
+    milestone?: string
+  }) => {
+    const rawCustomer = entry.rawCustomer?.trim() || entry.customer?.trim() || 'No customer'
+    const project = entry.milestone?.trim() || rawCustomer
+    return `${normalizeText(rawCustomer).toLowerCase()}\u0000${normalizeText(project).toLowerCase()}`
+  }
+
   const employeeWorkloadBaseEntries = useMemo(() => {
+    if (reportSource === 'supabase') {
+      const rows = supabaseReportRows
+        .filter(row => row.seconds > 0)
+        .map(row => {
+          const rawCustomer = row.customer?.trim() || 'No customer'
+          return {
+            date: normalizeReportDateKey(row.report_date),
+            employeeId: String(row.employee_id),
+            employee: row.employee_name?.trim() || `Employee ${row.employee_id}`,
+            customer: getReportCustomerDisplayName(rawCustomer),
+            rawCustomer,
+            task: row.task_name?.trim() || row.project?.trim() || 'No task',
+            milestone: row.project?.trim() || '',
+            hoursHHMM: secondsToHHMM(row.seconds),
+            minutes: Math.round(row.seconds / 60),
+            rawValue: secondsToHHMM(row.seconds),
+            taskId: row.task_id === null ? null : String(row.task_id)
+          }
+        })
+
+      if (supabaseStatus?.profile?.role === 'manager') return rows
+
+      const viewerEmployeeId = supabaseStatus?.profile?.employee_id
+        ? String(supabaseStatus.profile.employee_id)
+        : ''
+      if (!viewerEmployeeId) return []
+
+      const ownShareableProjectKeys = new Set(
+        rows
+          .filter(row => {
+            if (row.employeeId !== viewerEmployeeId) return false
+            return !isNonBillableEmployeeCustomer(row.rawCustomer)
+          })
+          .map(row => getEmployeeWorkloadProjectKey(row))
+      )
+
+      return rows.filter(row => {
+        if (row.employeeId === viewerEmployeeId) return true
+        if (isNonBillableEmployeeCustomer(row.rawCustomer)) return false
+        return ownShareableProjectKeys.has(getEmployeeWorkloadProjectKey(row))
+      })
+    }
     return (employeeReport?.entries ?? []).filter(entry => {
       const employee = entry.employee?.trim() || 'Employee'
       return entry.minutes > 0 && !isExcludedEmployeeName(employee)
+    }).map(entry => {
+      const rawCustomer = entry.customer?.trim() || 'No customer'
+      return {
+        ...entry,
+        employeeId: null,
+        customer: getReportCustomerDisplayName(rawCustomer),
+        rawCustomer
+      }
     })
-  }, [employeeReport])
+  }, [employeeReport, getReportCustomerDisplayName, reportSource, supabaseReportRows, supabaseStatus])
+
+  const isRegularSupabaseReporter =
+    reportSource === 'supabase' && supabaseStatus?.profile?.role !== 'manager'
+  const regularSupabaseEmployeeId = supabaseStatus?.profile?.employee_id
+    ? String(supabaseStatus.profile.employee_id)
+    : ''
+  const regularSupabaseEmployeeName =
+    employeeWorkloadBaseEntries.find(entry => entry.employeeId === regularSupabaseEmployeeId)?.employee ||
+    supabaseStatus?.profile?.display_name ||
+    ''
+  const regularSupabaseVisibleEmployees = useMemo(
+    () =>
+      new Set(
+        employeeWorkloadBaseEntries
+          .map(entry => entry.employee?.trim())
+          .filter((value): value is string => Boolean(value))
+      ),
+    [employeeWorkloadBaseEntries]
+  )
+  const regularSupabaseHasCrossProjectPeers =
+    isRegularSupabaseReporter && regularSupabaseVisibleEmployees.size > 1
+  const regularSupabaseFiltersLocked =
+    isRegularSupabaseReporter && !regularSupabaseHasCrossProjectPeers
 
   const employeeWorkloadFilterOptions = useMemo(() => {
     const employees = new Map<string, number>()
@@ -10071,6 +12073,14 @@ export default function App() {
   }, [employeeWorkloadBaseEntries])
 
   useEffect(() => {
+    if (regularSupabaseFiltersLocked) {
+      if (regularSupabaseEmployeeName && employeeWorkloadEmployeeFilter !== regularSupabaseEmployeeName) {
+        setEmployeeWorkloadEmployeeFilter(regularSupabaseEmployeeName)
+      }
+      if (employeeWorkloadCustomerFilter) setEmployeeWorkloadCustomerFilter(null)
+      if (employeeWorkloadTaskFilter) setEmployeeWorkloadTaskFilter(null)
+      return
+    }
     if (
       employeeWorkloadEmployeeFilter &&
       !employeeWorkloadFilterOptions.employees.some(option => option.value === employeeWorkloadEmployeeFilter)
@@ -10093,7 +12103,9 @@ export default function App() {
     employeeWorkloadEmployeeFilter,
     employeeWorkloadCustomerFilter,
     employeeWorkloadTaskFilter,
-    employeeWorkloadFilterOptions
+    employeeWorkloadFilterOptions,
+    regularSupabaseEmployeeName,
+    regularSupabaseFiltersLocked
   ])
 
   const employeeWorkloadEntries = useMemo(() => {
@@ -10123,6 +12135,7 @@ export default function App() {
           string,
           {
             customer: string
+            rawCustomer: string
             totalMinutes: number
             tasks: Map<string, { task: string; totalMinutes: number }>
           }
@@ -10133,6 +12146,7 @@ export default function App() {
     for (const entry of employeeWorkloadEntries) {
       const employee = entry.employee?.trim() || 'Employee'
       const customer = entry.customer?.trim() || 'No customer'
+      const rawCustomer = entry.rawCustomer?.trim() || customer
       const task = entry.task?.trim() || 'No task'
       const employeeRow =
         employeeMap.get(employee) ?? {
@@ -10142,6 +12156,7 @@ export default function App() {
             string,
             {
               customer: string
+              rawCustomer: string
               totalMinutes: number
               tasks: Map<string, { task: string; totalMinutes: number }>
             }
@@ -10151,8 +12166,9 @@ export default function App() {
       employeeRow.totalMinutes += entry.minutes
 
       const customerRow =
-        employeeRow.customers.get(customer) ?? {
+        employeeRow.customers.get(rawCustomer) ?? {
           customer,
+          rawCustomer,
           totalMinutes: 0,
           tasks: new Map<string, { task: string; totalMinutes: number }>()
         }
@@ -10161,7 +12177,7 @@ export default function App() {
       const taskRow = customerRow.tasks.get(task) ?? { task, totalMinutes: 0 }
       taskRow.totalMinutes += entry.minutes
       customerRow.tasks.set(task, taskRow)
-      employeeRow.customers.set(customer, customerRow)
+      employeeRow.customers.set(rawCustomer, customerRow)
       employeeMap.set(employee, employeeRow)
     }
 
@@ -10172,6 +12188,7 @@ export default function App() {
         customers: Array.from(employee.customers.values())
           .map(customer => ({
             customer: customer.customer,
+            rawCustomer: customer.rawCustomer,
             totalMinutes: customer.totalMinutes,
             tasks: Array.from(customer.tasks.values()).sort(
               (a, b) => b.totalMinutes - a.totalMinutes || a.task.localeCompare(b.task)
@@ -10188,46 +12205,198 @@ export default function App() {
       {
         customer: string
         task: string
+        rawCustomer: string
         totalMinutes: number
-        employees: Map<string, number>
+        taskIds: Set<string>
+        employees: Map<string, { employee: string; totalMinutes: number }>
       }
     >()
 
     for (const entry of employeeWorkloadEntries) {
       const employee = entry.employee?.trim() || 'Employee'
       const customer = entry.customer?.trim() || 'No customer'
+      const rawCustomer = entry.rawCustomer?.trim() || customer
       const task = entry.task?.trim() || 'No task'
-      const key = `${customer}\u0000${task}`
+      const key = `${rawCustomer}\u0000${task}`
       const row =
         taskMap.get(key) ?? {
           customer,
+          rawCustomer,
           task,
           totalMinutes: 0,
-          employees: new Map<string, number>()
+          taskIds: new Set<string>(),
+          employees: new Map<string, { employee: string; totalMinutes: number }>()
         }
       row.totalMinutes += entry.minutes
-      row.employees.set(employee, (row.employees.get(employee) ?? 0) + entry.minutes)
+      if (entry.taskId) row.taskIds.add(String(entry.taskId))
+      const employeeRow = row.employees.get(employee) ?? { employee, totalMinutes: 0 }
+      employeeRow.totalMinutes += entry.minutes
+      row.employees.set(employee, employeeRow)
       taskMap.set(key, row)
     }
 
     return Array.from(taskMap.values())
-      .map(row => ({
-        customer: row.customer,
-        task: row.task,
-        totalMinutes: row.totalMinutes,
-        employees: Array.from(row.employees.entries())
-          .map(([employee, totalMinutes]) => ({ employee, totalMinutes }))
-          .sort((a, b) => b.totalMinutes - a.totalMinutes || a.employee.localeCompare(b.employee))
-      }))
-      .filter(row => row.employees.length > 1)
-      .sort((a, b) => b.totalMinutes - a.totalMinutes || a.task.localeCompare(b.task))
-  }, [employeeWorkloadEntries])
+      .map(row => {
+        const taskIds = Array.from(row.taskIds)
+        const cappedMission = (projectManagementConfig?.missions ?? []).find(mission => {
+          if (!mission.cappedHours || mission.cappedHours <= 0) return false
+          if (mission.customerName && mission.customerName !== row.rawCustomer) return false
+          const missionTaskIds = (mission.hrsTaskIds ?? []).map(String)
+          return missionTaskIds.some(taskId => taskIds.includes(taskId))
+        })
+        return {
+          customer: row.customer,
+          rawCustomer: row.rawCustomer,
+          task: row.task,
+          totalMinutes: row.totalMinutes,
+          capMinutes: cappedMission?.cappedHours
+            ? Math.round(cappedMission.cappedHours * 60)
+            : null,
+          employees: Array.from(row.employees.values()).sort(
+            (a, b) => b.totalMinutes - a.totalMinutes || a.employee.localeCompare(b.employee)
+          )
+        }
+      })
+      .filter(row => row.employees.length > 1 && !isNonBillableEmployeeCustomer(row.rawCustomer))
+      .sort(
+        (a, b) =>
+          b.totalMinutes - a.totalMinutes ||
+          a.customer.localeCompare(b.customer) ||
+          a.task.localeCompare(b.task)
+      )
+  }, [employeeWorkloadEntries, projectManagementConfig])
+
+  const employeeSharedTaskKeys = useMemo(
+    () => new Set(employeeSharedTasks.map(row => `${row.rawCustomer}\u0000${row.task}`)),
+    [employeeSharedTasks]
+  )
+
+  const individualEmployeeProjectWorkload = useMemo(() => {
+    return employeeProjectWorkload
+      .map(employee => {
+        const customers = employee.customers
+          .map(customer => {
+            const tasks = customer.tasks.filter(
+              task => !employeeSharedTaskKeys.has(`${customer.rawCustomer}\u0000${task.task}`)
+            )
+            const totalMinutes = tasks.reduce((sum, task) => sum + task.totalMinutes, 0)
+            return {
+              ...customer,
+              tasks,
+              totalMinutes
+            }
+          })
+          .filter(customer => customer.tasks.length)
+
+        return {
+          ...employee,
+          customers,
+          totalMinutes: customers.reduce((sum, customer) => sum + customer.totalMinutes, 0)
+        }
+      })
+      .filter(employee => employee.customers.length)
+  }, [employeeProjectWorkload, employeeSharedTaskKeys])
+
+  const renderEditableReportCustomerName = (customer: string, rawCustomer: string) => {
+    const key = getReportCustomerAliasKey(rawCustomer)
+    const isEditing = editingCustomerAliasKey === key
+    return (
+      <Group gap={4} align="center" wrap="nowrap" className="tray-employee-workload-customer-title">
+        <Text size="xs" fw={700} lineClamp={1}>
+          {customer}
+        </Text>
+        <Popover
+          opened={isEditing}
+          onChange={opened => {
+            if (!opened) {
+              setEditingCustomerAliasKey(null)
+              setCustomerAliasDraft('')
+            }
+          }}
+          width={250}
+          position="bottom-start"
+          withArrow
+          shadow="md"
+          withinPortal
+          zIndex={4000}
+        >
+          <Popover.Target>
+            <ActionIcon
+              size="xs"
+              variant="subtle"
+              color="gray"
+              aria-label={`Edit ${customer} display name`}
+              className="tray-employee-workload-edit"
+              onClick={() => openReportCustomerAliasEditor(rawCustomer)}
+            >
+              <IconPencil size={12} />
+            </ActionIcon>
+          </Popover.Target>
+          <Popover.Dropdown>
+            <Stack gap={8}>
+              <TextInput
+                label="Customer name"
+                value={customerAliasDraft}
+                onChange={event => setCustomerAliasDraft(event.currentTarget.value)}
+                size="xs"
+                autoFocus
+              />
+              <Group justify="space-between" gap="xs" wrap="nowrap">
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  color="gray"
+                  onClick={() => resetReportCustomerAlias(rawCustomer)}
+                >
+                  Reset
+                </Button>
+                <Group gap={4} wrap="nowrap">
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    color="gray"
+                    aria-label="Cancel customer name edit"
+                    onClick={() => {
+                      setEditingCustomerAliasKey(null)
+                      setCustomerAliasDraft('')
+                    }}
+                  >
+                    <IconX size={14} />
+                  </ActionIcon>
+                  <ActionIcon
+                    size="sm"
+                    variant="filled"
+                    color="blue"
+                    aria-label="Save customer name"
+                    onClick={() => saveReportCustomerAlias(rawCustomer)}
+                  >
+                    <IconCheck size={14} />
+                  </ActionIcon>
+                </Group>
+              </Group>
+              <Text size="xs" c="dimmed">
+                Saved only on this device for Reports.
+              </Text>
+            </Stack>
+          </Popover.Dropdown>
+        </Popover>
+      </Group>
+    )
+  }
 
   function renderEmployeeProjectWorkloadCard() {
-    const hasEmployeeAccess = Boolean(employeesResult?.hasAccess && employeesResult.hasEmployees)
+    const hasEmployeeAccess =
+      reportSource === 'supabase'
+        ? Boolean(supabaseStatus?.profile)
+        : Boolean(employeesResult?.hasAccess && getReportableEmployees().length)
+    const workloadLoading =
+      reportSource === 'supabase' ? reportsLoading : employeeReportLoading || employeesLoading
+    const filtersDisabled = workloadLoading || !employeeWorkloadBaseEntries.length
+    const workloadFiltersLocked = regularSupabaseFiltersLocked
     const filtersActive = Boolean(
       employeeWorkloadEmployeeFilter || employeeWorkloadCustomerFilter || employeeWorkloadTaskFilter
     )
+    const hasWorkloadRows = individualEmployeeProjectWorkload.length || employeeSharedTasks.length
     return (
       <Card radius="md" withBorder className="tray-employee-workload-card">
         <Stack gap="xs">
@@ -10255,7 +12424,7 @@ export default function App() {
               onChange={setEmployeeWorkloadEmployeeFilter}
               searchable
               clearable
-              disabled={!employeeReport || employeeReportLoading}
+              disabled={filtersDisabled || workloadFiltersLocked}
               size="xs"
               styles={traySelectStyles}
             />
@@ -10267,7 +12436,7 @@ export default function App() {
               onChange={setEmployeeWorkloadCustomerFilter}
               searchable
               clearable
-              disabled={!employeeReport || employeeReportLoading}
+              disabled={filtersDisabled || workloadFiltersLocked}
               size="xs"
               styles={traySelectStyles}
             />
@@ -10279,7 +12448,7 @@ export default function App() {
               onChange={setEmployeeWorkloadTaskFilter}
               searchable
               clearable
-              disabled={!employeeReport || employeeReportLoading}
+              disabled={filtersDisabled || workloadFiltersLocked}
               size="xs"
               styles={traySelectStyles}
             />
@@ -10291,7 +12460,7 @@ export default function App() {
             <Button
               size="compact-xs"
               variant="subtle"
-              disabled={!filtersActive}
+              disabled={!filtersActive || workloadFiltersLocked}
               onClick={() => {
                 setEmployeeWorkloadEmployeeFilter(null)
                 setEmployeeWorkloadCustomerFilter(null)
@@ -10306,124 +12475,154 @@ export default function App() {
             <Text size="xs" c="dimmed">
               Employee reports are not available for this account.
             </Text>
-          ) : employeeReportLoading || employeesLoading ? (
+          ) : workloadLoading ? (
             <Group gap="xs">
               <Loader size="xs" />
               <Text size="xs" c="dimmed">
                 Loading employee workload...
               </Text>
             </Group>
-          ) : employeeProjectWorkload.length ? (
-            <Stack gap={8} className="tray-employee-workload-list">
-              <Card radius="md" withBorder className="tray-employee-workload-shared">
-                <Stack gap={7}>
-                  <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+          ) : hasWorkloadRows ? (
+            <div className="tray-employee-workload-results">
+              <div className="tray-employee-workload-split">
+                <Card radius="md" withBorder className="tray-employee-workload-section">
+                  <Stack gap={8}>
                     <Text size="xs" fw={800}>
-                      Shared tasks
+                      Individual projects
                     </Text>
-                    <Badge size="xs" variant="light" color="grape">
-                      {employeeSharedTasks.length}
-                    </Badge>
-                  </Group>
-                  {employeeSharedTasks.length ? (
-                    <Stack gap={6}>
-                      {employeeSharedTasks.slice(0, 5).map(row => (
-                        <div
-                          key={`${row.customer}-${row.task}`}
-                          className="tray-employee-workload-shared-task"
-                        >
-                          <Group justify="space-between" align="flex-start" gap="xs" wrap="nowrap">
-                            <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
-                              <Text size="xs" fw={800} lineClamp={1}>
-                                {row.task}
-                              </Text>
-                              <Text size="xs" c="dimmed" lineClamp={1}>
-                                {row.customer}
-                              </Text>
-                            </Stack>
-                            <Badge size="xs" variant="light" color="teal">
-                              {minutesToHHMM(row.totalMinutes)}
-                            </Badge>
-                          </Group>
-                          <Group gap={5} mt={6} className="tray-employee-workload-people">
-                            {row.employees.slice(0, 5).map(person => (
-                              <Badge
-                                key={`${row.customer}-${row.task}-${person.employee}`}
-                                size="xs"
-                                variant="outline"
-                                color="blue"
-                              >
-                                {person.employee} · {minutesToHHMM(person.totalMinutes)}
-                              </Badge>
-                            ))}
-                          </Group>
-                        </div>
-                      ))}
-                    </Stack>
-                  ) : (
-                    <Text size="xs" c="dimmed">
-                      No task is shared by multiple employees in this filter.
-                    </Text>
-                  )}
-                </Stack>
-              </Card>
-
-              {employeeProjectWorkload.slice(0, 8).map(employee => (
-                <Card
-                  key={employee.employee}
-                  radius="md"
-                  withBorder
-                  className="tray-employee-workload-employee"
-                >
-                  <Stack gap={7}>
-                    <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
-                      <Text size="xs" fw={800} lineClamp={1}>
-                        {employee.employee}
-                      </Text>
-                      <Badge size="xs" variant="light" color="blue">
-                        {minutesToHHMM(employee.totalMinutes)}
-                      </Badge>
-                    </Group>
-                    <Stack gap={6}>
-                      {employee.customers.slice(0, 5).map(customer => (
-                        <div
-                          key={`${employee.employee}-${customer.customer}`}
-                          className="tray-employee-workload-customer"
-                        >
-                          <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
-                            <Text size="xs" fw={700} lineClamp={1}>
-                              {customer.customer}
-                            </Text>
-                            <Text size="xs" fw={800} className="tray-employee-workload-hours">
-                              {minutesToHHMM(customer.totalMinutes)}
-                            </Text>
-                          </Group>
-                          <Stack gap={3} mt={4}>
-                            {customer.tasks.slice(0, 4).map(task => (
-                              <Group
-                                key={`${customer.customer}-${task.task}`}
-                                justify="space-between"
-                                align="center"
-                                gap="xs"
-                                wrap="nowrap"
-                                className="tray-employee-workload-task"
-                              >
-                                <Text size="xs" c="dimmed" lineClamp={1}>
-                                  {task.task}
+                    {individualEmployeeProjectWorkload.length ? (
+                      <Stack gap={8} className="tray-employee-workload-list">
+                        {individualEmployeeProjectWorkload.map(employee => (
+                          <Card
+                            key={employee.employee}
+                            radius="md"
+                            withBorder
+                            className="tray-employee-workload-employee"
+                          >
+                            <Stack gap={7}>
+                              <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                                <Text size="xs" fw={800} lineClamp={1}>
+                                  {employee.employee}
                                 </Text>
-                                <Badge size="xs" variant="outline" color="gray">
-                                  {minutesToHHMM(task.totalMinutes)}
-                                </Badge>
+                                <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                  {minutesToHHMM(employee.totalMinutes)}
+                                </Text>
                               </Group>
-                            ))}
-                          </Stack>
-                        </div>
-                      ))}
-                    </Stack>
+                              <Stack gap={6}>
+                                {employee.customers.map(customer => (
+                                  <div
+                                    key={`${employee.employee}-${customer.customer}`}
+                                    className="tray-employee-workload-customer"
+                                  >
+                                    <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                                      {renderEditableReportCustomerName(
+                                        customer.customer,
+                                        customer.rawCustomer
+                                      )}
+                                      <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                        {minutesToHHMM(customer.totalMinutes)}
+                                      </Text>
+                                    </Group>
+                                    <Stack gap={3} mt={4}>
+                                      {customer.tasks.map(task => (
+                                        <Group
+                                          key={`${customer.customer}-${task.task}`}
+                                          justify="space-between"
+                                          align="center"
+                                          gap="xs"
+                                          wrap="nowrap"
+                                          className="tray-employee-workload-task"
+                                        >
+                                          <Text size="xs" c="dimmed" lineClamp={1}>
+                                            {task.task}
+                                          </Text>
+                                          <Text size="xs" fw={700} className="tray-employee-workload-hours">
+                                            {minutesToHHMM(task.totalMinutes)}
+                                          </Text>
+                                        </Group>
+                                      ))}
+                                    </Stack>
+                                  </div>
+                                ))}
+                              </Stack>
+                            </Stack>
+                          </Card>
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        No individual project hours for the selected filters.
+                      </Text>
+                    )}
                   </Stack>
                 </Card>
-              ))}
-            </Stack>
+
+                <Card radius="md" withBorder className="tray-employee-workload-shared">
+                  <Stack gap={8}>
+                    <Text size="xs" fw={800}>
+                      Cross projects
+                    </Text>
+                    {employeeSharedTasks.length ? (
+                      <Stack gap={6} className="tray-employee-workload-list">
+                        {employeeSharedTasks.map(row => (
+                          <div
+                            key={`${row.customer}-${row.task}`}
+                            className="tray-employee-workload-shared-task"
+                          >
+                            <Group justify="space-between" align="flex-start" gap="xs" wrap="nowrap">
+                              <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+                                {renderEditableReportCustomerName(row.customer, row.rawCustomer)}
+                                <Text size="xs" c="dimmed" lineClamp={1}>
+                                  {row.task}
+                                </Text>
+                              </Stack>
+                              <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                {minutesToHHMM(row.totalMinutes)}
+                              </Text>
+                            </Group>
+                            <Stack gap={5} mt={6} className="tray-employee-workload-people">
+                              {row.employees.map(person => (
+                                <div
+                                  key={`${row.customer}-${row.task}-${person.employee}`}
+                                  className="tray-employee-workload-person-row"
+                                >
+                                  <Group justify="space-between" gap="xs" wrap="nowrap">
+                                    <Text size="xs" fw={700} lineClamp={1}>
+                                      {person.employee}
+                                    </Text>
+                                    <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                      {minutesToHHMM(person.totalMinutes)}
+                                      {row.capMinutes ? ` / ${minutesToHHMM(row.capMinutes)}` : ''}
+                                    </Text>
+                                  </Group>
+                                  {row.capMinutes ? (
+                                    <div className="tray-employee-workload-cap-track">
+                                      <div
+                                        className="tray-employee-workload-cap-fill"
+                                        style={{
+                                          width: `${Math.min(
+                                            100,
+                                            Math.round((person.totalMinutes / row.capMinutes) * 100)
+                                          )}%`
+                                        }}
+                                      />
+                                    </div>
+                                  ) : null}
+                                </div>
+                              ))}
+                            </Stack>
+                          </div>
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Text size="xs" c="dimmed">
+                        No projects with two or more reporting employees.
+                      </Text>
+                    )}
+                  </Stack>
+                </Card>
+              </div>
+            </div>
           ) : (
             <Text size="xs" c="dimmed">
               No employee project hours found for this month.
@@ -11402,6 +13601,8 @@ export default function App() {
 
   const exportMonthLabel = useMemo(() => dayjs(reportMonth).format('MMMM YYYY'), [reportMonth])
   const exportMonthKey = useMemo(() => dayjs(reportMonth).format('YYYY-MM'), [reportMonth])
+  const isReportMonthCurrent = dayjs(reportMonth).isSame(dayjs(), 'month')
+  const isEmployeeReportMonthCurrent = dayjs(employeeReportMonth).isSame(dayjs(), 'month')
 
   const exportItems = useMemo(() => {
     if (!exportFiltered) return allReportItems
@@ -11992,6 +14193,13 @@ export default function App() {
     </Modal>
   )
 
+  const quickFictiveMappingCustomer =
+    quickFictiveOriginalTask?.customerName || customerName || null
+  const quickFictiveMappedJiraParent = quickFictiveOriginalTask
+    ? getMappedJiraParentForTask(quickFictiveOriginalTask, quickFictiveMappingCustomer)
+    : null
+  const quickFictiveJiraParentValue = quickFictiveJiraParentKey ?? quickFictiveMappedJiraParent
+
   const quickFictiveTaskModal = (
     <Modal
       opened={quickFictiveModalOpen}
@@ -12011,10 +14219,39 @@ export default function App() {
           placeholder="Select the task that receives the API report"
           data={quickFictiveOriginalTaskOptions}
           value={quickFictiveOriginalTaskId}
-          onChange={setQuickFictiveOriginalTaskId}
+          onChange={value => {
+            setQuickFictiveOriginalTaskId(value)
+            setQuickFictiveJiraParentKey(null)
+          }}
           searchable
           nothingFoundMessage="No HRS tasks in the current scope"
         />
+        {quickFictiveOriginalTask && (
+          <Select
+            label="Jira epic"
+            placeholder="Select the Jira epic for this customer"
+            data={jiraEpicOptions}
+            value={quickFictiveJiraParentValue}
+            onChange={value => {
+              setQuickFictiveJiraParentKey(value)
+              if (quickFictiveError) setQuickFictiveError(null)
+            }}
+            searchable
+            clearable
+            nothingFoundMessage="No Jira epics found"
+            disabled={!jiraConfigured || jiraLoading || !jiraEpicOptions.length}
+          />
+        )}
+        {quickFictiveOriginalTask && quickFictiveMappingCustomer && quickFictiveJiraParentValue && (
+          <Text size="xs" c="dimmed">
+            Saved mapping: {quickFictiveMappingCustomer} · {quickFictiveJiraParentValue}
+          </Text>
+        )}
+        {quickFictiveOriginalTask && !quickFictiveJiraParentValue && (
+          <Text size="xs" c="dimmed">
+            Select once and HRS Desktop will remember it for this customer.
+          </Text>
+        )}
         <TextInput
           label="Task name"
           placeholder="API / Auth / Optimizations"
@@ -12306,13 +14543,13 @@ export default function App() {
           )}
 
           {window.hrs && !appReady && (
-            <Stack gap="xs" align="center" className="tray-loading">
-              <Loader size="sm" />
-              <Text size="sm" c="dimmed">
-                Loading Quick Log…
-              </Text>
-              <div className="tray-loading-bar" />
-            </Stack>
+            <div className="tray-loading" aria-label="Loading Quick Log">
+              <div className="tray-loading-lines" aria-hidden="true">
+                <span className="tray-loading-line is-one" />
+                <span className="tray-loading-line is-two" />
+                <span className="tray-loading-line is-three" />
+              </div>
+            </div>
           )}
 
           {window.hrs && appReady && !loggedIn && (
@@ -12350,7 +14587,6 @@ export default function App() {
                 size="xs"
                 variant="light"
                 color="red"
-                loading={checkingSession}
                 onClick={() => {
                   void resetHrsCredentialsAndOpenLogin()
                 }}
@@ -12369,7 +14605,13 @@ export default function App() {
                 <Text className="tray-month-label">
                   {dayjs(reportMonth).format('MMMM YYYY')}
                 </Text>
-                <Box className="tray-month-nav-spacer" aria-hidden="true" />
+                {isReportMonthCurrent ? (
+                  <Box className="tray-month-nav-spacer" aria-hidden="true" />
+                ) : (
+                  <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(1)}>
+                    Next
+                  </Button>
+                )}
               </Group>
               <div className="tray-nav-row">
                 <Tooltip label="Quick Log" withArrow openDelay={120} withinPortal>
@@ -12385,32 +14627,21 @@ export default function App() {
                     <IconClipboardText size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
-                <Tooltip label="Clockify" withArrow openDelay={120} withinPortal>
-                  <ActionIcon
-                    className="tray-nav-icon-btn"
-                    size={38}
-                    radius="md"
-                    variant={trayPanel === 'clockify' ? 'light' : 'subtle'}
-                    onClick={() => switchTrayPanel('clockify')}
-                    aria-label="Clockify"
-                    title="Clockify"
-                  >
-                    <IconClock size={18} stroke={2.2} />
-                  </ActionIcon>
-                </Tooltip>
-                <Tooltip label="Agenda" withArrow openDelay={120} withinPortal>
-                  <ActionIcon
-                    className="tray-nav-icon-btn"
-                    size={38}
-                    radius="md"
-                    variant={trayPanel === 'agenda' ? 'light' : 'subtle'}
-                    onClick={() => switchTrayPanel('agenda')}
-                    aria-label="Agenda"
-                    title="Agenda"
-                  >
-                    <IconListDetails size={18} stroke={2.2} />
-                  </ActionIcon>
-                </Tooltip>
+                {AGENDA_UI_ENABLED && (
+                  <Tooltip label="Agenda" withArrow openDelay={120} withinPortal>
+                    <ActionIcon
+                      className="tray-nav-icon-btn"
+                      size={38}
+                      radius="md"
+                      variant={trayPanel === 'agenda' ? 'light' : 'subtle'}
+                      onClick={() => switchTrayPanel('agenda')}
+                      aria-label="Agenda"
+                      title="Agenda"
+                    >
+                      <IconListDetails size={18} stroke={2.2} />
+                    </ActionIcon>
+                  </Tooltip>
+                )}
                 {employeesResult?.hasAccess && employeesResult.hasEmployees && (
                   <Tooltip label="Employees" withArrow openDelay={120} withinPortal>
                     <ActionIcon
@@ -12541,10 +14772,11 @@ export default function App() {
                                     const dayMeetings = meetingsVisibleByDate.get(dayCell.key) ?? []
                                     const hasMeetings = dayMeetings.length > 0
                                     const hasManyMeetings = dayMeetings.length > 1
+                                    const hasDayHoverContent = hasReports || hasMeetings
                                     return (
                                       <HoverCard
                                         key={dayCell.key}
-                                        disabled={!dayCell.inMonth}
+                                        disabled={!dayCell.inMonth || !hasDayHoverContent}
                                         position="top"
                                         withArrow
                                         openDelay={120}
@@ -12582,6 +14814,11 @@ export default function App() {
                                               }
                                               onClick={() => {
                                                 if (!dayCell.inMonth) return
+                                                handleCalendarChange(dayCell.date)
+                                              }}
+                                              onContextMenu={event => {
+                                                if (!dayCell.inMonth) return
+                                                event.preventDefault()
                                                 openTrayDayEditor(dayCell.date)
                                               }}
                                               disabled={!dayCell.inMonth}
@@ -12666,6 +14903,8 @@ export default function App() {
                         )
                       })()}
                     </div>
+
+                    {renderRecentQuickLogShortcuts(true)}
 
                     <SimpleGrid cols={3} spacing="xs" className="tray-filters">
                       <Select
@@ -13102,123 +15341,44 @@ export default function App() {
 	                      </Text>
 	                    ) : null}
                   </Stack>
-                ) : trayPanel === 'agenda' ? (
-                  <Stack gap="xs">
-                    <Card radius="md" withBorder>
-                      <Stack gap="xs">
-                        <Group justify="center">
-                          <Badge variant="light" className="tray-agenda-date-pill">
-                            Agenda for {dayjs().format('DD/MM')}
-                          </Badge>
-                        </Group>
-                        <Card radius="md" withBorder className="tray-meetings-controls">
-                          <Stack gap="xs">
-                            <Group justify="space-between" align="center">
-                              <Text size="xs" fw={600}>
-                                Microsoft account
+		                ) : AGENDA_UI_ENABLED && trayPanel === 'agenda' ? (
+		                  <Stack gap="xs" className="tray-agenda-native">
+		                    <Card radius="md" withBorder className="tray-agenda-native-shell">
+		                      <Stack gap="xs">
+		                        <Group justify="space-between" align="flex-start" wrap="nowrap">
+                            <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
+		                            <Text size="sm" fw={800} className="tray-agenda-title">
+		                              Agenda
+		                            </Text>
+                              <Text size="xs" c="dimmed">
+                                {agendaSavedAtDate
+                                  ? `Last fetched ${agendaSavedAtDate.format('DD/MM HH:mm')}`
+                                  : `No agenda fetched yet`}
                               </Text>
-                              <Badge size="xs" variant="light" color="blue">
-                                Chrome background
-                              </Badge>
-                              <Button
-                                size="xs"
-                                variant="subtle"
-                                onClick={() => setAgendaSettingsOpen(prev => !prev)}
-                              >
-                                {agendaSettingsOpen ? 'Hide' : 'Show'}
-                              </Button>
-                            </Group>
-                            <Collapse in={agendaSettingsOpen} transitionDuration={160}>
-                              <Stack gap="xs">
-                                <SimpleGrid cols={2} spacing="xs">
-                                  <TextInput
-                                    label="Domain user"
-                                    placeholder="you@company.com"
-                                    value={meetingsUsername}
-                                    onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                                    size="xs"
-                                  />
-                                  <PasswordInput
-                                    label="Domain password"
-                                    placeholder="••••••••"
-                                    value={meetingsPassword}
-                                    onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                                    size="xs"
-                                  />
-                                </SimpleGrid>
-                                <SimpleGrid cols={2} spacing="xs">
-                                  <TextInput
-                                    label="Your name (English)"
-                                    placeholder="English display name"
-                                    value={agendaPersonEnglish}
-                                    onChange={event => setAgendaPersonEnglish(event.currentTarget.value)}
-                                    size="xs"
-                                  />
-                                  <TextInput
-                                    label="Your name (Hebrew)"
-                                    placeholder="Hebrew display name"
-                                    value={agendaPersonHebrew}
-                                    onChange={event => setAgendaPersonHebrew(event.currentTarget.value)}
-                                    size="xs"
-                                  />
-                                </SimpleGrid>
-                                <TextInput
-                                  label="Task tags / aliases"
-                                  placeholder="comma-separated names, project tags, team aliases"
-                                  value={agendaPersonTags}
-                                  onChange={event => setAgendaPersonTags(event.currentTarget.value)}
-                                  size="xs"
-                                />
-                                <SimpleGrid cols={2} spacing="xs">
-                                  <PasswordInput
-                                    label="OpenAI API key"
-                                    placeholder={agendaAiHasApiKey ? 'Saved' : 'sk-...'}
-                                    value={agendaAiApiKey}
-                                    onChange={event => setAgendaAiApiKey(event.currentTarget.value)}
-                                    size="xs"
-                                  />
-                                  <TextInput
-                                    label="AI model"
-                                    placeholder="gpt-4o-mini"
-                                    value={agendaAiModel}
-                                    onChange={event => setAgendaAiModel(event.currentTarget.value)}
-                                    size="xs"
-                                  />
-                                </SimpleGrid>
-                                <Group justify="space-between" gap="xs">
-                                  <Badge size="xs" variant="light" color={agendaAiHasApiKey ? 'teal' : 'red'}>
-                                    {agendaAiHasApiKey ? 'OpenAI configured' : 'OpenAI not configured'}
-                                  </Badge>
-                                  <Button
-                                    size="compact-xs"
-                                    variant="light"
-                                    loading={agendaAiSaving}
-                                    onClick={() => void saveAgendaAiConfig()}
-                                  >
-                                    Save AI
-                                  </Button>
-                                </Group>
-                              </Stack>
-                            </Collapse>
-                          </Stack>
-                        </Card>
-                        <Button
-                          size="xs"
-                          variant="light"
-                          onClick={() => void fetchAgenda()}
-                          disabled={agendaLoading}
-                        >
-                          {agendaLoading ? 'Building agenda...' : 'Fetch agenda'}
-                        </Button>
+                            </Stack>
+                            <Button
+                              size="xs"
+                              variant="light"
+                              onClick={() => void fetchAgenda()}
+                              disabled={agendaLoading}
+                            >
+                              {agendaLoading ? 'Fetching...' : 'Fetch'}
+                            </Button>
+		                        </Group>
+                        {agendaIsStale && agendaSavedAtDate ? (
+                          <Text size="xs" c="dimmed" className="tray-agenda-native-note">
+                            This is not today’s agenda. Fetch again to update it.
+                          </Text>
+                        ) : null}
                         {agendaLoading && (
-                          <Card radius="md" withBorder className="tray-agenda-ai-orb-card">
-                            <div className="tray-agenda-ai-orb" aria-hidden="true">
-                              <span />
-                            </div>
-                            <Text size="xs" fw={700} ta="center">
-                              {agendaLoadingMessage}
-                            </Text>
-                          </Card>
+	                          <Card radius="md" withBorder className="tray-agenda-ai-orb-card">
+	                            <div className="tray-agenda-ai-orb" aria-hidden="true">
+	                              <span />
+	                            </div>
+	                            <Text size="xs" fw={700} ta="center" className="tray-agenda-fact">
+	                              {agendaFact}
+	                            </Text>
+	                          </Card>
                         )}
                         {showAgendaProgressTracker && (
                           <Card radius="md" withBorder className="tray-meetings-progress">
@@ -13271,60 +15431,114 @@ export default function App() {
                           </Card>
                         )}
                         {agendaError && <Alert color="red" variant="light">{agendaError}</Alert>}
-                        {agendaSummary && (
-                          <Stack gap={8} className="tray-agenda-summary">
-                            <Group justify="space-between" align="flex-start" gap="xs">
-                              <Stack gap={2} style={{ flex: 1 }}>
-                                <Text size="xs" fw={700}>
-                                  Agenda brief
-                                </Text>
+	                        {agendaSummary && (
+	                          <Stack gap={7} className="tray-agenda-summary">
+                              {agendaCustomerBriefSections.length ? (
+                                agendaCustomerBriefSections.map(section => (
+                                  <ul key={section.customer} className="tray-agenda-customer-brief-list">
+                                    {section.bullets.map(bullet => (
+                                      <li key={bullet}>{bullet}</li>
+                                    ))}
+                                  </ul>
+                                ))
+                              ) : (
                                 <Text size="xs" c="dimmed">
-                                  {agendaSummary.brief ||
-                                    `Unanswered emails: ${agendaSummary.unansweredEmails} · Meetings this week: ${agendaSummary.meetingsThisWeek}`}
+                                  Choose a customer to see the current brief.
                                 </Text>
-                              </Stack>
-                              <Badge
-                                size="xs"
-                                variant="light"
-                                color={agendaSummary.aiProvider === 'openai' ? 'teal' : 'red'}
-                              >
-                                {agendaSummary.aiProvider === 'openai' ? 'OpenAI' : 'AI off'}
-                              </Badge>
-                            </Group>
-                            {agendaSummary.focus?.length ? (
-                              <Stack gap={4}>
-                                {agendaSummary.focus.slice(0, 3).map(focus => (
-                                  <Text key={focus} size="xs" c="dimmed" className="tray-agenda-focus">
-                                    {focus}
-                                  </Text>
-                                ))}
-                              </Stack>
-                            ) : null}
-                            <Group gap={6}>
-                              <Badge size="xs" variant="outline" color="orange">
-                                Tasks {agendaCategoryCounts.task || 0}
-                              </Badge>
-                              <Badge size="xs" variant="outline" color="blue">
-                                Need Reply {agendaCategoryCounts.reply || 0}
-                              </Badge>
-                              <Badge size="xs" variant="outline" color="yellow">
-                                Follow up {agendaCategoryCounts.followup || 0}
-                              </Badge>
-                              <Badge size="xs" variant="outline" color="teal">
-                                Prep {agendaCategoryCounts.meetingPrep || 0}
-                              </Badge>
-                              <Badge size="xs" variant="outline" color="grape">
-                                Signals {agendaCategoryCounts.signal || 0}
-                              </Badge>
-                            </Group>
-                          </Stack>
-                        )}
-                        {agendaItems.length ? (
-                          <Stack gap={8}>
-                            <Group justify="space-between" className="tray-agenda-toolbar">
-                              <Text size="xs" c="dimmed">
-                                {visibleAgendaItems.length} open · {agendaResolvedCount} resolved · {agendaHiddenCount} hidden
-                              </Text>
+                              )}
+	                          </Stack>
+	                        )}
+		                        {agendaItems.length ? (
+		                          <Stack gap={8}>
+			                            {agendaCustomerOptions.length ? (
+				                              <Group align="flex-end" gap={6} wrap="nowrap" className="tray-agenda-filter-row">
+			                                <Select
+			                                  label="Customer"
+			                                  size="xs"
+			                                  data={agendaCustomerOptions}
+			                                  value={agendaCustomerFilter}
+			                                  onChange={value => {
+			                                    if (value) setAgendaCustomerFilter(value)
+			                                  }}
+			                                  allowDeselect={false}
+			                                  searchable
+			                                  className="tray-agenda-customer-filter"
+			                                  style={{ flex: 1 }}
+			                                />
+			                                <Popover
+			                                  opened={
+			                                    Boolean(agendaCustomerFilter) &&
+			                                    editingCustomerAliasKey === getCustomerAliasKey(agendaCustomerFilter || '')
+			                                  }
+			                                  onChange={opened => {
+			                                    if (!opened) {
+			                                      setEditingCustomerAliasKey(null)
+			                                      setCustomerAliasDraft('')
+			                                    }
+			                                  }}
+			                                  width={250}
+			                                  position="bottom-end"
+			                                  withArrow
+			                                  shadow="md"
+			                                  withinPortal
+			                                  zIndex={4000}
+			                                >
+			                                  <Popover.Target>
+			                                    <ActionIcon
+			                                      size="lg"
+			                                      variant="subtle"
+			                                      color="blue"
+			                                      disabled={!agendaCustomerFilter}
+			                                      aria-label="Rename selected agenda customer"
+			                                      onClick={() => openCustomerAliasEditor(agendaCustomerFilter)}
+			                                    >
+			                                      <IconPencil size={16} />
+			                                    </ActionIcon>
+			                                  </Popover.Target>
+			                                  <Popover.Dropdown>
+			                                    <Stack gap={8}>
+			                                      <TextInput
+			                                        label="Client name"
+			                                        value={customerAliasDraft}
+			                                        onChange={event => setCustomerAliasDraft(event.currentTarget.value)}
+			                                        size="xs"
+			                                        autoFocus
+			                                      />
+			                                      <Group justify="space-between" gap="xs" wrap="nowrap">
+			                                        <Button
+			                                          size="compact-xs"
+			                                          variant="subtle"
+			                                          color="gray"
+			                                          onClick={() => resetReportCustomerAlias(agendaCustomerFilter || '')}
+			                                        >
+			                                          Reset
+			                                        </Button>
+			                                        <Button
+			                                          size="compact-xs"
+			                                          onClick={() => saveCustomerAlias(agendaCustomerFilter)}
+			                                        >
+			                                          Save
+			                                        </Button>
+			                                      </Group>
+			                                    </Stack>
+				                                  </Popover.Dropdown>
+				                                </Popover>
+				                                <SegmentedControl
+				                                  size="xs"
+				                                  value={agendaLanguage}
+				                                  onChange={value => setAgendaLanguage(value === 'he' ? 'he' : 'en')}
+				                                  data={[
+				                                    { label: 'EN', value: 'en' },
+				                                    { label: 'HE', value: 'he' }
+				                                  ]}
+				                                  className="tray-agenda-language-toggle"
+				                                />
+				                              </Group>
+			                            ) : null}
+		                            <Group justify="space-between" className="tray-agenda-toolbar">
+		                              <Text size="xs" c="dimmed">
+			                                {visibleAgendaItems.length} open for {getAgendaCustomerDisplayName(agendaCustomerFilter)}
+		                              </Text>
                               <Group gap="xs">
                                 {agendaHiddenCount ? (
                                   <Button
@@ -13347,76 +15561,59 @@ export default function App() {
                                 />
                               </Group>
                             </Group>
-                            {[
-                              {
-                                key: 'tasks',
-                                title: 'Top tasks',
-                                items: visibleAgendaSections.tasks,
-                                color: 'orange'
-                              },
-                              {
-                                key: 'needReply',
-                                title: 'Need Reply',
-                                items: visibleAgendaSections.needReply,
-                                color: 'blue'
-                              },
-                              {
-                                key: 'followUps',
-                                title: 'Follow ups',
-                                items: visibleAgendaSections.followUps,
-                                color: 'yellow'
-                              },
-                              {
-                                key: 'meetingPrep',
-                                title: 'Meeting prep',
-                                items: visibleAgendaSections.meetingPrep,
-                                color: 'teal'
-                              },
-                              {
-                                key: 'projectSignals',
-                                title: 'Project signals',
-                                items: visibleAgendaSections.projectSignals,
-                                color: 'grape'
-                              }
-                            ].map(section => (
-                              <Card key={section.key} radius="md" withBorder className="tray-agenda-section-card">
-                                <Stack gap={7}>
-                                  <Group justify="space-between" align="flex-start" gap="xs">
-                                    <Group gap={6} style={{ flex: 1 }}>
-                                      <ThemeIcon size="sm" radius="xl" color={section.color} variant="light">
-                                        {section.key === 'needReply' ? (
-                                          <IconClipboardText size={13} />
-                                        ) : section.key === 'followUps' ? (
-                                          <IconHistory size={13} />
-                                        ) : section.key === 'meetingPrep' ? (
-                                          <IconCalendar size={13} />
-                                        ) : section.key === 'projectSignals' ? (
-                                          <IconChartBar size={13} />
-                                        ) : (
-                                          <IconListDetails size={13} />
-                                        )}
+		                            {agendaCommandSections.map(section => (
+		                              <Card
+		                                key={section.key}
+		                                radius="md"
+		                                withBorder
+		                                className="tray-agenda-section-card"
+		                                data-agenda-section={section.key}
+		                              >
+	                                <Stack gap={7}>
+	                                  <Group justify="space-between" align="flex-start" gap="xs">
+	                                    <Group gap={6} style={{ flex: 1 }}>
+	                                      <ThemeIcon size="sm" radius="xl" color={section.color} variant="light">
+	                                        {section.icon === 'reply' ? (
+	                                          <IconClipboardText size={13} />
+	                                        ) : section.icon === 'history' ? (
+	                                          <IconHistory size={13} />
+	                                        ) : section.icon === 'calendar' ? (
+	                                          <IconCalendar size={13} />
+	                                        ) : section.icon === 'chart' ? (
+	                                          <IconChartBar size={13} />
+	                                        ) : section.icon === 'flame' || section.icon === 'risk' ? (
+	                                          <IconFlame size={13} />
+	                                        ) : section.icon === 'info' ? (
+	                                          <IconInfoCircle size={13} />
+	                                        ) : (
+	                                          <IconListDetails size={13} />
+	                                        )}
                                       </ThemeIcon>
                                       <Text size="xs" fw={800} className="tray-agenda-section-title">
                                         {section.title}
                                       </Text>
                                     </Group>
-                                    <Badge size="xs" variant="light" color={section.color}>
-                                      {section.items.length}
-                                    </Badge>
+	                                    <Text size="xs" fw={800} c="dimmed">
+	                                      {section.items.length}
+	                                    </Text>
                                   </Group>
                                   {section.items.length ? (
                                     <Stack gap={7}>
-                                      {section.items.slice(0, 12).map(item => {
-                                        const itemKey = getAgendaItemKey(item)
-                                        const resolved = agendaResolvedKeys[itemKey] === true
-                                        const category = item.category || item.kind || 'task'
-                                        const threadKey = getAgendaThreadKey(item)
-                                        const senderKey = getAgendaSenderKey(item)
-                                        const important = agendaImportantKeys[itemKey] === true
-                                        const converted = agendaConvertedTaskKeys[itemKey] === true
-                                        return (
-                                          <Card
-                                            key={itemKey}
+                                      {section.items.map(item => {
+	                                        const itemKey = getAgendaItemKey(item)
+	                                        const resolved = agendaResolvedKeys[itemKey] === true
+		                                        const category = item.category || item.kind || 'task'
+		                                        const senderKey = getAgendaSenderKey(item)
+		                                        const important = agendaImportantKeys[itemKey] === true
+			                                        const rawProjectLabel = item.project || item.customer || ''
+			                                        const title = getAgendaItemTitle(item, agendaLanguage)
+			                                        const summary = getAgendaItemSummary(item, agendaLanguage)
+			                                        const suggestedAction = getAgendaItemAction(item, agendaLanguage)
+			                                        const reason = getAgendaItemReason(item, agendaLanguage)
+			                                        const sourceLink = getAgendaSourceLink(item)
+		                                        return (
+	                                          <Card
+	                                            key={itemKey}
                                             radius="md"
                                             withBorder
                                             className={`tray-agenda-card${resolved ? ' is-resolved' : ''}`}
@@ -13429,69 +15626,77 @@ export default function App() {
                                                 onChange={event => {
                                                   resolveAgendaItem(item, event.currentTarget.checked)
                                                 }}
-                                                aria-label={`Resolve ${item.title || item.actionTitle || item.Title || 'agenda item'}`}
+	                                                aria-label={`Resolve ${title}`}
                                               />
                                               <Stack gap={5} style={{ flex: 1, minWidth: 0 }}>
-                                                <Group justify="space-between" gap="xs" wrap="nowrap">
-                                                  <Group gap={5}>
-                                                    <Badge size="xs" variant="light" color={agendaCategoryColor(category)}>
-                                                      {item.priority || item.categoryLabel || category}
-                                                    </Badge>
-                                                  </Group>
-                                                  <Text size="xs" c="dimmed" className="tray-agenda-meta" lineClamp={1}>
-                                                    {item.whenLabel || item['Start Date']}
-                                                  </Text>
-                                                </Group>
+	                                                <Group justify="space-between" gap="xs" wrap="nowrap">
+		                                                  <Text size="xs" c="dimmed" className="tray-agenda-kind">
+		                                                    {category === 'reply' ? 'Mail' : 'Task'}
+			                                                  </Text>
+		                                                  <Text size="xs" c="dimmed" className="tray-agenda-meta">
+		                                                    {item.whenLabel || item.latestAt || item['Start Date']}
+		                                                  </Text>
+	                                                </Group>
                                                 <Text size="xs" fw={700} className="tray-agenda-action">
-                                                  {item.title || item.actionTitle || item.Title || 'Untitled agenda item'}
+	                                                  {title}
                                                 </Text>
-                                                <Text size="xs" c="dimmed" className="tray-agenda-brief" lineClamp={3}>
-                                                  {item.summary || item.brief || item.Preview || 'No summary available.'}
-                                                </Text>
-                                                {item.suggestedAction ? (
-                                                  <Text size="xs" className="tray-agenda-next" lineClamp={2}>
-                                                    {item.suggestedAction}
-                                                  </Text>
-                                                ) : null}
-                                                {(item.owner || item.ownerEmail) && (
-                                                  <Text size="xs" c="dimmed" className="tray-agenda-owner" lineClamp={1}>
-                                                    Owner: {item.owner || item.ownerEmail}
-                                                  </Text>
-                                                )}
-                                                {item.reason ? (
-                                                  <Text size="xs" c="dimmed" className="tray-agenda-reason" lineClamp={1}>
-                                                    {item.reason}
-                                                  </Text>
-                                                ) : null}
-                                                <Group gap={6} justify="space-between" className="tray-agenda-actions">
-                                                  <Group gap={4}>
-                                                    {important ? (
-                                                      <Badge size="xs" variant="light" color="red">
-                                                        important
-                                                      </Badge>
-                                                    ) : null}
-                                                    {converted ? (
-                                                      <Badge size="xs" variant="light" color="orange">
-                                                        converted
-                                                      </Badge>
-                                                    ) : null}
-                                                  </Group>
-                                                  <Menu withinPortal={false} position="bottom-end" shadow="md">
-                                                    <Menu.Target>
-                                                      <Button size="compact-xs" variant="subtle">
-                                                        Tune
-                                                      </Button>
-                                                    </Menu.Target>
+	                                                <Text size="xs" c="dimmed" className="tray-agenda-brief">
+		                                                  {summary}
+	                                                </Text>
+			                                                {suggestedAction ? (
+			                                                  <Text size="xs" className="tray-agenda-next">
+			                                                    {suggestedAction}
+			                                                  </Text>
+		                                                ) : null}
+			                                                <Group gap={5} className="tray-agenda-evidence" wrap="wrap">
+		                                                  <Text
+		                                                    size="xs"
+		                                                    fw={800}
+		                                                    className={`tray-agenda-source-line${item.ccOnly ? ' is-cc-only' : ''}`}
+		                                                  >
+		                                                    {getAgendaSourceLabel(item)}
+		                                                  </Text>
+			                                                  {reason ? (
+			                                                    <Text size="xs" c="dimmed" className="tray-agenda-reason">
+			                                                      {reason}
+			                                                    </Text>
+			                                                  ) : null}
+	                                                </Group>
+	                                                <Group gap={6} justify="space-between" className="tray-agenda-actions">
+		                                                  <Button
+		                                                    size="compact-xs"
+		                                                    variant="light"
+		                                                    disabled={!sourceLink}
+		                                                    onClick={() => {
+		                                                      if (!sourceLink) return
+		                                                      window.open(sourceLink, '_blank', 'noopener,noreferrer')
+		                                                    }}
+		                                                  >
+		                                                    Open mail
+		                                                  </Button>
+		                                                  <Menu withinPortal position="bottom-end" shadow="md" width={230} zIndex={12000}>
+	                                                    <Menu.Target>
+	                                                      <Button size="compact-xs" variant="subtle">
+	                                                        Actions
+	                                                      </Button>
+	                                                    </Menu.Target>
                                                     <Menu.Dropdown>
                                                       <Menu.Item
                                                         onClick={() => {
                                                           hideAgendaItem(item, { hideThread: true })
                                                         }}
-                                                      >
-                                                        Not relevant
-                                                      </Menu.Item>
-                                                      <Menu.Item
-                                                        disabled={!senderKey}
+	                                                      >
+	                                                        Not relevant
+	                                                      </Menu.Item>
+	                                                      <Menu.Item
+	                                                        onClick={() => {
+	                                                          hideAgendaItem(item, { hideThread: true })
+	                                                        }}
+	                                                      >
+	                                                        Not my responsibility
+	                                                      </Menu.Item>
+	                                                      <Menu.Item
+	                                                        disabled={!senderKey}
                                                         onClick={() => {
                                                           if (!senderKey) return
                                                           hideAgendaItem(item, { hideSender: true })
@@ -13499,13 +15704,19 @@ export default function App() {
                                                       >
                                                         Always hide sender
                                                       </Menu.Item>
-                                                      <Menu.Item
-                                                        onClick={() => toggleAgendaImportant(item)}
-                                                      >
-                                                        {important ? 'Remove important' : 'Always important'}
-                                                      </Menu.Item>
-                                                      <Menu.Item
-                                                        disabled={category === 'task'}
+		                                                      <Menu.Item
+		                                                        onClick={() => toggleAgendaImportant(item)}
+		                                                      >
+		                                                        {important ? 'Remove important' : 'Always important'}
+		                                                      </Menu.Item>
+		                                                      <Menu.Item
+		                                                        disabled={!rawProjectLabel}
+		                                                        onClick={() => openCustomerAliasEditor(rawProjectLabel)}
+		                                                      >
+		                                                        Rename client
+		                                                      </Menu.Item>
+	                                                      <Menu.Item
+	                                                        disabled={category === 'task'}
                                                         onClick={() =>
                                                           setAgendaConvertedTaskKeys(prev => ({
                                                             ...prev,
@@ -13515,12 +15726,12 @@ export default function App() {
                                                       >
                                                         Convert to task
                                                       </Menu.Item>
-                                                      {item.link || item.Link ? (
-                                                        <Menu.Item
-                                                          onClick={() => {
-                                                            window.open(item.link || item.Link, '_blank', 'noopener,noreferrer')
-                                                          }}
-                                                        >
+	                                                      {sourceLink ? (
+	                                                        <Menu.Item
+	                                                          onClick={() => {
+	                                                            window.open(sourceLink, '_blank', 'noopener,noreferrer')
+	                                                          }}
+	                                                        >
                                                           Open source
                                                         </Menu.Item>
                                                       ) : null}
@@ -13541,14 +15752,14 @@ export default function App() {
                                 </Stack>
                               </Card>
                             ))}
-                            {!visibleAgendaItems.length ? (
+	                            {!visibleAgendaItems.length ? (
                               <Text size="xs" c="dimmed" className="tray-agenda-empty">
                                 {agendaHiddenCount
                                   ? 'All agenda items are hidden by your relevance filters. Clear hidden to bring them back.'
                                   : 'All agenda items are resolved. Enable Show resolved to bring one back.'}
-                              </Text>
-                            ) : null}
-                          </Stack>
+	                              </Text>
+	                            ) : null}
+		                          </Stack>
                         ) : (
                           !agendaLoading && !agendaSummary ? (
                             <Text size="xs" c="dimmed">
@@ -13644,9 +15855,11 @@ export default function App() {
                           >
                             Current
                           </Button>
-                          <Button size="compact-xs" variant="subtle" onClick={() => shiftEmployeeReportMonth(1)}>
-                            Next month
-                          </Button>
+                          {!isEmployeeReportMonthCurrent ? (
+                            <Button size="compact-xs" variant="subtle" onClick={() => shiftEmployeeReportMonth(1)}>
+                              Next month
+                            </Button>
+                          ) : null}
                         </Group>
 
                         <SimpleGrid cols={2} spacing="xs" className="tray-employee-filter-grid">
@@ -13945,6 +16158,7 @@ export default function App() {
 
                     {renderEmployeeProjectWorkloadCard()}
 
+                    {false && (
                     <Card radius="md" withBorder className="tray-report-list-card">
                       <Group justify="space-between" align="center">
                         <Text fw={700} size="sm">
@@ -13958,23 +16172,11 @@ export default function App() {
                             size="xs"
                             variant="subtle"
                             onClick={() => {
-                              setTraySettingsTab('mapping')
+                              setTraySettingsTab('access')
                               switchTrayPanel('settings')
                             }}
                           >
-                            Mapping
-                          </Button>
-                          <Button
-                            size="xs"
-                            variant="subtle"
-                            onClick={() => {
-                              void loadReportsForMonth(reportMonth)
-                              if (jiraConfigured) {
-                                void loadJiraEpics()
-                              }
-                            }}
-                          >
-                            Refresh
+                            Settings
                           </Button>
                         </Group>
                       </Group>
@@ -14236,6 +16438,7 @@ export default function App() {
                           ))}
                       </Stack>
                     </Card>
+                    )}
                   </Stack>
                 ) : (
                   <Stack gap="xs" className="tray-settings-panel">
@@ -14245,7 +16448,7 @@ export default function App() {
                           <Text fw={700} size="sm">
                             Appearance
                           </Text>
-                          <Badge size="xs" variant="light" color={themeMode === 'liquid' ? 'cyan' : themeMode === 'oled' ? 'gray' : 'blue'}>
+                          <Badge size="xs" variant="light" color={themeMode === 'h4c37' ? 'green' : themeMode === 'liquid' ? 'gray' : themeMode === 'oled' ? 'gray' : 'blue'}>
                             {THEME_MODE_OPTIONS.find(option => option.value === themeMode)?.label ?? 'Dark'}
                           </Badge>
                         </Group>
@@ -14261,14 +16464,6 @@ export default function App() {
                         onClick={() => setTraySettingsTab('access')}
                       >
                         Access
-                      </Button>
-                      <Button
-                        size="xs"
-                        className="tray-settings-tab-btn"
-                        variant={traySettingsTab === 'mapping' ? 'light' : 'subtle'}
-                        onClick={() => setTraySettingsTab('mapping')}
-                      >
-                        Mapping
                       </Button>
                       <Button
                         size="xs"
@@ -14347,45 +16542,117 @@ export default function App() {
                           </Group>
                         </Stack>
                       </Card>
+                      {renderSupabaseSettingsCard(true)}
+                      {renderSlackSettingsCard(true)}
                       <Card radius="md" withBorder className="tray-settings-card tray-settings-meetings-card">
                         <Stack gap="xs">
                           <Group justify="space-between" align="center" wrap="nowrap">
                             <Text fw={700} size="sm">
                               Meetings access
                             </Text>
-                            <Badge size="xs" color="violet" variant="light">
-                              Chrome headless
+                            <Badge
+                              size="xs"
+                              color={meetingsUsername.trim() && meetingsPassword ? 'teal' : 'gray'}
+                              variant="light"
+                            >
+                              {meetingsUsername.trim() && meetingsPassword ? 'Connected' : 'Disconnected'}
                             </Badge>
                           </Group>
-                          <SimpleGrid cols={2} spacing="xs">
-                            <TextInput
-                              label="Username"
-                              placeholder="you@company.com"
-                              value={meetingsUsername}
-                              onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                              size="xs"
-                            />
-                            <PasswordInput
-                              label="Password"
-                              placeholder="••••••••"
-                              value={meetingsPassword}
-                              onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                              size="xs"
-                            />
-                          </SimpleGrid>
-                          <Group justify="space-between" align="center" wrap="nowrap">
-                            <Text size="xs" c="dimmed">
-                              Runs Microsoft Graph sync in Chrome background mode.
-                            </Text>
-                            <Badge size="xs" color="gray" variant="outline">
-                              Locked
-                            </Badge>
-                          </Group>
-                          <Text size="xs" c="dimmed" className="meetings-chrome-note">
-                            *chrome must be installed to use this feature
-                          </Text>
+                          {meetingsUsername.trim() && meetingsPassword ? (
+                            <Group justify="flex-end">
+                              <Button
+                                size="xs"
+                                variant="subtle"
+                                color="red"
+                                onClick={clearMeetingsCredentials}
+                              >
+                                Disconnect
+                              </Button>
+                            </Group>
+                          ) : (
+                            <>
+                              <SimpleGrid cols={2} spacing="xs">
+                                <TextInput
+                                  label="Username"
+                                  placeholder="you@company.com"
+                                  value={meetingsUsername}
+                                  onChange={event => setMeetingsUsername(event.currentTarget.value)}
+                                  size="xs"
+                                />
+                                <PasswordInput
+                                  label="Password"
+                                  placeholder="••••••••"
+                                  value={meetingsPassword}
+                                  onChange={event => setMeetingsPassword(event.currentTarget.value)}
+                                  size="xs"
+                                />
+                              </SimpleGrid>
+                              <Text size="xs" c="dimmed" className="meetings-chrome-note">
+                                *chrome must be installed to use this feature
+                              </Text>
+                            </>
+                          )}
                         </Stack>
                       </Card>
+                      {AGENDA_UI_ENABLED && (
+                        <Card radius="md" withBorder className="tray-settings-card">
+                          <Stack gap="xs">
+                            <Group justify="space-between" align="center" wrap="nowrap">
+                              <Text fw={700} size="sm">
+                                OpenAI agenda
+                              </Text>
+                              <Badge size="xs" variant="light" color={agendaAiHasApiKey ? 'teal' : 'red'}>
+                                {agendaAiHasApiKey ? 'Configured' : 'Not configured'}
+                              </Badge>
+                            </Group>
+                            {agendaAiHasApiKey ? (
+                              <Group justify="flex-end">
+                                <Button
+                                  size="xs"
+                                  variant="subtle"
+                                  color="red"
+                                  loading={agendaAiSaving}
+                                  onClick={() => void clearAgendaAiSettings()}
+                                >
+                                  Disconnect
+                                </Button>
+                              </Group>
+                            ) : (
+                              <>
+                                <SimpleGrid cols={2} spacing="xs">
+                                  <PasswordInput
+                                    label="OpenAI API key"
+                                    placeholder="sk-..."
+                                    value={agendaAiApiKey}
+                                    onChange={event => setAgendaAiApiKey(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                  <TextInput
+                                    label="AI model"
+                                    placeholder="gpt-4o-mini"
+                                    value={agendaAiModel}
+                                    onChange={event => setAgendaAiModel(event.currentTarget.value)}
+                                    size="xs"
+                                  />
+                                </SimpleGrid>
+                                <Group justify="space-between" align="center" wrap="nowrap">
+                                  <Text size="xs" c="dimmed">
+                                    Used for agenda facts, customer briefs, and thread analysis.
+                                  </Text>
+                                  <Button
+                                    size="xs"
+                                    variant="light"
+                                    loading={agendaAiSaving}
+                                    onClick={() => void saveAgendaAiConfig()}
+                                  >
+                                    Save OpenAI
+                                  </Button>
+                                </Group>
+                              </>
+                            )}
+                          </Stack>
+                        </Card>
+                      )}
                       <Card radius="md" withBorder className="tray-settings-card">
                         <Stack gap="xs">
                           <Group justify="space-between" align="center">
@@ -14396,45 +16663,52 @@ export default function App() {
                               {jiraConfigured ? 'Connected' : 'Disconnected'}
                             </Badge>
                           </Group>
-                          <SimpleGrid cols={2} spacing="xs">
-                            <TextInput
-                              label="Jira email"
-                              value={jiraEmail}
-                              onChange={event => setJiraEmail(event.currentTarget.value)}
-                              placeholder="you@company.com"
-                              size="xs"
-                            />
-                            <PasswordInput
-                              label="Jira token"
-                              value={jiraToken}
-                              onChange={event => setJiraToken(event.currentTarget.value)}
-                              placeholder="API token"
-                              size="xs"
-                            />
-                          </SimpleGrid>
-                          <Group justify="space-between" align="center">
-                            <Button
-                              size="xs"
-                              variant="subtle"
-                              color="red"
-                              onClick={() => {
-                                void clearJiraCredentials()
-                              }}
-                              loading={jiraSaving}
-                            >
-                              Disconnect
-                            </Button>
-                            <Button
-                              size="xs"
-                              onClick={() => {
-                                void saveJiraCredentials()
-                              }}
-                              loading={jiraSaving}
-                              disabled={!jiraEmail.trim() || !jiraToken.trim()}
-                            >
-                              Save Jira
-                            </Button>
-                          </Group>
+                          {jiraConfigured ? (
+                            <Group justify="flex-end" align="center">
+                              <Button
+                                size="xs"
+                                variant="subtle"
+                                color="red"
+                                onClick={() => {
+                                  void clearJiraCredentials()
+                                }}
+                                loading={jiraSaving}
+                              >
+                                Disconnect
+                              </Button>
+                            </Group>
+                          ) : (
+                            <>
+                              <SimpleGrid cols={2} spacing="xs">
+                                <TextInput
+                                  label="Jira email"
+                                  value={jiraEmail}
+                                  onChange={event => setJiraEmail(event.currentTarget.value)}
+                                  placeholder="you@company.com"
+                                  size="xs"
+                                />
+                                <PasswordInput
+                                  label="Jira token"
+                                  value={jiraToken}
+                                  onChange={event => setJiraToken(event.currentTarget.value)}
+                                  placeholder="API token"
+                                  size="xs"
+                                />
+                              </SimpleGrid>
+                              <Group justify="flex-end" align="center">
+                                <Button
+                                  size="xs"
+                                  onClick={() => {
+                                    void saveJiraCredentials()
+                                  }}
+                                  loading={jiraSaving}
+                                  disabled={!jiraEmail.trim() || !jiraToken.trim()}
+                                >
+                                  Save Jira
+                                </Button>
+                              </Group>
+                            </>
+                          )}
                           {jiraError && (
                             <Alert color="red" variant="light" radius="md">
                               {jiraError}
@@ -14463,192 +16737,15 @@ export default function App() {
                                 <ol className="jira-token-steps">
                                   <li>Open Atlassian token page.</li>
                                   <li>Create API token (or token with scopes), name it `HRS Desktop`.</li>
-                                  <li>Paste Jira email and token above.</li>
+                                  <li>Paste Jira email and token below.</li>
                                   <li>Click `Save Jira` and verify status shows `Connected`.</li>
                                   <li>Go to `Settings → Mapping` and map customers to epics.</li>
-                                  <li>Example email format: `xxxx@valinor.co.il`.</li>
                                 </ol>
                               </Stack>
                             </Card>
                           )}
                         </Stack>
                       </Card>
-                      </Stack>
-                    )}
-
-                    {traySettingsTab === 'mapping' && (
-                      <Stack gap="xs">
-                        {renderProjectManagementCard(true)}
-
-                        <Card radius="md" withBorder className="tray-settings-card">
-                          <Stack gap="xs">
-                            <Group justify="space-between" align="center">
-                              <Text fw={700} size="sm">
-                                Reported This Month
-                              </Text>
-                              <Badge size="xs" variant="light" color="teal">
-                                {trayReportedMappedCount}/{trayReportedCustomers.length} mapped
-                              </Badge>
-                            </Group>
-
-                            {!jiraConfigured && (
-                              <Alert color="yellow" variant="light" radius="md">
-                                Connect Jira in Access first.
-                              </Alert>
-                            )}
-
-                            {jiraConfigured && !jiraLoading && !jiraEpicOptions.length && (
-                              <Alert color="yellow" variant="light" radius="md">
-                                <Group justify="space-between" align="center">
-                                  <Text size="xs">Could not load Jira epics yet.</Text>
-                                  <Button
-                                    size="xs"
-                                    variant="light"
-                                    onClick={retryJiraFetch}
-                                    loading={jiraLoading}
-                                  >
-                                    Retry epics
-                                  </Button>
-                                </Group>
-                              </Alert>
-                            )}
-
-                            <Group
-                              className="tray-mapping-headers"
-                              justify="space-between"
-                              align="center"
-                              wrap="nowrap"
-                            >
-                              <Text size="xs" c="dimmed">
-                                Customer
-                              </Text>
-                              <Text size="xs" c="dimmed">
-                                Epic
-                              </Text>
-                            </Group>
-
-                            {jiraLoading ? (
-                              <Group gap="xs">
-                                <Loader size="xs" />
-                                <Text size="xs" c="dimmed">
-                                  Loading Jira epics...
-                                </Text>
-                              </Group>
-                            ) : trayReportedCustomers.length ? (
-                              <Stack gap="xs" className="tray-mapping-list">
-                                {trayReportedCustomers.slice(0, 20).map(customer => (
-                                  <Group
-                                    key={customer}
-                                    className="tray-mapping-row"
-                                    justify="space-between"
-                                    align="flex-start"
-                                    wrap="nowrap"
-                                  >
-                                    <Stack gap={4} className="tray-mapping-customer-stack">
-                                      <TextInput
-                                        size="xs"
-                                        placeholder="Customer name"
-                                        value={jiraCustomerAliases[customer] ?? customer}
-                                        onChange={event => updateCustomerAlias(customer, event.currentTarget.value)}
-                                      />
-                                      {jiraCustomerAliases[customer] && (
-                                        <Button
-                                          size="compact-xs"
-                                          variant="subtle"
-                                          className="tray-alias-reset"
-                                          onClick={() => updateCustomerAlias(customer, customer)}
-                                        >
-                                          Use original name
-                                        </Button>
-                                      )}
-                                    </Stack>
-                                    <Select
-                                      className="tray-mapping-epic"
-                                      placeholder="Select epic"
-                                      data={jiraEpicOptions}
-                                      value={jiraMappings[customer] ?? null}
-                                      onChange={value => updateJiraMapping(customer, value ?? null)}
-                                      searchable
-                                      clearable
-                                      nothingFoundMessage="No epics found"
-                                      disabled={!jiraConfigured || !jiraEpicOptions.length}
-                                      size="xs"
-                                    />
-                                  </Group>
-                                ))}
-                              </Stack>
-                            ) : (
-                              <Text size="xs" c="dimmed">
-                                No reported customers this month yet.
-                              </Text>
-                            )}
-                          </Stack>
-                        </Card>
-
-                        <Card radius="md" withBorder className="tray-settings-card">
-                          <Stack gap="xs">
-                            <Text fw={700} size="sm">
-                              Manual Mapping
-                            </Text>
-                            <Group gap="xs" align="flex-end" wrap="wrap">
-                              <Select
-                                label="HRS customer"
-                                placeholder="Select customer"
-                                data={hrsCustomerOptionsDisplay}
-                                value={manualBudgetCustomer || null}
-                                onChange={value => {
-                                  setManualBudgetCustomer(value ?? '')
-                                  if (manualBudgetError) setManualBudgetError(null)
-                                }}
-                                searchable
-                                clearable
-                                nothingFoundMessage="No customers found"
-                                size="xs"
-                              />
-                              <Select
-                                label="Epic"
-                                placeholder="Select epic"
-                                data={jiraEpicOptions}
-                                value={manualBudgetEpicKey}
-                                onChange={value => {
-                                  setManualBudgetEpicKey(value)
-                                  if (manualBudgetError) setManualBudgetError(null)
-                                }}
-                                searchable
-                                clearable
-                                disabled={!jiraConfigured || !jiraEpicOptions.length}
-                                size="xs"
-                              />
-                              <Button size="xs" onClick={addManualBudget}>
-                                Add
-                              </Button>
-                            </Group>
-                            {manualBudgetError && (
-                              <Text size="xs" c="red">
-                                {manualBudgetError}
-                              </Text>
-                            )}
-                            {Object.keys(jiraManualBudgets).length > 0 && (
-                              <Stack gap={4}>
-                                {Object.entries(jiraManualBudgets).slice(0, 6).map(([customer, epicKey]) => (
-                                  <Group key={customer} justify="space-between" align="center" wrap="nowrap">
-                                    <Text size="xs" c="dimmed" lineClamp={1}>
-                                      {getCustomerDisplayName(customer)} · {epicKey}
-                                    </Text>
-                                    <Button
-                                      size="xs"
-                                      variant="subtle"
-                                      color="red"
-                                      onClick={() => removeManualBudget(customer)}
-                                    >
-                                      Remove
-                                    </Button>
-                                  </Group>
-                                ))}
-                              </Stack>
-                            )}
-                          </Stack>
-                        </Card>
                       </Stack>
                     )}
 
@@ -15057,14 +17154,14 @@ export default function App() {
                 <Stack gap="sm">
                   <Group justify="space-between" align="center">
                     <Text fw={700}>Appearance</Text>
-                    <Badge color={themeMode === 'liquid' ? 'cyan' : themeMode === 'oled' ? 'gray' : 'blue'} variant="light">
+                    <Badge color={themeMode === 'h4c37' ? 'green' : themeMode === 'liquid' ? 'gray' : themeMode === 'oled' ? 'gray' : 'blue'} variant="light">
                       {THEME_MODE_OPTIONS.find(option => option.value === themeMode)?.label ?? 'Dark'}
                     </Badge>
                   </Group>
                   <Text size="xs" c="dimmed">
                     Choose the visual style used across the main app, tray, reports, meetings, and settings.
                   </Text>
-                  <SimpleGrid cols={{ base: 1, sm: 3 }} spacing="sm" className="theme-settings-grid">
+                  <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm" className="theme-settings-grid">
                     {THEME_MODE_OPTIONS.map(option => (
                       <button
                         key={option.value}
@@ -15142,94 +17239,92 @@ export default function App() {
                 </Stack>
               </Card>
 
-              {renderProjectManagementCard()}
+              {renderSupabaseSettingsCard()}
+              {renderSlackSettingsCard()}
 
-              <Card radius="md" withBorder>
-                <Stack gap="sm">
-                  <Group justify="space-between" align="center">
-                    <Text fw={700}>Jira settings</Text>
-                    <Badge color={jiraConfigured ? 'teal' : 'gray'} variant="light">
-                      {jiraConfigured ? 'Connected' : 'Disconnected'}
-                    </Badge>
-                  </Group>
-                  {jiraStatus?.email && (
-                    <Text size="xs" c="dimmed">
-                      {jiraStatus.email} · {jiraStatus.baseUrl}
-                    </Text>
-                  )}
-                  {jiraError && (
-                    <Alert color="red" variant="light" radius="md">
-                      {jiraError}
-                    </Alert>
-                  )}
-                  {!jiraConfigured && (
-                    <Card radius="md" withBorder className="jira-token-guide">
-                      <Stack gap={6}>
-                        <Group justify="space-between" align="center">
-                          <Text size="xs" fw={700}>
-                            Jira token setup
-                          </Text>
-                          <Button
-                            size="compact-xs"
-                            variant="subtle"
-                            onClick={() => {
-                              void copyJiraTokenGuideUrl()
-                            }}
-                          >
-                            {jiraTokenGuideCopied ? 'Copied' : 'Copy URL'}
-                          </Button>
-                        </Group>
-                        <Text size="xs" c="dimmed" className="jira-token-url">
-                          {ATLASSIAN_TOKEN_URL}
-                        </Text>
-                        <ol className="jira-token-steps">
-                          <li>Open Atlassian token page.</li>
-                          <li>Create API token (or token with scopes), name it `HRS Desktop`.</li>
-                          <li>Paste Jira email and token below.</li>
-                          <li>Click `Save Jira credentials`.</li>
-                          <li>Go to `Settings → Mapping` and map customers to epics.</li>
-                        </ol>
-                      </Stack>
-                    </Card>
-                  )}
-                  <TextInput
-                    label="Jira email"
-                    value={jiraEmail}
-                    onChange={event => setJiraEmail(event.currentTarget.value)}
-                    placeholder="you@company.com"
-                  />
-                  <PasswordInput
-                    label="Jira API token"
-                    value={jiraToken}
-                    onChange={event => setJiraToken(event.currentTarget.value)}
-                    placeholder="Paste API token"
-                  />
-                  <Group justify="space-between" align="center">
-                    <Button
-                      variant="subtle"
-                      color="red"
-                      onClick={() => {
-                        void clearJiraCredentials()
-                      }}
-                      loading={jiraSaving}
-                    >
-                      Disconnect Jira
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        void saveJiraCredentials()
-                      }}
-                      loading={jiraSaving}
-                      disabled={!jiraEmail.trim() || !jiraToken.trim()}
-                    >
-                      Save Jira credentials
-                    </Button>
-                  </Group>
-                  <Text size="xs" c="dimmed">
-                    Customer-to-epic mappings are managed in Reports.
-                  </Text>
-                </Stack>
-              </Card>
+	              <Card radius="md" withBorder>
+	                <Stack gap="sm">
+	                  <Group justify="space-between" align="center">
+	                    <Text fw={700}>Jira settings</Text>
+	                    <Badge color={jiraConfigured ? 'teal' : 'gray'} variant="light">
+	                      {jiraConfigured ? 'Connected' : 'Disconnected'}
+	                    </Badge>
+	                  </Group>
+	                  {jiraError && (
+	                    <Alert color="red" variant="light" radius="md">
+	                      {jiraError}
+	                    </Alert>
+	                  )}
+	                  {jiraConfigured ? (
+	                    <Group justify="flex-end" align="center">
+	                      <Button
+	                        variant="subtle"
+	                        color="red"
+	                        onClick={() => {
+	                          void clearJiraCredentials()
+	                        }}
+	                        loading={jiraSaving}
+	                      >
+	                        Disconnect
+	                      </Button>
+	                    </Group>
+	                  ) : (
+	                    <>
+	                      <TextInput
+	                        label="Jira email"
+	                        value={jiraEmail}
+	                        onChange={event => setJiraEmail(event.currentTarget.value)}
+	                        placeholder="you@company.com"
+	                      />
+	                      <PasswordInput
+	                        label="Jira API token"
+	                        value={jiraToken}
+	                        onChange={event => setJiraToken(event.currentTarget.value)}
+	                        placeholder="Paste API token"
+	                      />
+	                      <Group justify="flex-end" align="center">
+	                        <Button
+	                          onClick={() => {
+	                            void saveJiraCredentials()
+	                          }}
+	                          loading={jiraSaving}
+	                          disabled={!jiraEmail.trim() || !jiraToken.trim()}
+	                        >
+	                          Save Jira credentials
+	                        </Button>
+	                      </Group>
+	                      <Card radius="md" withBorder className="jira-token-guide">
+	                        <Stack gap={6}>
+	                          <Group justify="space-between" align="center">
+	                            <Text size="xs" fw={700}>
+	                              Jira token setup
+	                            </Text>
+	                            <Button
+	                              size="compact-xs"
+	                              variant="subtle"
+	                              onClick={() => {
+	                                void copyJiraTokenGuideUrl()
+	                              }}
+	                            >
+	                              {jiraTokenGuideCopied ? 'Copied' : 'Copy URL'}
+	                            </Button>
+	                          </Group>
+	                          <Text size="xs" c="dimmed" className="jira-token-url">
+	                            {ATLASSIAN_TOKEN_URL}
+	                          </Text>
+	                          <ol className="jira-token-steps">
+	                            <li>Open Atlassian token page.</li>
+	                            <li>Create API token (or token with scopes), name it `HRS Desktop`.</li>
+	                            <li>Paste Jira email and token below.</li>
+	                            <li>Click `Save Jira credentials`.</li>
+	                            <li>Go to `Settings → Mapping` and map customers to epics.</li>
+	                          </ol>
+	                        </Stack>
+	                      </Card>
+	                    </>
+	                  )}
+	                </Stack>
+	              </Card>
 
               <Card radius="md" withBorder>
                 <Stack gap="sm">
@@ -15452,38 +17547,55 @@ export default function App() {
                   Prev
                 </Button>
                 <Text fw={700}>{dayjs(reportMonth).format('MMMM YYYY')}</Text>
-                <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(1)}>
-                  Next
-                </Button>
+                {isReportMonthCurrent ? (
+                  <Box className="tray-month-nav-spacer" aria-hidden="true" />
+                ) : (
+                  <Button size="xs" variant="subtle" onClick={() => shiftReportMonth(1)}>
+                    Next
+                  </Button>
+                )}
               </Group>
 
-              <Card radius="md" withBorder className="tray-settings-meetings-card">
-                <Stack gap="sm">
-                  <Group justify="space-between" align="center" wrap="nowrap">
-                    <Text fw={700}>Access</Text>
-                    <Badge color="violet" variant="light">
-                      Chrome headless
-                    </Badge>
-                  </Group>
-                  <SimpleGrid cols={2} spacing="sm">
-                    <TextInput
-                      label="Domain user"
-                      placeholder="you@company.com"
-                      value={meetingsUsername}
-                      onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                    />
-                    <PasswordInput
-                      label="Domain password"
-                      placeholder="••••••••"
-                      value={meetingsPassword}
-                      onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                    />
-                  </SimpleGrid>
-                  <Text size="xs" c="dimmed">
-                    *chrome must be installed to use this feature
-                  </Text>
-                </Stack>
-              </Card>
+	              <Card radius="md" withBorder className="tray-settings-meetings-card">
+	                <Stack gap="sm">
+	                  <Group justify="space-between" align="center" wrap="nowrap">
+	                    <Text fw={700}>Access</Text>
+	                    <Badge
+	                      color={meetingsUsername.trim() && meetingsPassword ? 'teal' : 'gray'}
+	                      variant="light"
+	                    >
+	                      {meetingsUsername.trim() && meetingsPassword ? 'Connected' : 'Disconnected'}
+	                    </Badge>
+	                  </Group>
+	                  {meetingsUsername.trim() && meetingsPassword ? (
+	                    <Group justify="flex-end">
+	                      <Button variant="subtle" color="red" onClick={clearMeetingsCredentials}>
+	                        Disconnect
+	                      </Button>
+	                    </Group>
+	                  ) : (
+	                    <>
+	                      <SimpleGrid cols={2} spacing="sm">
+	                        <TextInput
+	                          label="Domain user"
+	                          placeholder="you@company.com"
+	                          value={meetingsUsername}
+	                          onChange={event => setMeetingsUsername(event.currentTarget.value)}
+	                        />
+	                        <PasswordInput
+	                          label="Domain password"
+	                          placeholder="••••••••"
+	                          value={meetingsPassword}
+	                          onChange={event => setMeetingsPassword(event.currentTarget.value)}
+	                        />
+	                      </SimpleGrid>
+	                      <Text size="xs" c="dimmed">
+	                        *chrome must be installed to use this feature
+	                      </Text>
+	                    </>
+	                  )}
+	                </Stack>
+	              </Card>
 
               <Group justify="space-between" align="center">
                 <Group gap="xs">
@@ -16546,70 +18658,6 @@ export default function App() {
                         No mapped customers yet.
                       </Text>
                     )}
-                    {jiraConfigured && (
-                      <Stack gap={6} className="manual-budget">
-                        <Text size="xs" c="dimmed">
-                          Add manual customer (optional)
-                        </Text>
-                        <Group gap="sm" align="flex-end" wrap="wrap">
-                          <TextInput
-                            label="Customer"
-                            placeholder="Customer name"
-                            value={manualBudgetCustomer}
-                            onChange={event => {
-                              setManualBudgetCustomer(event.currentTarget.value)
-                              if (manualBudgetError) setManualBudgetError(null)
-                            }}
-                          />
-                          <Select
-                            label="Jira epic"
-                            placeholder="Select epic"
-                            data={jiraEpicOptions}
-                            value={manualBudgetEpicKey}
-                            onChange={value => {
-                              setManualBudgetEpicKey(value)
-                              if (manualBudgetError) setManualBudgetError(null)
-                            }}
-                            searchable
-                            clearable
-                            disabled={!jiraEpicOptions.length || !jiraConfigured}
-                            comboboxProps={{ withinPortal: true, position: 'bottom-start', zIndex: 3000 }}
-                          />
-                          <Button onClick={addManualBudget}>Add</Button>
-                        </Group>
-                        {manualBudgetError && (
-                          <Text size="xs" c="red">
-                            {manualBudgetError}
-                          </Text>
-                        )}
-                        {!jiraEpicOptions.length && (
-                          <Text size="xs" c="dimmed">
-                            {jiraConfigured
-                              ? 'Epics are still loading or unavailable.'
-                              : 'Connect Jira to load epics.'}
-                          </Text>
-                        )}
-                        {Object.keys(jiraManualBudgets).length > 0 && (
-                          <Stack gap={4}>
-                            {Object.entries(jiraManualBudgets).map(([customer, epicKey]) => (
-                              <Group key={customer} gap="xs">
-                                <Text size="xs" c="dimmed">
-                                  {getCustomerDisplayName(customer)} · {epicKey}
-                                </Text>
-                                <Button
-                                  size="xs"
-                                  variant="subtle"
-                                  color="red"
-                                  onClick={() => removeManualBudget(customer)}
-                                >
-                                  Remove
-                                </Button>
-                              </Group>
-                            ))}
-                          </Stack>
-                        )}
-                      </Stack>
-                    )}
                 {jiraConfigured && jiraPeopleView && (
                   <Stack gap="xs">
                     <Group gap="sm" align="center">
@@ -17390,6 +19438,7 @@ export default function App() {
                       </ActionIcon>
                     </Tooltip>
                   </Group>
+                  {renderRecentQuickLogShortcuts()}
                   <SimpleGrid cols={{ base: 1, md: 3 }} spacing="lg" className="filters-grid">
                     <Select
                       label="Project"
@@ -17723,16 +19772,48 @@ export default function App() {
                         <Text className="calendar-month">
                           {dayjs(reportMonth).format('MMMM YYYY')}
                         </Text>
-                        <Button
-                          size="xs"
-                          variant="subtle"
-                          className="calendar-nav"
-                          onClick={() => shiftReportMonth(1)}
-                        >
-                          Next
-                        </Button>
+                        {isReportMonthCurrent ? (
+                          <Box className="calendar-nav" aria-hidden="true" />
+                        ) : (
+                          <Button
+                            size="xs"
+                            variant="subtle"
+                            className="calendar-nav"
+                            onClick={() => shiftReportMonth(1)}
+                          >
+                            Next
+                          </Button>
+                        )}
                       </Group>
                       <Group gap="sm" className="calendar-selected-row" justify="center" align="center">
+                        <Button.Group>
+                          <Button
+                            size="compact-xs"
+                            variant={reportSource === 'hrs' ? 'filled' : 'light'}
+                            onClick={() => switchReportSource('hrs')}
+                          >
+                            Live HRS
+                          </Button>
+                          <Button
+                            size="compact-xs"
+                            variant={reportSource === 'supabase' ? 'filled' : 'light'}
+                            onClick={() => switchReportSource('supabase')}
+                          >
+                            Supabase
+                          </Button>
+                        </Button.Group>
+                        {reportSource === 'hrs' && supabaseStatus?.profile?.role === 'manager' && (
+                          <Button
+                            size="compact-xs"
+                            variant="light"
+                            color="teal"
+                            onClick={() => void syncCurrentReportsToSupabase()}
+                            loading={supabaseSyncing}
+                            disabled={!monthlyReport}
+                          >
+                            Sync
+                          </Button>
+                        )}
                         <Badge size="sm" className="calendar-selected-date" variant="light" color="gray">
                           {searchActive
                             ? 'Search results'

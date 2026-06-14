@@ -1,5 +1,11 @@
 # HRS Desktop Changelog
 
+## 1.0.9
+
+- Fixed GitHub Actions npm install failures by committing npm peer-dependency resolution for the existing React 18 and `liquid-glass-react` dependency combination.
+- Kept the app runtime unchanged from the Reports internal-project release.
+- Updated release metadata to version `1.0.9` for macOS and Windows auto-update validation.
+
 ## 1.0.8
 
 - Moved Comm-IT Corp and Valinor report rows out of Individual projects into a separate Internal projects section.

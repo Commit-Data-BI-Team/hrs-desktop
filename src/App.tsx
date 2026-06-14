@@ -2368,6 +2368,7 @@ export default function App() {
   const [employeeWorkloadEmployeeFilter, setEmployeeWorkloadEmployeeFilter] = useState<string | null>(null)
   const [employeeWorkloadCustomerFilter, setEmployeeWorkloadCustomerFilter] = useState<string | null>(null)
   const [employeeWorkloadTaskFilter, setEmployeeWorkloadTaskFilter] = useState<string | null>(null)
+  const [showInternalProjects, setShowInternalProjects] = useState(false)
   const [reportCustomerAliases, setReportCustomerAliases] = useState<Record<string, string>>(() =>
     safeGetLocalStorageStringRecord(REPORT_CUSTOMER_ALIASES_STORAGE_KEY)
   )
@@ -12275,6 +12276,7 @@ export default function App() {
     return employeeProjectWorkload
       .map(employee => {
         const customers = employee.customers
+          .filter(customer => !isNonBillableEmployeeCustomer(customer.rawCustomer))
           .map(customer => {
             const tasks = customer.tasks.filter(
               task => !employeeSharedTaskKeys.has(`${customer.rawCustomer}\u0000${task.task}`)
@@ -12296,6 +12298,22 @@ export default function App() {
       })
       .filter(employee => employee.customers.length)
   }, [employeeProjectWorkload, employeeSharedTaskKeys])
+
+  const internalEmployeeProjectWorkload = useMemo(() => {
+    return employeeProjectWorkload
+      .map(employee => {
+        const customers = employee.customers.filter(customer =>
+          isNonBillableEmployeeCustomer(customer.rawCustomer)
+        )
+
+        return {
+          ...employee,
+          customers,
+          totalMinutes: customers.reduce((sum, customer) => sum + customer.totalMinutes, 0)
+        }
+      })
+      .filter(employee => employee.customers.length)
+  }, [employeeProjectWorkload])
 
   const renderEditableReportCustomerName = (customer: string, rawCustomer: string) => {
     const key = getReportCustomerAliasKey(rawCustomer)
@@ -12396,7 +12414,9 @@ export default function App() {
     const filtersActive = Boolean(
       employeeWorkloadEmployeeFilter || employeeWorkloadCustomerFilter || employeeWorkloadTaskFilter
     )
-    const hasWorkloadRows = individualEmployeeProjectWorkload.length || employeeSharedTasks.length
+    const hasInternalWorkloadRows = internalEmployeeProjectWorkload.length > 0
+    const hasWorkloadRows =
+      individualEmployeeProjectWorkload.length || employeeSharedTasks.length || hasInternalWorkloadRows
     return (
       <Card radius="md" withBorder className="tray-employee-workload-card">
         <Stack gap="xs">
@@ -12457,18 +12477,29 @@ export default function App() {
             <Badge size="xs" variant="light" color={filtersActive ? 'blue' : 'gray'}>
               {filtersActive ? 'Filtered' : 'All selected'}
             </Badge>
-            <Button
-              size="compact-xs"
-              variant="subtle"
-              disabled={!filtersActive || workloadFiltersLocked}
-              onClick={() => {
-                setEmployeeWorkloadEmployeeFilter(null)
-                setEmployeeWorkloadCustomerFilter(null)
-                setEmployeeWorkloadTaskFilter(null)
-              }}
-            >
-              Select all
-            </Button>
+            <Group gap="xs" wrap="nowrap">
+              {hasInternalWorkloadRows ? (
+                <Checkbox
+                  size="xs"
+                  label="Show internal projects"
+                  checked={showInternalProjects}
+                  onChange={event => setShowInternalProjects(event.currentTarget.checked)}
+                  className="tray-employee-workload-internal-toggle"
+                />
+              ) : null}
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                disabled={!filtersActive || workloadFiltersLocked}
+                onClick={() => {
+                  setEmployeeWorkloadEmployeeFilter(null)
+                  setEmployeeWorkloadCustomerFilter(null)
+                  setEmployeeWorkloadTaskFilter(null)
+                }}
+              >
+                Select all
+              </Button>
+            </Group>
           </Group>
 
           {!hasEmployeeAccess ? (
@@ -12621,6 +12652,74 @@ export default function App() {
                     )}
                   </Stack>
                 </Card>
+
+                {hasInternalWorkloadRows && showInternalProjects ? (
+                  <Card radius="md" withBorder className="tray-employee-workload-internal">
+                    <Stack gap={8}>
+                      <Text size="xs" fw={800}>
+                        Internal projects
+                      </Text>
+                      <Stack gap={8} className="tray-employee-workload-list">
+                        {internalEmployeeProjectWorkload.map(employee => (
+                          <Card
+                            key={`internal-${employee.employee}`}
+                            radius="md"
+                            withBorder
+                            className="tray-employee-workload-employee"
+                          >
+                            <Stack gap={7}>
+                              <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                                <Text size="xs" fw={800} lineClamp={1}>
+                                  {employee.employee}
+                                </Text>
+                                <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                  {minutesToHHMM(employee.totalMinutes)}
+                                </Text>
+                              </Group>
+                              <Stack gap={6}>
+                                {employee.customers.map(customer => (
+                                  <div
+                                    key={`internal-${employee.employee}-${customer.rawCustomer}`}
+                                    className="tray-employee-workload-customer"
+                                  >
+                                    <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                                      {renderEditableReportCustomerName(
+                                        customer.customer,
+                                        customer.rawCustomer
+                                      )}
+                                      <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                        {minutesToHHMM(customer.totalMinutes)}
+                                      </Text>
+                                    </Group>
+                                    <Stack gap={3} mt={4}>
+                                      {customer.tasks.map(task => (
+                                        <Group
+                                          key={`internal-${customer.rawCustomer}-${task.task}`}
+                                          justify="space-between"
+                                          align="center"
+                                          gap="xs"
+                                          wrap="nowrap"
+                                          className="tray-employee-workload-task"
+                                        >
+                                          <Text size="xs" c="dimmed" lineClamp={1}>
+                                            {task.task}
+                                          </Text>
+                                          <Text size="xs" fw={700} className="tray-employee-workload-hours">
+                                            {minutesToHHMM(task.totalMinutes)}
+                                          </Text>
+                                        </Group>
+                                      ))}
+                                    </Stack>
+                                  </div>
+                                ))}
+                              </Stack>
+                            </Stack>
+                          </Card>
+                        ))}
+                      </Stack>
+                    </Stack>
+                  </Card>
+                ) : null}
               </div>
             </div>
           ) : (

@@ -4567,6 +4567,16 @@ body.meetings-mode .meetings-card {
   padding: 4px 0 6px;
 }
 
+.tray-employee-workload-internal-toggle {
+  min-width: 0;
+}
+
+.tray-employee-workload-internal-toggle .mantine-Checkbox-label {
+  color: rgba(226, 232, 240, 0.78);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
 .tray-employee-workload-employee {
   padding: 11px;
   border-color: rgba(255, 255, 255, 0.08);
@@ -4623,6 +4633,12 @@ body.meetings-mode .meetings-card {
   border-radius: 12px;
   border: 1px solid rgba(184, 118, 255, 0.12);
   background: rgba(5, 10, 18, 0.38);
+}
+
+.tray-employee-workload-internal {
+  padding: 12px;
+  border-color: rgba(255, 198, 92, 0.18);
+  background: linear-gradient(180deg, rgba(42, 31, 14, 0.48), rgba(8, 14, 20, 0.58));
 }
 
 .tray-employee-workload-people {

@@ -1,5 +1,13 @@
 # HRS Desktop Changelog
 
+## 1.0.8
+
+- Moved Comm-IT Corp and Valinor report rows out of Individual projects into a separate Internal projects section.
+- Added a Reports checkbox to show or hide Internal projects when internal customer rows exist.
+- Kept Cross projects focused on external customer work by continuing to exclude Comm-IT Corp and Valinor from shared-project matching.
+- Preserved the existing employee, customer, task, and hours breakdown inside the new Internal projects section.
+- Updated release metadata to version `1.0.8` for macOS and Windows auto-update validation.
+
 ## 1.0.7
 
 - Temporarily hid the Agenda page from the tray navigation on both macOS and Windows without deleting the Agenda code or backend IPC.

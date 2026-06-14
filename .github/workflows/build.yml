@@ -41,8 +41,8 @@ jobs:
       - name: 🏗️ Build React app
         run: npm run build
       
-      - name: 🍎 Build macOS Universal Binary
-        run: npm run dist:mac:universal
+      - name: 🍎 Build macOS
+        run: npm run dist:mac -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       
@@ -80,7 +80,7 @@ jobs:
         run: npm run build
       
       - name: 🪟 Build Windows 64-bit
-        run: npm run dist:win:x64
+        run: npm run dist:win:x64 -- --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       

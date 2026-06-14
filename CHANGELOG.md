@@ -1,5 +1,12 @@
 # HRS Desktop Changelog
 
+## 1.0.10
+
+- Fixed Windows GitHub Actions release installs by making the macOS-only `electron-liquid-glass` native package optional.
+- Kept `liquid-glass-react` available for the renderer while preserving React 18 through npm peer-dependency compatibility settings.
+- Kept the app runtime behavior unchanged from the Reports internal-project release.
+- Updated release metadata to version `1.0.10` for macOS and Windows auto-update validation.
+
 ## 1.0.9
 
 - Fixed GitHub Actions npm install failures by committing npm peer-dependency resolution for the existing React 18 and `liquid-glass-react` dependency combination.

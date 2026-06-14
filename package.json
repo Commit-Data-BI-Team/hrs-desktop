@@ -2,7 +2,7 @@
   "name": "hrs-desktop",
   "description": "HRS Desktop time logging app",
   "private": true,
-  "version": "1.0.9",
+  "version": "1.0.10",
   "author": "b4db1r3",
   "type": "module",
   "scripts": {
@@ -33,7 +33,6 @@
     "@supabase/supabase-js": "^2.106.2",
     "@tabler/icons-react": "^3.36.1",
     "dayjs": "^1.11.19",
-    "electron-liquid-glass": "1.1.1",
     "electron-store": "^11.0.2",
     "electron-updater": "^6.3.9",
     "keytar": "^7.9.0",
@@ -45,6 +44,9 @@
     "ws": "^8.21.0",
     "xlsx": "^0.18.5",
     "zod": "^4.3.5"
+  },
+  "optionalDependencies": {
+    "electron-liquid-glass": "1.1.1"
   },
   "devDependencies": {
     "@playwright/test": "^1.48.2",

@@ -2368,6 +2368,7 @@ export default function App() {
   const [employeeWorkloadEmployeeFilter, setEmployeeWorkloadEmployeeFilter] = useState<string | null>(null)
   const [employeeWorkloadCustomerFilter, setEmployeeWorkloadCustomerFilter] = useState<string | null>(null)
   const [employeeWorkloadTaskFilter, setEmployeeWorkloadTaskFilter] = useState<string | null>(null)
+  const [showOnlyCrossProjects, setShowOnlyCrossProjects] = useState(false)
   const [showInternalProjects, setShowInternalProjects] = useState(false)
   const [reportCustomerAliases, setReportCustomerAliases] = useState<Record<string, string>>(() =>
     safeGetLocalStorageStringRecord(REPORT_CUSTOMER_ALIASES_STORAGE_KEY)
@@ -12478,7 +12479,15 @@ export default function App() {
               {filtersActive ? 'Filtered' : 'All selected'}
             </Badge>
             <Group gap="xs" wrap="nowrap">
-              {hasInternalWorkloadRows ? (
+              <Checkbox
+                size="xs"
+                label="Cross projects only"
+                checked={showOnlyCrossProjects}
+                onChange={event => setShowOnlyCrossProjects(event.currentTarget.checked)}
+                disabled={filtersDisabled}
+                className="tray-employee-workload-cross-toggle"
+              />
+              {hasInternalWorkloadRows && !showOnlyCrossProjects ? (
                 <Checkbox
                   size="xs"
                   label="Show internal projects"
@@ -12516,77 +12525,79 @@ export default function App() {
           ) : hasWorkloadRows ? (
             <div className="tray-employee-workload-results">
               <div className="tray-employee-workload-split">
-                <Card radius="md" withBorder className="tray-employee-workload-section">
-                  <Stack gap={8}>
-                    <Text size="xs" fw={800}>
-                      Individual projects
-                    </Text>
-                    {individualEmployeeProjectWorkload.length ? (
-                      <Stack gap={8} className="tray-employee-workload-list">
-                        {individualEmployeeProjectWorkload.map(employee => (
-                          <Card
-                            key={employee.employee}
-                            radius="md"
-                            withBorder
-                            className="tray-employee-workload-employee"
-                          >
-                            <Stack gap={7}>
-                              <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
-                                <Text size="xs" fw={800} lineClamp={1}>
-                                  {employee.employee}
-                                </Text>
-                                <Text size="xs" fw={800} className="tray-employee-workload-hours">
-                                  {minutesToHHMM(employee.totalMinutes)}
-                                </Text>
-                              </Group>
-                              <Stack gap={6}>
-                                {employee.customers.map(customer => (
-                                  <div
-                                    key={`${employee.employee}-${customer.customer}`}
-                                    className="tray-employee-workload-customer"
-                                  >
-                                    <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
-                                      {renderEditableReportCustomerName(
-                                        customer.customer,
-                                        customer.rawCustomer
-                                      )}
-                                      <Text size="xs" fw={800} className="tray-employee-workload-hours">
-                                        {minutesToHHMM(customer.totalMinutes)}
-                                      </Text>
-                                    </Group>
-                                    <Stack gap={3} mt={4}>
-                                      {customer.tasks.map(task => (
-                                        <Group
-                                          key={`${customer.customer}-${task.task}`}
-                                          justify="space-between"
-                                          align="center"
-                                          gap="xs"
-                                          wrap="nowrap"
-                                          className="tray-employee-workload-task"
-                                        >
-                                          <Text size="xs" c="dimmed" lineClamp={1}>
-                                            {task.task}
-                                          </Text>
-                                          <Text size="xs" fw={700} className="tray-employee-workload-hours">
-                                            {minutesToHHMM(task.totalMinutes)}
-                                          </Text>
-                                        </Group>
-                                      ))}
-                                    </Stack>
-                                  </div>
-                                ))}
-                              </Stack>
-                            </Stack>
-                          </Card>
-                        ))}
-                      </Stack>
-                    ) : (
-                      <Text size="xs" c="dimmed">
-                        No individual project hours for the selected filters.
+                {!showOnlyCrossProjects ? (
+                  <Card radius="md" withBorder className="tray-employee-workload-section">
+                    <Stack gap={8}>
+                      <Text size="xs" fw={800}>
+                        Individual projects
                       </Text>
-                    )}
-                  </Stack>
-                </Card>
+                      {individualEmployeeProjectWorkload.length ? (
+                        <Stack gap={8} className="tray-employee-workload-list">
+                          {individualEmployeeProjectWorkload.map(employee => (
+                            <Card
+                              key={employee.employee}
+                              radius="md"
+                              withBorder
+                              className="tray-employee-workload-employee"
+                            >
+                              <Stack gap={7}>
+                                <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                                  <Text size="xs" fw={800} lineClamp={1}>
+                                    {employee.employee}
+                                  </Text>
+                                  <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                    {minutesToHHMM(employee.totalMinutes)}
+                                  </Text>
+                                </Group>
+                                <Stack gap={6}>
+                                  {employee.customers.map(customer => (
+                                    <div
+                                      key={`${employee.employee}-${customer.customer}`}
+                                      className="tray-employee-workload-customer"
+                                    >
+                                      <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
+                                        {renderEditableReportCustomerName(
+                                          customer.customer,
+                                          customer.rawCustomer
+                                        )}
+                                        <Text size="xs" fw={800} className="tray-employee-workload-hours">
+                                          {minutesToHHMM(customer.totalMinutes)}
+                                        </Text>
+                                      </Group>
+                                      <Stack gap={3} mt={4}>
+                                        {customer.tasks.map(task => (
+                                          <Group
+                                            key={`${customer.customer}-${task.task}`}
+                                            justify="space-between"
+                                            align="center"
+                                            gap="xs"
+                                            wrap="nowrap"
+                                            className="tray-employee-workload-task"
+                                          >
+                                            <Text size="xs" c="dimmed" lineClamp={1}>
+                                              {task.task}
+                                            </Text>
+                                            <Text size="xs" fw={700} className="tray-employee-workload-hours">
+                                              {minutesToHHMM(task.totalMinutes)}
+                                            </Text>
+                                          </Group>
+                                        ))}
+                                      </Stack>
+                                    </div>
+                                  ))}
+                                </Stack>
+                              </Stack>
+                            </Card>
+                          ))}
+                        </Stack>
+                      ) : (
+                        <Text size="xs" c="dimmed">
+                          No individual project hours for the selected filters.
+                        </Text>
+                      )}
+                    </Stack>
+                  </Card>
+                ) : null}
 
                 <Card radius="md" withBorder className="tray-employee-workload-shared">
                   <Stack gap={8}>
@@ -12653,7 +12664,7 @@ export default function App() {
                   </Stack>
                 </Card>
 
-                {hasInternalWorkloadRows && showInternalProjects ? (
+                {hasInternalWorkloadRows && showInternalProjects && !showOnlyCrossProjects ? (
                   <Card radius="md" withBorder className="tray-employee-workload-internal">
                     <Stack gap={8}>
                       <Text size="xs" fw={800}>

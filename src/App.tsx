@@ -8536,6 +8536,15 @@ export default function App() {
     reportMissionMap
   ])
 
+  async function deleteQuickFictiveTask(mission: ProjectMission) {
+    const deletedValue = getMissionOptionValue(mission.id)
+    if (taskName === deletedValue) {
+      setTaskName(null)
+      setSuppressTaskAutoSelect(true)
+    }
+    await deleteProjectMission(mission)
+  }
+
   const taskSelectRenderOption: SelectProps['renderOption'] = ({ option, checked }) => {
     if (option.value === QUICKLOG_ADD_FICTIVE_VALUE) {
       return (
@@ -8557,12 +8566,42 @@ export default function App() {
       )
     }
 
+    const missionId = getMissionIdFromTaskValue(option.value)
+    const virtualMission = missionId
+      ? projectManagementConfig?.missions.find(mission => mission.id === missionId && mission.virtual)
+      : null
+
     return (
       <Group justify="space-between" align="center" wrap="nowrap" gap="xs" className="task-select-option">
         <Text size="sm" truncate className="task-select-option-text">
           {option.label}
         </Text>
-        {checked && <IconCheck size={16} className="task-option-check" />}
+        <Group gap={6} wrap="nowrap" className="task-select-option-actions">
+          {virtualMission && (
+            <ActionIcon
+              size="sm"
+              radius="xl"
+              variant="subtle"
+              color="red"
+              className="task-option-delete"
+              aria-label={`Delete ${virtualMission.name}`}
+              title="Delete task"
+              loading={projectManagementLoading}
+              onMouseDown={event => {
+                event.preventDefault()
+                event.stopPropagation()
+              }}
+              onClick={event => {
+                event.preventDefault()
+                event.stopPropagation()
+                void deleteQuickFictiveTask(virtualMission)
+              }}
+            >
+              <IconX size={14} stroke={2.4} />
+            </ActionIcon>
+          )}
+          {checked && <IconCheck size={16} className="task-option-check" />}
+        </Group>
       </Group>
     )
   }

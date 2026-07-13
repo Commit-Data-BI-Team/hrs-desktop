@@ -3193,6 +3193,49 @@ html[data-platform='windows'] .tray-shell-enter {
   min-width: 0;
 }
 
+.quick-duo-actions {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+}
+
+.quick-duo-action-button {
+  width: 100%;
+  min-width: 0;
+  height: 48px;
+  min-height: 48px;
+  padding-inline: 8px;
+  border-radius: 12px;
+  font-size: 0.65rem;
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.quick-duo-action-button .mantine-Button-label {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.quick-duo-action-button.is-push {
+  color: #ffdca8;
+  border-color: rgba(255, 185, 88, 0.46);
+  background: linear-gradient(135deg, rgba(92, 54, 18, 0.86), rgba(37, 22, 12, 0.86));
+}
+
+.quick-duo-action-button.is-call {
+  color: #bde9ff;
+  border-color: rgba(87, 190, 255, 0.42);
+  background: linear-gradient(135deg, rgba(14, 64, 94, 0.86), rgba(9, 31, 48, 0.9));
+}
+
+.quick-duo-action-button:disabled,
+.quick-duo-action-button[data-disabled] {
+  opacity: 0.72;
+}
+
 .quick-floating-timer-button {
   width: 100%;
   min-width: 0;

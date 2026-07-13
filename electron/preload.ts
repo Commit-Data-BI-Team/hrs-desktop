@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getWorkItemDetails', epicKey, forceRefresh),
   getJiraIssueWorklogs: (issueKey: string) =>
     ipcRenderer.invoke('jira:getIssueWorklogs', issueKey),
+  findJiraWorklogsForDate: (date: string) =>
+    ipcRenderer.invoke('jira:findWorklogsForDate', date),
   createJiraIssue: (payload: {
     parentIssueKey: string
     summary: string
@@ -71,6 +73,13 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('supabase:updateProfile', payload),
   getSupabaseWorkReports: (startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getWorkReports', startDate, endDate),
+  getSharedFictiveTasks: () => ipcRenderer.invoke('supabase:getSharedFictiveTasks'),
+  upsertSharedFictiveTask: (payload: unknown) =>
+    ipcRenderer.invoke('supabase:upsertSharedFictiveTask', payload),
+  archiveSharedFictiveTask: (taskId: string) =>
+    ipcRenderer.invoke('supabase:archiveSharedFictiveTask', taskId),
+  getSharedFictiveTaskUsage: (taskIds: string[]) =>
+    ipcRenderer.invoke('supabase:getSharedFictiveTaskUsage', taskIds),
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string
@@ -215,6 +224,9 @@ contextBridge.exposeInMainWorld('hrs', {
     entries: Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
   ) =>
     ipcRenderer.invoke('app:setJiraLoggedEntries', entries),
+  getPendingReportSyncMonths: () => ipcRenderer.invoke('app:getPendingReportSyncMonths'),
+  setPendingReportSyncMonths: (months: string[]) =>
+    ipcRenderer.invoke('app:setPendingReportSyncMonths', months),
   getMeetings: (options: {
     browser: 'safari' | 'chrome'
     headless?: boolean
@@ -222,6 +234,15 @@ contextBridge.exposeInMainWorld('hrs', {
     username?: string | null
     password?: string | null
   }) => ipcRenderer.invoke('meetings:run', options),
+  selectMeetingsDuoAction: (action: 'push' | 'call') =>
+    ipcRenderer.invoke('meetings:duo-action', action),
+  onMeetingsDuoActionRequired: (handler: () => void) => {
+    const listener = () => handler()
+    ipcRenderer.on('meetings:duo-action-required', listener)
+    return () => {
+      ipcRenderer.removeListener('meetings:duo-action-required', listener)
+    }
+  },
   onMeetingsProgress: (handler: (message: string) => void) => {
     const listener = (_event: Electron.IpcRendererEvent, message: string) => handler(message)
     ipcRenderer.on('meetings:progress', listener)

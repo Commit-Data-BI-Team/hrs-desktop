@@ -94,6 +94,7 @@ type JiraLoggedEntries = Record<
 type Schema = {
   preferences?: AppPreferences
   jiraLoggedEntries?: JiraLoggedEntries
+  pendingReportSyncMonths?: string[]
 }
 
 const store = new Store<Schema>({
@@ -214,4 +215,20 @@ export function getJiraLoggedEntries(): JiraLoggedEntries {
 export function setJiraLoggedEntries(entries: JiraLoggedEntries): JiraLoggedEntries {
   store.set('jiraLoggedEntries', entries)
   return entries
+}
+
+export function getPendingReportSyncMonths(): string[] {
+  return Array.from(
+    new Set(
+      (store.get('pendingReportSyncMonths') ?? []).filter(month => /^\d{4}-\d{2}$/.test(month))
+    )
+  ).sort()
+}
+
+export function setPendingReportSyncMonths(months: string[]): string[] {
+  const normalized = Array.from(
+    new Set(months.filter(month => /^\d{4}-\d{2}$/.test(month)))
+  ).sort()
+  store.set('pendingReportSyncMonths', normalized)
+  return normalized
 }

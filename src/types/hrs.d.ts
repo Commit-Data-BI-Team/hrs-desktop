@@ -196,8 +196,16 @@ type SupabaseWorkReportRow = {
   reporting_from: string | null
   from_time: string | null
   to_time: string | null
+  shared_fictive_task_id: string | null
   source: string
   synced_at?: string
+}
+
+type SharedFictiveTaskUsage = {
+  taskId: string
+  usedSeconds: number
+  contributorCount: number
+  lastReportedAt: string | null
 }
 
 type MeetingItem = {
@@ -309,9 +317,11 @@ type CustomerProjectMapping = {
 type ProjectMission = {
   id: string
   customerName: string
+  projectName?: string | null
   name: string
   jiraIssueKey: string
   hrsTaskIds: string[]
+  originalHrsTaskName?: string | null
   virtual: boolean
   parentMissionId?: string
   assignedEmployees: string[]
@@ -324,6 +334,9 @@ type ProjectMission = {
   notes?: string
   createdAt: string
   updatedAt: string
+  shared?: boolean
+  createdBy?: string
+  archivedAt?: string | null
 }
 
 type SyncAuditStatus = 'pending' | 'applied' | 'skipped' | 'failed' | 'dry_run'
@@ -525,6 +538,10 @@ type HrsApi = {
     partial: boolean
   }>
   getJiraIssueWorklogs: (issueKey: string) => Promise<JiraWorklogEntry[]>
+  findJiraWorklogsForDate: (date: string) => Promise<{
+    worklogs: Array<JiraWorklogEntry & { issueKey: string }>
+    partial: boolean
+  }>
   createJiraIssue: (payload: {
     parentIssueKey: string
     summary: string
@@ -566,6 +583,26 @@ type HrsApi = {
     startDate: string,
     endDate: string
   ) => Promise<SupabaseWorkReportRow[]>
+  getSharedFictiveTasks: () => Promise<{
+    available: boolean
+    tasks: ProjectMission[]
+  }>
+  upsertSharedFictiveTask: (payload: {
+    id?: string
+    customerName: string
+    projectName?: string | null
+    originalHrsTaskId: string | number
+    originalHrsTaskName?: string | null
+    jiraIssueKey: string
+    name: string
+    plannedHours?: number | null
+    cappedHours?: number | null
+    status?: MissionStatus
+    notes?: string
+    assignedEmployeeIds?: Array<string | number>
+  }) => Promise<ProjectMission>
+  archiveSharedFictiveTask: (taskId: string) => Promise<boolean>
+  getSharedFictiveTaskUsage: (taskIds: string[]) => Promise<SharedFictiveTaskUsage[]>
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string
@@ -707,6 +744,8 @@ type HrsApi = {
   setJiraLoggedEntries: (
     entries: Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
   ) => Promise<Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>>
+  getPendingReportSyncMonths: () => Promise<string[]>
+  setPendingReportSyncMonths: (months: string[]) => Promise<string[]>
   getMeetings: (options: {
     browser: 'safari' | 'chrome'
     headless?: boolean
@@ -714,6 +753,8 @@ type HrsApi = {
     username?: string | null
     password?: string | null
   }) => Promise<MeetingsResult>
+  selectMeetingsDuoAction: (action: 'push' | 'call') => Promise<boolean>
+  onMeetingsDuoActionRequired: (handler: () => void) => () => void
   onMeetingsProgress: (handler: (message: string) => void) => () => void
   getAgenda: (options: {
     token?: string | null

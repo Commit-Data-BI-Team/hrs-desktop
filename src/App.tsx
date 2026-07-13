@@ -49,7 +49,9 @@ import {
   IconX,
   IconChevronDown,
   IconChevronRight,
-  IconInfoCircle
+  IconInfoCircle,
+  IconBellRinging,
+  IconPhoneCall
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -208,8 +210,16 @@ type SupabaseWorkReportRow = {
   reporting_from: string | null
   from_time: string | null
   to_time: string | null
+  shared_fictive_task_id: string | null
   source: string
   synced_at?: string
+}
+
+type SharedFictiveTaskUsage = {
+  taskId: string
+  usedSeconds: number
+  contributorCount: number
+  lastReportedAt: string | null
 }
 
 type EmployeeAdminItem = {
@@ -316,6 +326,23 @@ type JiraWorklogEntry = {
   comment: unknown | null
   authorName?: string | null
   authorId?: string | null
+}
+
+type JiraDatedWorklogEntry = JiraWorklogEntry & {
+  issueKey: string
+}
+
+type JiraLoggedEntry = {
+  issueKey: string
+  loggedAt: string
+  worklogId?: string
+}
+
+type JiraLoggedEntries = Record<string, JiraLoggedEntry>
+
+type JiraLoggedEntryMatch = {
+  key: string
+  entry: JiraLoggedEntry
 }
 
 type JiraSubtaskItem = JiraWorkItem & {
@@ -1097,8 +1124,10 @@ function buildSupabaseReportId(parts: {
   taskId: string | number
   customer: string
   project: string
-  externalTaskKey?: string | null
+  hoursHHMM: string
   comment: string
+  fromTime?: string | null
+  toTime?: string | null
   index: number
 }) {
   const raw = [
@@ -1108,8 +1137,10 @@ function buildSupabaseReportId(parts: {
     parts.taskId,
     normalizeText(parts.customer).slice(0, 80),
     normalizeText(parts.project).slice(0, 80),
-    normalizeText(parts.externalTaskKey ?? '').slice(0, 80),
+    parts.hoursHHMM,
     normalizeText(parts.comment).slice(0, 80),
+    parts.fromTime ?? '',
+    parts.toTime ?? '',
     parts.index
   ].join('|')
   return raw.replace(/\s+/g, ' ').trim()
@@ -1281,6 +1312,73 @@ function getReportEntryKey(
     entry.reporting_from || '',
     entry.projectInstance || ''
   ].join('|')
+}
+
+function getJiraTrackingKeys(
+  entry: Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance'>,
+  date: string
+) {
+  const exactKey = getReportEntryKey(entry, date)
+  const projectAgnosticKey = getReportEntryKey({ ...entry, projectInstance: '' }, date)
+  return exactKey === projectAgnosticKey ? [exactKey] : [exactKey, projectAgnosticKey]
+}
+
+function findJiraLoggedEntry(
+  entries: JiraLoggedEntries,
+  report: Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance'>,
+  date: string
+): JiraLoggedEntryMatch | null {
+  for (const key of getJiraTrackingKeys(report, date)) {
+    if (entries[key]) return { key, entry: entries[key] }
+  }
+
+  // Older builds persisted the HRS project label as part of the key. The label returned by
+  // HRS can later differ, so recover the link only when the remaining fingerprint identifies
+  // one unique Jira worklog. This avoids ever deleting an ambiguous Jira entry.
+  const prefix = `${date}|${report.taskId}|${report.hours_HHMM}|`
+  const candidates = Object.entries(entries).filter(([key]) => key.startsWith(prefix))
+  const unique = new Map<string, JiraLoggedEntryMatch>()
+  for (const [key, entry] of candidates) {
+    const identity = entry.worklogId
+      ? `${entry.issueKey}|${entry.worklogId}`
+      : `${entry.issueKey}|${entry.loggedAt}`
+    if (!unique.has(identity)) unique.set(identity, { key, entry })
+  }
+  return unique.size === 1 ? Array.from(unique.values())[0] : null
+}
+
+function withJiraLoggedEntryAliases(
+  entries: JiraLoggedEntries,
+  report: Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance'>,
+  date: string,
+  jiraEntry: JiraLoggedEntry
+) {
+  const next = { ...entries }
+  for (const key of getJiraTrackingKeys(report, date)) next[key] = jiraEntry
+  return next
+}
+
+function withoutJiraLoggedEntryAliases(
+  entries: JiraLoggedEntries,
+  match: JiraLoggedEntryMatch
+) {
+  const next = { ...entries }
+  for (const [key, entry] of Object.entries(next)) {
+    const sameWorklog = Boolean(
+      match.entry.worklogId &&
+        entry.worklogId &&
+        match.entry.issueKey === entry.issueKey &&
+        match.entry.worklogId === entry.worklogId
+    )
+    const sameLegacyEntry = Boolean(
+      !match.entry.worklogId &&
+        !entry.worklogId &&
+        match.entry.issueKey === entry.issueKey &&
+        match.entry.loggedAt === entry.loggedAt
+    )
+    if (key === match.key || sameWorklog || sameLegacyEntry) delete next[key]
+  }
+  return next
 }
 
 function formatJiraHours(seconds: number) {
@@ -2157,6 +2255,16 @@ export default function App() {
   const [projectManagementAudit, setProjectManagementAudit] = useState<SyncAuditEntry[]>([])
   const [projectManagementLoading, setProjectManagementLoading] = useState(false)
   const [projectManagementError, setProjectManagementError] = useState<string | null>(null)
+  const [sharedFictiveTasks, setSharedFictiveTasks] = useState<ProjectMission[]>([])
+  const [sharedFictiveTasksAvailable, setSharedFictiveTasksAvailable] = useState<boolean | null>(null)
+  const [sharedFictiveTaskUsage, setSharedFictiveTaskUsage] = useState<
+    Record<string, SharedFictiveTaskUsage>
+  >({})
+  const [pendingReportSyncMonths, setPendingReportSyncMonths] = useState<string[]>([])
+  const pendingReportSyncMonthsRef = useRef<string[]>([])
+  const reportReconciliationPromisesRef = useRef(
+    new Map<string, Promise<{ synced: number; error: string | null }>>()
+  )
   const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null)
   const [slackToken, setSlackToken] = useState('')
   const [slackChannels, setSlackChannels] = useState<SlackChannelOption[]>([])
@@ -2186,9 +2294,7 @@ export default function App() {
   const [quickFictiveError, setQuickFictiveError] = useState<string | null>(null)
   const [quickFictiveJiraParentKey, setQuickFictiveJiraParentKey] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
-  const [jiraLoggedEntries, setJiraLoggedEntries] = useState<
-    Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
-  >({})
+  const [jiraLoggedEntries, setJiraLoggedEntries] = useState<JiraLoggedEntries>({})
   const [jiraLogModalOpen, setJiraLogModalOpen] = useState(false)
   const [jiraLogModalEntry, setJiraLogModalEntry] = useState<{
     entry: WorkReportEntry
@@ -2200,6 +2306,7 @@ export default function App() {
   const [jiraLogModalLoading, setJiraLogModalLoading] = useState(false)
   const [jiraLogModalError, setJiraLogModalError] = useState<string | null>(null)
   const jiraLogModalRequestId = useRef(0)
+  const sharedFictiveMigrationInFlightRef = useRef(false)
   const [jiraEpicDebugOpen, setJiraEpicDebugOpen] = useState(false)
   const [jiraEpicDebugData, setJiraEpicDebugData] = useState<{
     epicKey: string
@@ -2221,6 +2328,13 @@ export default function App() {
   const [meetingsProgressLog, setMeetingsProgressLog] = useState<string[]>([])
   const [meetingsFetchPhase, setMeetingsFetchPhase] = useState<MeetingsFetchPhase>('idle')
   const [meetingsDuoPromptActive, setMeetingsDuoPromptActive] = useState(false)
+  const [meetingsDuoActionRequired, setMeetingsDuoActionRequired] = useState(false)
+  const [meetingsDuoActionSending, setMeetingsDuoActionSending] = useState<
+    'push' | 'call' | null
+  >(null)
+  const [meetingsDuoSelectedAction, setMeetingsDuoSelectedAction] = useState<
+    'push' | 'call' | null
+  >(null)
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [trayMeetingsProgressOpen, setTrayMeetingsProgressOpen] = useState(false)
@@ -2429,6 +2543,20 @@ export default function App() {
     if (typeof window === 'undefined') return false
     return safeGetLocalStorageFlag('hrs-jira-budget-collapsed')
   })
+  const allProjectMissions = useMemo(() => {
+    const sharedIds = new Set(sharedFictiveTasks.map(mission => mission.id))
+    const sharedJiraKeys = new Set(
+      sharedFictiveTasks.map(mission => mission.jiraIssueKey?.trim().toUpperCase()).filter(Boolean)
+    )
+    const localMissions = (projectManagementConfig?.missions ?? []).filter(mission => {
+      if (sharedIds.has(mission.id)) return false
+      const jiraKey = mission.jiraIssueKey?.trim().toUpperCase()
+      return !jiraKey || !sharedJiraKeys.has(jiraKey)
+    })
+    return [...localMissions, ...sharedFictiveTasks].sort((a, b) =>
+      a.name.localeCompare(b.name)
+    )
+  }, [projectManagementConfig?.missions, sharedFictiveTasks])
   useEffect(() => {
     try {
       localStorage.setItem('hrs-kpi-collapsed', kpiCollapsed ? '1' : '0')
@@ -2891,6 +3019,21 @@ export default function App() {
   }, [agendaLoading])
 
   useEffect(() => {
+    if (!window?.hrs?.onMeetingsDuoActionRequired) return
+    const unsubscribe = window.hrs.onMeetingsDuoActionRequired(() => {
+      setMeetingsDuoActionRequired(true)
+      setMeetingsDuoActionSending(null)
+      setMeetingsDuoSelectedAction(null)
+      setMeetingsDuoPromptActive(false)
+      setMeetingsProgress('Choose a DUO verification method.')
+      setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
+    })
+    return () => {
+      unsubscribe?.()
+    }
+  }, [])
+
+  useEffect(() => {
     if (!window?.hrs?.onMeetingsProgress) return
     const unsubscribe = window.hrs.onMeetingsProgress(message => {
       setMeetingsProgress(message)
@@ -2900,9 +3043,11 @@ export default function App() {
       })
       const normalized = message.toLowerCase()
       const isActualDuoPrompt =
-        normalized.includes('clicked duo push button') ||
+        normalized.includes('sent duo push request') ||
+        normalized.includes('requested duo phone call') ||
         normalized.includes("waiting for duo approval on user's phone") ||
-        normalized.includes('waiting for duo approval on your phone')
+        normalized.includes('waiting for duo approval on your phone') ||
+        normalized.includes('waiting for duo phone call approval')
       const hasMovedPastDuo =
         normalized.includes('after duo approval') ||
         normalized.includes('after duo redirect') ||
@@ -2915,8 +3060,24 @@ export default function App() {
         normalized.includes('raw calendar events')
 
       if (isActualDuoPrompt) {
+        setMeetingsDuoActionRequired(false)
+        setMeetingsDuoActionSending(null)
+        if (
+          normalized.includes('requested duo phone call') ||
+          normalized.includes('waiting for duo phone call approval')
+        ) {
+          setMeetingsDuoSelectedAction('call')
+        } else if (
+          normalized.includes('sent duo push request') ||
+          normalized.includes('waiting for duo approval')
+        ) {
+          setMeetingsDuoSelectedAction('push')
+        }
         setMeetingsDuoPromptActive(true)
       } else if (hasMovedPastDuo) {
+        setMeetingsDuoActionRequired(false)
+        setMeetingsDuoActionSending(null)
+        setMeetingsDuoSelectedAction(null)
         setMeetingsDuoPromptActive(false)
       }
 
@@ -3457,6 +3618,36 @@ export default function App() {
       }
     })()
   }, [])
+
+  useEffect(() => {
+    if (!supabaseStatus?.email || !window.hrs?.getSharedFictiveTasks) return
+    const refresh = () => {
+      void loadSharedFictiveTasks()
+    }
+    const intervalId = window.setInterval(refresh, 30_000)
+    window.addEventListener('focus', refresh)
+    return () => {
+      window.clearInterval(intervalId)
+      window.removeEventListener('focus', refresh)
+    }
+  }, [supabaseStatus?.email])
+
+  useEffect(() => {
+    if (
+      !isTray ||
+      !projectManagementConfig ||
+      !supabaseStatus?.email ||
+      sharedFictiveTasksAvailable !== true
+    ) {
+      return
+    }
+    void publishLocalFictiveTasks(projectManagementConfig)
+  }, [
+    isTray,
+    projectManagementConfig?.updatedAt,
+    supabaseStatus?.email,
+    sharedFictiveTasksAvailable
+  ])
 
   useEffect(() => {
     if (!loggedIn || !supabaseStatus?.email) return
@@ -4060,6 +4251,21 @@ export default function App() {
     message.includes('JIRA 401') ||
     message.includes('JIRA 403')
 
+  const formatJiraDeletionError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    const marker = 'JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED:'
+    const markerIndex = message.indexOf(marker)
+    return markerIndex >= 0 ? message.slice(markerIndex + marker.length).trim() : message
+  }
+
+  const isJiraDeletionPermissionError = (error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error)
+    return (
+      message.includes('JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED:') ||
+      message.includes('you do not have permission to delete the specified worklog')
+    )
+  }
+
   async function loadSupabaseStatus() {
     if (!window.hrs?.getSupabaseStatus) return null
     try {
@@ -4069,6 +4275,13 @@ export default function App() {
       if (status.email) setSupabaseEmail(status.email)
       if (status.profile?.display_name) setSupabaseDisplayName(status.profile.display_name)
       if (status.profile?.employee_id) setSupabaseEmployeeId(String(status.profile.employee_id))
+      if (status.email) {
+        void loadSharedFictiveTasks()
+      } else {
+        setSharedFictiveTasks([])
+        setSharedFictiveTaskUsage({})
+        setSharedFictiveTasksAvailable(null)
+      }
       return status
     } catch (error) {
       setSupabaseError(error instanceof Error ? error.message : String(error))
@@ -4299,7 +4512,7 @@ export default function App() {
     const employeeName =
       profile.display_name || supabaseStatus?.email || storedUsername || `Employee ${employeeId}`
     const rows: Array<Record<string, unknown>> = []
-    const missions = projectManagementConfig?.missions ?? []
+    const missions = allProjectMissions
     for (const day of report.days) {
       day.reports.forEach((entry, index) => {
         const meta = taskMetaById.get(entry.taskId)
@@ -4314,9 +4527,6 @@ export default function App() {
         const customer = meta?.customerName || entry.projectInstance || 'Unknown'
         const project = meta?.projectName || entry.projectInstance || customer
         const externalTaskName = mission?.virtual ? mission.name : entry.taskName
-        const externalTaskKey = mission?.virtual
-          ? mission.jiraIssueKey || mission.id
-          : null
         const seconds = parseHoursHHMMToMinutes(entry.hours_HHMM) * 60
         rows.push({
           id: buildSupabaseReportId({
@@ -4325,8 +4535,10 @@ export default function App() {
             taskId: entry.taskId,
             customer,
             project,
-            externalTaskKey,
+            hoursHHMM: entry.hours_HHMM,
             comment: cleanComment,
+            fromTime: entry.from,
+            toTime: entry.to,
             index
           }),
           employee_id: employeeId,
@@ -4341,6 +4553,7 @@ export default function App() {
           reporting_from: entry.reporting_from || null,
           from_time: entry.from || null,
           to_time: entry.to || null,
+          shared_fictive_task_id: mission?.shared ? mission.id : null,
           source: 'hrs'
         })
       })
@@ -4387,6 +4600,12 @@ export default function App() {
       )
       const monthKey = dayjs(month).format('YYYY-MM')
       reportsCacheRef.current.delete(`supabase:${monthKey}`)
+      if (sharedFictiveTasks.length) {
+        await refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
+      }
+      if (pendingReportSyncMonthsRef.current.includes(monthKey)) {
+        await persistPendingReportSyncMonth(monthKey, false)
+      }
       if (!options.silent) {
         setSupabaseMessage(`Synced ${result.synced} report rows to Supabase.`)
       }
@@ -4404,6 +4623,64 @@ export default function App() {
     }
   }
 
+  async function persistPendingReportSyncMonth(monthKey: string, pending: boolean) {
+    const next = Array.from(
+      new Set(
+        pending
+          ? [...pendingReportSyncMonthsRef.current, monthKey]
+          : pendingReportSyncMonthsRef.current.filter(item => item !== monthKey)
+      )
+    ).sort()
+    if (next.join('|') === pendingReportSyncMonthsRef.current.join('|')) return next
+    pendingReportSyncMonthsRef.current = next
+    setPendingReportSyncMonths(next)
+    try {
+      await window.hrs.setPendingReportSyncMonths(next)
+    } catch (error) {
+      console.warn('[REPORT RECONCILIATION] Could not persist pending month', monthKey, error)
+    }
+    return next
+  }
+
+  async function syncHrsMonthToSupabaseReliably(
+    month: Date,
+    options: { missionMapOverride?: Record<string, string> } = {}
+  ): Promise<{ synced: number; error: string | null }> {
+    const monthKey = dayjs(month).format('YYYY-MM')
+    const existing = reportReconciliationPromisesRef.current.get(monthKey)
+    if (existing) return existing
+
+    const reconciliation = (async () => {
+      let lastResult: { synced: number; error: string | null } = {
+        synced: 0,
+        error: 'Report reconciliation did not run.'
+      }
+      const retryDelays = [0, 400, 1200]
+      for (const delayMs of retryDelays) {
+        if (delayMs) await new Promise(resolve => setTimeout(resolve, delayMs))
+        lastResult = await syncHrsMonthToSupabase(month, {
+          silent: true,
+          missionMapOverride: options.missionMapOverride
+        })
+        if (!lastResult.error) {
+          await persistPendingReportSyncMonth(monthKey, false)
+          return lastResult
+        }
+      }
+      await persistPendingReportSyncMonth(monthKey, true)
+      return lastResult
+    })()
+
+    reportReconciliationPromisesRef.current.set(monthKey, reconciliation)
+    try {
+      return await reconciliation
+    } finally {
+      if (reportReconciliationPromisesRef.current.get(monthKey) === reconciliation) {
+        reportReconciliationPromisesRef.current.delete(monthKey)
+      }
+    }
+  }
+
   async function syncCurrentReportsToSupabase() {
     if (!monthlyReport) return
     setSupabaseSyncing(true)
@@ -4418,6 +4695,9 @@ export default function App() {
         employeeId: supabaseStatus?.profile?.employee_id ?? undefined,
         rows
       })
+      if (sharedFictiveTasks.length) {
+        await refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
+      }
       setSupabaseMessage(`Synced ${result.synced} report rows to Supabase.`)
     } catch (error) {
       setSupabaseError(error instanceof Error ? error.message : String(error))
@@ -4620,6 +4900,142 @@ export default function App() {
     }
   }
 
+  async function refreshSharedFictiveTaskUsage(
+    tasksOverride?: ProjectMission[],
+    replace = false
+  ) {
+    if (!window.hrs?.getSharedFictiveTaskUsage) return []
+    const tasks = tasksOverride ?? sharedFictiveTasks
+    const ids = tasks.filter(task => task.shared).map(task => task.id)
+    if (!ids.length) {
+      if (replace) setSharedFictiveTaskUsage({})
+      return []
+    }
+    try {
+      const usage = await window.hrs.getSharedFictiveTaskUsage(ids)
+      const nextUsage = Object.fromEntries(usage.map(item => [item.taskId, item]))
+      setSharedFictiveTaskUsage(previous =>
+        replace ? nextUsage : { ...previous, ...nextUsage }
+      )
+      return usage
+    } catch (error) {
+      console.warn('[SHARED FICTIVE TASK USAGE]', error)
+      return []
+    }
+  }
+
+  async function loadSharedFictiveTasks() {
+    if (!window.hrs?.getSharedFictiveTasks) return []
+    try {
+      const result = await window.hrs.getSharedFictiveTasks()
+      setSharedFictiveTasksAvailable(result.available)
+      setSharedFictiveTasks(result.tasks)
+      if (result.available) {
+        await refreshSharedFictiveTaskUsage(result.tasks, true)
+      } else {
+        setSharedFictiveTaskUsage({})
+      }
+      return result.tasks
+    } catch (error) {
+      console.warn('[SHARED FICTIVE TASKS]', error)
+      setProjectManagementError(error instanceof Error ? error.message : String(error))
+      return []
+    }
+  }
+
+  async function publishLocalFictiveTasks(config: ProjectManagementConfig) {
+    if (
+      sharedFictiveMigrationInFlightRef.current ||
+      !supabaseStatus?.email ||
+      sharedFictiveTasksAvailable !== true ||
+      !window.hrs?.upsertSharedFictiveTask
+    ) {
+      return
+    }
+    const sharedIds = new Set(sharedFictiveTasks.map(task => task.id))
+    const sharedJiraKeys = new Set(
+      sharedFictiveTasks.map(task => task.jiraIssueKey.trim().toUpperCase())
+    )
+    const sharedByJiraKey = new Map(
+      sharedFictiveTasks.map(task => [task.jiraIssueKey.trim().toUpperCase(), task])
+    )
+    const existingIdRemaps = Object.fromEntries(
+      config.missions
+        .filter(mission => mission.virtual)
+        .map(mission => {
+          const sharedTask = sharedByJiraKey.get(mission.jiraIssueKey.trim().toUpperCase())
+          return sharedTask && sharedTask.id !== mission.id
+            ? ([mission.id, sharedTask.id] as const)
+            : null
+        })
+        .filter((entry): entry is readonly [string, string] => Boolean(entry))
+    )
+    if (Object.keys(existingIdRemaps).length) {
+      setReportMissionMap(previous =>
+        Object.fromEntries(
+          Object.entries(previous).map(([key, value]) => [
+            key,
+            existingIdRemaps[value] ?? value
+          ])
+        )
+      )
+    }
+    const localTasks = config.missions.filter(
+      mission =>
+        mission.virtual &&
+        !sharedIds.has(mission.id) &&
+        !sharedJiraKeys.has(mission.jiraIssueKey.trim().toUpperCase())
+    )
+    if (!localTasks.length) return
+
+    sharedFictiveMigrationInFlightRef.current = true
+    try {
+      const published: ProjectMission[] = []
+      const idRemaps: Record<string, string> = {}
+      for (const mission of localTasks) {
+        const originalTaskId = mission.hrsTaskIds[0]
+        if (!originalTaskId) continue
+        const originalTask = logs.find(log => String(log.taskId) === String(originalTaskId))
+        const sharedTask = await window.hrs.upsertSharedFictiveTask({
+          id: mission.id,
+          customerName: mission.customerName,
+          projectName: originalTask?.projectName ?? null,
+          originalHrsTaskId: originalTaskId,
+          originalHrsTaskName: originalTask?.taskName ?? null,
+          jiraIssueKey: mission.jiraIssueKey,
+          name: mission.name,
+          plannedHours: mission.plannedHours,
+          cappedHours: mission.cappedHours,
+          status: mission.status,
+          notes: mission.notes,
+          assignedEmployeeIds: mission.assignedEmployees
+        })
+        published.push(sharedTask)
+        if (sharedTask.id !== mission.id) idRemaps[mission.id] = sharedTask.id
+      }
+      if (published.length) {
+        setSharedFictiveTasks(previous => {
+          const byId = new Map(previous.map(task => [task.id, task]))
+          for (const task of published) byId.set(task.id, task)
+          return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
+        })
+        if (Object.keys(idRemaps).length) {
+          setReportMissionMap(previous =>
+            Object.fromEntries(
+              Object.entries(previous).map(([key, value]) => [key, idRemaps[value] ?? value])
+            )
+          )
+        }
+        await refreshSharedFictiveTaskUsage([...sharedFictiveTasks, ...published])
+      }
+    } catch (error) {
+      console.warn('[SHARED FICTIVE TASK MIGRATION]', error)
+      setProjectManagementError(error instanceof Error ? error.message : String(error))
+    } finally {
+      sharedFictiveMigrationInFlightRef.current = false
+    }
+  }
+
   async function loadSlackStatus(options?: { loadChannels?: boolean }) {
     if (!window.hrs?.getSlackStatus) return null
     try {
@@ -4746,14 +5162,32 @@ export default function App() {
     title: string
     lines: string[]
     metrics?: SlackUpdateMetrics | null
-  }) {
-    if (!window.hrs?.postSlackCustomerUpdate || !slackStatus?.configured) return null
-    if (!slackStatus.mappings[payload.customer]) return null
+  }): Promise<SlackPostResult> {
+    if (!window.hrs?.postSlackCustomerUpdate) {
+      return { posted: false, reason: 'Slack API is not available.' }
+    }
+    if (!slackStatus?.configured) {
+      return { posted: false, reason: 'Slack is not connected.' }
+    }
+    const customerKey = normalizeText(payload.customer)
+    const mapping =
+      slackStatus.mappings[payload.customer] ??
+      Object.values(slackStatus.mappings).find(
+        item => normalizeText(item.customerName) === customerKey
+      )
+    if (!mapping) {
+      return { posted: false, reason: `No Slack channel is mapped for ${payload.customer}.` }
+    }
     try {
-      return await window.hrs.postSlackCustomerUpdate(payload)
+      return await window.hrs.postSlackCustomerUpdate({
+        ...payload,
+        channelId: mapping.channelId
+      })
     } catch (err) {
-      console.error('[slack]', err)
-      return null
+      const message = err instanceof Error ? err.message : String(err)
+      console.error('[slack]', message)
+      setSlackError(message)
+      return { posted: false, reason: message }
     }
   }
 
@@ -5114,7 +5548,7 @@ export default function App() {
     const source = projectManagementConfig?.reportingSource ?? 'hrs'
     const syncMode = projectManagementConfig?.syncMode ?? 'manual'
     const mappingCount = projectManagementConfig?.customerMappings.length ?? 0
-    const missionCount = projectManagementConfig?.missions.length ?? 0
+    const missionCount = allProjectMissions.length
 
     return (
       <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
@@ -5301,10 +5735,39 @@ export default function App() {
         BOOT_TIMEOUT_MS,
         'Loading Jira history'
       )
-      setJiraLoggedEntries(
-        entries as Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
-      )
+      setJiraLoggedEntries(entries as JiraLoggedEntries)
     } catch {}
+  }
+
+  async function loadPendingReportSyncMonths() {
+    try {
+      const months = await withTimeout(
+        window.hrs.getPendingReportSyncMonths(),
+        BOOT_TIMEOUT_MS,
+        'Loading pending report reconciliation'
+      )
+      pendingReportSyncMonthsRef.current = months
+      setPendingReportSyncMonths(months)
+    } catch {}
+  }
+
+  async function selectMeetingsDuoAction(action: 'push' | 'call') {
+    if (!meetingsDuoActionRequired || meetingsDuoActionSending) return
+    setMeetingsDuoActionSending(action)
+    setMeetingsDuoSelectedAction(action)
+    setMeetingsError(null)
+    setMeetingsProgress(
+      action === 'call' ? 'Requesting a DUO phone call…' : 'Sending a DUO push…'
+    )
+    try {
+      await window.hrs.selectMeetingsDuoAction(action)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setMeetingsDuoActionSending(null)
+      setMeetingsDuoSelectedAction(null)
+      setMeetingsError(`Could not select the DUO verification method: ${message}`)
+      setMeetingsProgress('Choose a DUO verification method.')
+    }
   }
 
   async function fetchMeetings(background = false) {
@@ -5312,6 +5775,9 @@ export default function App() {
     setMeetingsError(null)
     setMeetingsFetchPhase('init')
     setMeetingsDuoPromptActive(false)
+    setMeetingsDuoActionRequired(false)
+    setMeetingsDuoActionSending(null)
+    setMeetingsDuoSelectedAction(null)
     if (!background) {
       setMeetingsProgressLog(['Preparing browser session…'])
       setTrayMeetingsProgressOpen(true)
@@ -5331,6 +5797,9 @@ export default function App() {
         setMeetingsProgress('Using cached meetings.')
         setMeetingsFetchPhase('done')
         setMeetingsDuoPromptActive(false)
+        setMeetingsDuoActionRequired(false)
+        setMeetingsDuoActionSending(null)
+        setMeetingsDuoSelectedAction(null)
         return
       }
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
@@ -5354,6 +5823,9 @@ export default function App() {
       }))
       setMeetingsProgress('Meetings ready.')
       setMeetingsDuoPromptActive(false)
+      setMeetingsDuoActionRequired(false)
+      setMeetingsDuoActionSending(null)
+      setMeetingsDuoSelectedAction(null)
       setMeetingsProgressLog(prev => {
         const message = `Completed fetch (${(result.meetings || []).length} meetings).`
         const next = prev[prev.length - 1] === message ? prev : [...prev, message]
@@ -5367,6 +5839,9 @@ export default function App() {
       setMeetingsProgress('Fetch failed.')
       setMeetingsFetchPhase('error')
       setMeetingsDuoPromptActive(false)
+      setMeetingsDuoActionRequired(false)
+      setMeetingsDuoActionSending(null)
+      setMeetingsDuoSelectedAction(null)
       setTrayMeetingsProgressOpen(true)
     } finally {
       setMeetingsLoading(false)
@@ -5524,11 +5999,6 @@ export default function App() {
     meetingMappingPrefillRef.current = null
   }, [meetingMappingOpen, meetingMappingOptions])
 
-  const meetingLogIssueOptions = useMemo(
-    () => buildJiraIssueOptions(meetingLogIssues, true),
-    [meetingLogIssues]
-  )
-
   const meetingLogTaskOptions = useMemo(() => {
     if (!meetingMappingProject || !meetingMappingClient) return []
     const scope = logs.filter(
@@ -5552,13 +6022,54 @@ export default function App() {
         map.set(log.taskName, log)
       }
     }
-    return Array.from(map.values())
+    const realOptions = Array.from(map.values())
       .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
       .map(log => ({
         value: String(log.taskId),
         label: log.taskName || String(log.taskId)
       }))
-  }, [logs, meetingMappingProject, meetingMappingClient])
+
+    const fictiveOptions = allProjectMissions
+      .filter(mission => mission.virtual && mission.customerName === meetingMappingClient)
+      .map(mission => {
+        const originalTaskId = mission.hrsTaskIds?.[0]
+        if (!originalTaskId) return null
+        const originalTask = logs.find(log => String(log.taskId) === String(originalTaskId))
+        if (!originalTask) return null
+        if (originalTask.customerName !== meetingMappingClient) return null
+        if (originalTask.projectName !== meetingMappingProject) return null
+        return {
+          value: getMissionOptionValue(mission.id),
+          label: `${mission.name} · ${mission.shared ? 'Shared fictive task' : 'Fictive task'}`
+        }
+      })
+      .filter((option): option is SelectOption => Boolean(option))
+      .sort((a, b) => a.label.localeCompare(b.label))
+
+    return [...fictiveOptions, ...realOptions]
+  }, [logs, meetingMappingProject, meetingMappingClient, allProjectMissions])
+
+  const meetingLogMission = useMemo(() => {
+    const missionId = getMissionIdFromTaskValue(meetingLogTaskId)
+    if (!missionId) return null
+    return allProjectMissions.find(mission => mission.id === missionId && mission.virtual) ?? null
+  }, [meetingLogTaskId, allProjectMissions])
+
+  const meetingLogIssueOptions = useMemo(() => {
+    const options = buildJiraIssueOptions(meetingLogIssues, true)
+    const missionIssueKey = meetingLogMission?.jiraIssueKey?.trim().toUpperCase()
+    if (!missionIssueKey || options.some(option => option.value === missionIssueKey)) return options
+    return [
+      {
+        value: missionIssueKey,
+        label: `${missionIssueKey} · ${meetingLogMission?.name ?? 'Fictive task'}`
+      },
+      ...options
+    ]
+  }, [meetingLogIssues, meetingLogMission])
+
+  const meetingEffectiveJiraIssueKey =
+    meetingLogIssueKey ?? meetingLogMission?.jiraIssueKey ?? meetingMappedEpicKey
 
 
   useEffect(() => {
@@ -5611,6 +6122,12 @@ export default function App() {
       return
     }
     if (!meetingMappedEpicKey) {
+      if (meetingLogMission?.jiraIssueKey) {
+        setMeetingLogError(null)
+        setMeetingLogIssues([])
+        setMeetingLogLoading(false)
+        return
+      }
       setMeetingLogError('Map this client to a Jira epic first.')
       setMeetingLogIssues([])
       setMeetingLogLoading(false)
@@ -5653,7 +6170,13 @@ export default function App() {
           setMeetingLogLoading(false)
         }
       })
-  }, [meetingMappingOpen, meetingLogToJira, meetingMappedEpicKey, jiraConfigured])
+  }, [
+    meetingMappingOpen,
+    meetingLogToJira,
+    meetingMappedEpicKey,
+    meetingLogMission?.jiraIssueKey,
+    jiraConfigured
+  ])
 
   useEffect(() => {
     if (!meetingLogIssueKey) return
@@ -5675,6 +6198,7 @@ export default function App() {
     options: {
       logToJira?: boolean
       jiraIssueKey?: string | null
+      mission?: ProjectMission | null
       onError?: (message: string) => void
     } = {}
   ) {
@@ -5704,19 +6228,53 @@ export default function App() {
       return false
     }
 
+    const effectiveMission = options.mission ?? null
     const effectiveTask = taskMetaById.get(taskId) ?? selectedTask
     const effectiveCustomerName = effectiveTask?.customerName ?? meetingMappingClient ?? customerName
     const mappedEpicForLog = effectiveCustomerName
       ? jiraMappings[effectiveCustomerName] ?? null
       : null
-    const effectiveJiraIssueKey = options.jiraIssueKey ?? mappedEpicForLog
+    const effectiveJiraIssueKey =
+      options.jiraIssueKey ?? effectiveMission?.jiraIssueKey ?? mappedEpicForLog
     const shouldLogToJira = Boolean(options.logToJira && effectiveJiraIssueKey && jiraStatus?.configured)
+
+    if (effectiveMission?.cappedHours && effectiveMission.cappedHours > 0) {
+      try {
+        const addedMinutes = prepared.reduce((sum, item) => sum + item.duration.minutes, 0)
+        let usedMinutes = getMissionUsedMinutesFromReports(effectiveMission, allReportItems)
+        if (effectiveMission.shared && window.hrs?.getSharedFictiveTaskUsage) {
+          const usage = await window.hrs.getSharedFictiveTaskUsage([effectiveMission.id])
+          const current = usage.find(item => item.taskId === effectiveMission.id)
+          usedMinutes = Math.round((current?.usedSeconds ?? 0) / 60)
+          if (current) {
+            setSharedFictiveTaskUsage(previous => ({ ...previous, [effectiveMission.id]: current }))
+          }
+        }
+        const capMinutes = Math.round(effectiveMission.cappedHours * 60)
+        if (usedMinutes + addedMinutes > capMinutes) {
+          const message = `${effectiveMission.name} is capped at ${effectiveMission.cappedHours}h. The selected meeting time would exceed the shared cap.`
+          options.onError?.(message)
+          setLogError(message)
+          return false
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        options.onError?.(message)
+        setLogError(message)
+        return false
+      }
+    }
 
     setLogLoading(true)
     setLogError(null)
     setLogSuccess(null)
 
     try {
+      let missionMapForSync = reportMissionMap
+      let nextJiraLoggedEntries = jiraLoggedEntries
+      let sharedUsageAfterSync: SharedFictiveTaskUsage | null = null
+      let slackPosted = false
+      const integrationFailures: string[] = []
       const byDate = new Map<string, typeof prepared>()
       for (const item of prepared) {
         const list = byDate.get(item.dateKey) ?? []
@@ -5882,7 +6440,23 @@ export default function App() {
         })
 
         await window.hrs.logWork({ date: dateKey, workLogs })
-        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
+        if (effectiveMission?.virtual) {
+          missionMapForSync = { ...missionMapForSync }
+          for (const item of dayMeetings) {
+            const missionMapKey = buildReportMissionMapKey({
+              date: dateKey,
+              taskId,
+              hoursHHMM: item.duration.hoursHHMM,
+              comment: item.title,
+              reportingFrom
+            })
+            missionMapForSync[missionMapKey] = effectiveMission.id
+          }
+        }
+        await syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
+          silent: true,
+          missionMapOverride: missionMapForSync
+        })
 
         setReportWorkLogsByDate(prev => {
           const existing = prev[dateKey] ?? []
@@ -5913,19 +6487,18 @@ export default function App() {
               seconds: Math.max(1, Math.round(item.duration.minutes * 60)),
               comment: item.title
             })
-            const entryKey = getReportEntryKey(
+            const trackedReport = {
+              taskId,
+              hours_HHMM: item.duration.hoursHHMM,
+              comment: item.title,
+              reporting_from: reportingFrom,
+              projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
+            }
+            nextJiraLoggedEntries = withJiraLoggedEntryAliases(
+              nextJiraLoggedEntries,
+              trackedReport,
+              item.dateKey,
               {
-                taskId,
-                hours_HHMM: item.duration.hoursHHMM,
-                comment: item.title,
-                reporting_from: reportingFrom,
-                projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
-              },
-              item.dateKey
-            )
-            persistJiraLoggedEntries({
-              ...jiraLoggedEntries,
-              [entryKey]: {
                 issueKey: effectiveJiraIssueKey,
                 loggedAt: new Date().toISOString(),
                 worklogId:
@@ -5933,11 +6506,79 @@ export default function App() {
                     ? (createdWorklog as JiraWorklogEntry).id
                     : undefined
               }
-            })
+            )
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err)
-            setLogError(`HRS saved, Jira failed: ${message}`)
+            integrationFailures.push(`Jira failed: ${message}`)
             if (isJiraAuthError(message)) handleJiraAuthError(message)
+          }
+        }
+      }
+
+      if (missionMapForSync !== reportMissionMap) setReportMissionMap(missionMapForSync)
+      if (nextJiraLoggedEntries !== jiraLoggedEntries) {
+        persistJiraLoggedEntries(nextJiraLoggedEntries)
+      }
+      if (effectiveMission?.shared) {
+        const refreshedUsage = await refreshSharedFictiveTaskUsage([effectiveMission])
+        sharedUsageAfterSync =
+          refreshedUsage.find(item => item.taskId === effectiveMission.id) ?? null
+      }
+
+      if (effectiveCustomerName && slackStatus?.mappings) {
+        const customerKey = normalizeText(effectiveCustomerName)
+        const hasSlackMapping =
+          Boolean(slackStatus.mappings[effectiveCustomerName]) ||
+          Object.values(slackStatus.mappings).some(
+            mapping => normalizeText(mapping.customerName) === customerKey
+          )
+        if (hasSlackMapping) {
+          const totalMinutes = prepared.reduce((sum, item) => sum + item.duration.minutes, 0)
+          const uniqueDates = Array.from(new Set(prepared.map(item => item.dateKey))).sort()
+          const meetingTitles = prepared.map(item => item.title)
+          let slackMetrics: SlackUpdateMetrics | null = null
+          if (effectiveMission?.cappedHours && effectiveMission.cappedHours > 0) {
+            const capMinutes = Math.round(effectiveMission.cappedHours * 60)
+            const usedMinutes = sharedUsageAfterSync
+              ? Math.round(sharedUsageAfterSync.usedSeconds / 60)
+              : getMissionUsedMinutesFromReports(effectiveMission, allReportItems) + totalMinutes
+            const remainingMinutes = Math.max(0, capMinutes - usedMinutes)
+            slackMetrics = {
+              capLabel: formatMinutesToLabel(capMinutes),
+              usedLabel: minutesToHHMM(usedMinutes),
+              remainingLabel: minutesToHHMM(remainingMinutes),
+              usedPercent: Math.round((usedMinutes / capMinutes) * 100)
+            }
+          }
+          const slackResult = await postSlackCustomerUpdate({
+            customer: effectiveCustomerName,
+            title: prepared.length === 1 ? 'Meeting logged' : 'Meetings logged',
+            lines: [
+              `Date: ${
+                uniqueDates.length === 1
+                  ? uniqueDates[0]
+                  : `${uniqueDates[0]} – ${uniqueDates[uniqueDates.length - 1]}`
+              }`,
+              `Employee: ${getCurrentReporterName()}`,
+              `Task: ${effectiveMission?.name ?? effectiveTask?.taskName ?? 'Meeting'}`,
+              effectiveMission?.virtual && effectiveTask?.taskName
+                ? `Original HRS task: ${effectiveTask.taskName}`
+                : '',
+              `Comment: ${
+                prepared.length === 1
+                  ? `Meeting · ${meetingTitles[0]}`
+                  : `${prepared.length} meetings · ${meetingTitles.join(' · ')}`
+              }`,
+              `Hours: ${minutesToHHMM(totalMinutes)}`,
+              prepared.length === 1 ? `Time: ${prepared[0].from} – ${prepared[0].to}` : '',
+              effectiveJiraIssueKey ? `Jira: ${effectiveJiraIssueKey}` : ''
+            ],
+            metrics: slackMetrics
+          })
+          if (!slackResult.posted) {
+            integrationFailures.push(`Slack failed: ${slackResult.reason ?? 'Unknown error'}`)
+          } else {
+            slackPosted = true
           }
         }
       }
@@ -5960,11 +6601,21 @@ export default function App() {
         },
         lastTaskId: taskId
       }))
-      setLogSuccess(
-        prepared.length === 1
-          ? 'Meeting logged.'
-          : `Logged ${prepared.length} meetings.`
-      )
+      if (integrationFailures.length) {
+        setLogError(
+          `${prepared.length === 1 ? 'Meeting' : 'Meetings'} saved to HRS. ${integrationFailures.join(' ')}`
+        )
+      } else {
+        setLogSuccess(
+          prepared.length === 1
+            ? slackPosted
+              ? 'Meeting logged and Slack notified.'
+              : 'Meeting logged.'
+            : slackPosted
+              ? `Logged ${prepared.length} meetings and notified Slack.`
+              : `Logged ${prepared.length} meetings.`
+        )
+      }
       return true
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -5997,13 +6648,17 @@ export default function App() {
       setMeetingMappingError('Select a task to log the meeting.')
       return
     }
-    const taskId = Number(meetingLogTaskId)
+    const selectedMission = meetingLogMission
+    const rawTaskId = selectedMission?.hrsTaskIds?.[0] ?? meetingLogTaskId
+    const taskId = Number(rawTaskId)
     if (Number.isNaN(taskId)) {
       setMeetingMappingError('Select a valid task to log the meeting.')
       return
     }
-    if (meetingLogToJira && !meetingMappedEpicKey) {
-      setMeetingMappingError('Map this client to a Jira epic first.')
+    const selectedJiraIssueKey =
+      meetingLogIssueKey ?? selectedMission?.jiraIssueKey ?? meetingMappedEpicKey
+    if (meetingLogToJira && !selectedJiraIssueKey) {
+      setMeetingMappingError('Select a Jira work item or map this client to a Jira epic first.')
       return
     }
     const meetingsToLog = meetingMappingMeetings.length
@@ -6014,12 +6669,17 @@ export default function App() {
       ...prev,
       [normalizedKey]: meetingMappingClient
     }))
-    const success = await logMeetingBatch(meetingsToLog, taskId, {
-      logToJira: meetingLogToJira && Boolean(meetingMappedEpicKey),
-      jiraIssueKey: meetingLogIssueKey,
-      onError: message => setMeetingMappingError(message)
-    })
-    setMeetingMappingSaving(false)
+    let success = false
+    try {
+      success = await logMeetingBatch(meetingsToLog, taskId, {
+        logToJira: meetingLogToJira && Boolean(selectedJiraIssueKey),
+        jiraIssueKey: selectedJiraIssueKey,
+        mission: selectedMission,
+        onError: message => setMeetingMappingError(message)
+      })
+    } finally {
+      setMeetingMappingSaving(false)
+    }
     if (success) {
       setMeetingLoggedKeys(prev => {
         const next = { ...prev }
@@ -6315,9 +6975,11 @@ export default function App() {
     if (force) {
       jiraIssuesCacheRef.current.delete(epicKey)
     }
-    const budgetRow = jiraBudgetRows.find(
-      row => row.epicKey === epicKey && row.detailsLoaded && row.items.length
-    )
+    const budgetRow = force
+      ? null
+      : jiraBudgetRows.find(
+          row => row.epicKey === epicKey && row.detailsLoaded && row.items.length
+        )
     if (budgetRow) {
       jiraIssuesCacheRef.current.set(epicKey, budgetRow.items)
       setJiraIssues(budgetRow.items)
@@ -6325,7 +6987,7 @@ export default function App() {
       setJiraIssueLoadError(null)
       return
     }
-    const cachedDetails = jiraBudgetDetailsCacheRef.current.get(epicKey)
+    const cachedDetails = force ? null : jiraBudgetDetailsCacheRef.current.get(epicKey)
     if (cachedDetails?.items.length) {
       jiraIssuesCacheRef.current.set(epicKey, cachedDetails.items)
       setJiraIssues(cachedDetails.items)
@@ -6339,7 +7001,7 @@ export default function App() {
     setJiraIssueLoadError(null)
     try {
       const details = (await withTimeout(
-        window.hrs.getJiraWorkItemDetails(epicKey),
+        window.hrs.getJiraWorkItemDetails(epicKey, force),
         JIRA_TIMEOUT_MS,
         'Loading Jira work items'
       )) as { items?: JiraWorkItem[] }
@@ -6919,9 +7581,7 @@ export default function App() {
     }
   }
 
-  function persistJiraLoggedEntries(
-    next: Record<string, { issueKey: string; loggedAt: string; worklogId?: string }>
-  ) {
+  function persistJiraLoggedEntries(next: JiraLoggedEntries) {
     setJiraLoggedEntries(next)
     void window.hrs.setJiraLoggedEntries(next)
   }
@@ -6973,17 +7633,14 @@ export default function App() {
         seconds,
         comment: jiraComment
       })
-      const next = {
-        ...jiraLoggedEntries,
-        [entryKey]: {
-          issueKey,
-          loggedAt: new Date().toISOString(),
-          worklogId:
-            createdWorklog && typeof createdWorklog === 'object'
-              ? (createdWorklog as JiraWorklogEntry).id
-              : undefined
-        }
-      }
+      const next = withJiraLoggedEntryAliases(jiraLoggedEntries, entry, dateKey, {
+        issueKey,
+        loggedAt: new Date().toISOString(),
+        worklogId:
+          createdWorklog && typeof createdWorklog === 'object'
+            ? (createdWorklog as JiraWorklogEntry).id
+            : undefined
+      })
       persistJiraLoggedEntries(next)
       void loadJiraWorklogHistory(issueKey)
       setLogSuccess('Logged to Jira.')
@@ -7082,6 +7739,7 @@ export default function App() {
       : null
     const effectiveJiraIssueKey =
       overrides?.jiraIssueKey ?? effectiveMission?.jiraIssueKey ?? jiraIssueKey ?? mappedEpicForLog
+    let sharedUsageAfterSync: SharedFictiveTaskUsage | null = null
     setLogLoading(true)
     setLogError(null)
     setLogSuccess(null)
@@ -7166,7 +7824,7 @@ export default function App() {
 
         const matchingCappedMissions = effectiveMission
           ? [effectiveMission].filter(mission => mission.cappedHours && mission.cappedHours > 0)
-          : (projectManagementConfig?.missions ?? []).filter(
+          : allProjectMissions.filter(
               mission =>
                 mission.cappedHours &&
                 mission.cappedHours > 0 &&
@@ -7174,24 +7832,37 @@ export default function App() {
             )
         for (const mission of matchingCappedMissions) {
           const missionTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
-          const usedMinutes = capSourceReports.reduce((sum, report) => {
-            if (!missionTaskIds.has(String(report.taskId))) return sum
-            if (mission.virtual) {
-              const mappedMission = findMappedMissionForReport(
-                projectManagementConfig?.missions ?? [],
-                reportMissionMap,
-                {
-                  date: report.dateKey,
-                  taskId: report.taskId,
-                  hoursHHMM: report.hours_HHMM,
-                  comment: report.comment,
-                  reportingFrom: report.reporting_from
-                }
-              )
-              if (mappedMission?.id !== mission.id) return sum
+          let usedMinutes: number
+          if (mission.shared && window.hrs?.getSharedFictiveTaskUsage) {
+            const freshUsage = await window.hrs.getSharedFictiveTaskUsage([mission.id])
+            const taskUsage = freshUsage.find(item => item.taskId === mission.id)
+            usedMinutes = Math.round((taskUsage?.usedSeconds ?? 0) / 60)
+            if (taskUsage) {
+              setSharedFictiveTaskUsage(previous => ({
+                ...previous,
+                [mission.id]: taskUsage
+              }))
             }
-            return sum + parseHoursHHMMToMinutes(report.hours_HHMM)
-          }, 0)
+          } else {
+            usedMinutes = capSourceReports.reduce((sum, report) => {
+              if (!missionTaskIds.has(String(report.taskId))) return sum
+              if (mission.virtual) {
+                const mappedMission = findMappedMissionForReport(
+                  allProjectMissions,
+                  reportMissionMap,
+                  {
+                    date: report.dateKey,
+                    taskId: report.taskId,
+                    hoursHHMM: report.hours_HHMM,
+                    comment: report.comment,
+                    reportingFrom: report.reporting_from
+                  }
+                )
+                if (mappedMission?.id !== mission.id) return sum
+              }
+              return sum + parseHoursHHMMToMinutes(report.hours_HHMM)
+            }, 0)
+          }
           const capMinutes = Math.round((mission.cappedHours ?? 0) * 60)
           const nextMinutes = usedMinutes + duration.minutes
           if (capMinutes > 0 && nextMinutes > capMinutes) {
@@ -7307,6 +7978,11 @@ export default function App() {
         missionMapOverride: missionMapForSync
       })
       const supabaseFailure = supabaseSyncResult?.error ?? null
+      if (effectiveMission?.shared && !supabaseFailure) {
+        const refreshedUsage = await refreshSharedFictiveTaskUsage([effectiveMission])
+        sharedUsageAfterSync =
+          refreshedUsage.find(item => item.taskId === effectiveMission.id) ?? null
+      }
       setReportWorkLogsByDate(prev => {
         const existing = prev[dateKey] ?? []
         const projectInstance =
@@ -7339,27 +8015,21 @@ export default function App() {
         seconds,
         comment: jiraComment
       })
-          const entryKey = getReportEntryKey(
-            {
-              taskId,
-              hours_HHMM: duration.hoursHHMM,
-              comment: apiComment,
-              reporting_from: effectiveReportingFrom,
-              projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
-            },
-            date
-          )
-          const next = {
-            ...jiraLoggedEntries,
-            [entryKey]: {
-              issueKey: effectiveJiraIssueKey,
-              loggedAt: new Date().toISOString(),
-              worklogId:
-                createdWorklog && typeof createdWorklog === 'object'
-                  ? (createdWorklog as JiraWorklogEntry).id
-                  : undefined
-            }
+          const trackedReport = {
+            taskId,
+            hours_HHMM: duration.hoursHHMM,
+            comment: apiComment,
+            reporting_from: effectiveReportingFrom,
+            projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
           }
+          const next = withJiraLoggedEntryAliases(jiraLoggedEntries, trackedReport, date, {
+            issueKey: effectiveJiraIssueKey,
+            loggedAt: new Date().toISOString(),
+            worklogId:
+              createdWorklog && typeof createdWorklog === 'object'
+                ? (createdWorklog as JiraWorklogEntry).id
+                : undefined
+          })
       persistJiraLoggedEntries(next)
           void loadJiraWorklogHistory(effectiveJiraIssueKey)
     } catch (err) {
@@ -7386,8 +8056,9 @@ export default function App() {
         if (effectiveMission?.virtual && effectiveMission.cappedHours) {
           const capMinutes = Math.round(effectiveMission.cappedHours * 60)
           if (capMinutes > 0) {
-            const usedMinutes =
-              getMissionUsedMinutesFromReports(effectiveMission, allReportItems) + duration.minutes
+            const usedMinutes = sharedUsageAfterSync
+              ? Math.round(sharedUsageAfterSync.usedSeconds / 60)
+              : getMissionUsedMinutesFromReports(effectiveMission, allReportItems) + duration.minutes
             const percent = Math.round((usedMinutes / capMinutes) * 100)
             const remainingMinutes = Math.max(0, capMinutes - usedMinutes)
             slackMetrics = {
@@ -7652,6 +8323,214 @@ export default function App() {
     return { date: dateKey, workLogs }
   }
 
+  function getDetailedDeletionTimeRange(
+    detailed: ReportLogEntry[],
+    entryIndex: number,
+    report: WorkReportEntry
+  ) {
+    const candidate = detailed[entryIndex]
+    if (!candidate || candidate.taskId !== report.taskId) return null
+    const candidateHours =
+      candidate.hours_HHMM ||
+      (candidate.from && candidate.to
+        ? buildDurationFromTimes(candidate.from, candidate.to)?.hoursHHMM
+        : null)
+    if (candidateHours && report.hours_HHMM && candidateHours !== report.hours_HHMM) return null
+    const reportComment = normalizeText(report.comment || '')
+    const candidateComment = normalizeText(candidate.comment || '')
+    if (reportComment && candidateComment && reportComment !== candidateComment) return null
+    return extractTimeRangeFromRecord(candidate as unknown as Record<string, unknown>)
+  }
+
+  function getJiraDeletionFingerprint(
+    removedEntry: WorkReportEntry,
+    dateKey: string,
+    entryIndex: number,
+    timeRangeOverride?: { from: string; to: string } | null
+  ) {
+    const timeRange =
+      timeRangeOverride ??
+      reportTimeRangesByIndex.get(dateKey)?.get(entryIndex) ??
+      buildReportEntryKeys(removedEntry, dateKey)
+        .map(key => reportTimeRanges.get(key))
+        .find(Boolean) ??
+      null
+    const started = timeRange
+      ? buildJiraStarted(dayjs(dateKey).toDate(), timeRange.from)
+      : null
+    const seconds = removedEntry.hours_HHMM
+      ? Math.max(1, parseHoursHHMMToMinutes(removedEntry.hours_HHMM) * 60)
+      : null
+    const meta = taskMetaById.get(removedEntry.taskId) ?? {
+      taskId: removedEntry.taskId,
+      taskName: removedEntry.taskName,
+      customerName: '',
+      projectName: removedEntry.projectInstance || 'Project'
+    }
+    return {
+      timeRange,
+      started,
+      seconds,
+      meta,
+      expectedComment: buildJiraComment(
+        meta,
+        stripMissionCommentMarkers(removedEntry.comment)
+      ),
+      rawComment: stripMissionCommentMarkers(removedEntry.comment)
+    }
+  }
+
+  async function resolveJiraLoggedEntryForDeletion(
+    removedEntry: WorkReportEntry,
+    dateKey: string,
+    entryIndex: number,
+    trackedEntries: JiraLoggedEntries = jiraLoggedEntries,
+    timeRangeOverride?: { from: string; to: string } | null
+  ): Promise<JiraLoggedEntryMatch | null> {
+    const tracked = findJiraLoggedEntry(trackedEntries, removedEntry, dateKey)
+    if (tracked) return tracked
+
+    const mappedMission = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
+      date: dateKey,
+      taskId: removedEntry.taskId,
+      hoursHHMM: removedEntry.hours_HHMM,
+      comment: removedEntry.comment,
+      reportingFrom: removedEntry.reporting_from
+    })
+    const meta = taskMetaById.get(removedEntry.taskId)
+    const customer = meta?.customerName ?? ''
+    const hasPotentialJiraLink = Boolean(
+      mappedMission?.jiraIssueKey || (customer && jiraMappings[customer])
+    )
+    if (!hasPotentialJiraLink || !window.hrs?.findJiraWorklogsForDate) return null
+    if (!jiraConfigured) {
+      throw new Error(
+        'Jira must be connected before this report can be safely deleted. The app needs to verify that no Jira worklog is left behind.'
+      )
+    }
+
+    const result = await window.hrs.findJiraWorklogsForDate(dateKey)
+    if (result.partial) {
+      throw new Error(
+        'Jira returned an incomplete worklog search. Nothing was deleted; please retry.'
+      )
+    }
+    const fingerprint = getJiraDeletionFingerprint(
+      removedEntry,
+      dateKey,
+      entryIndex,
+      timeRangeOverride
+    )
+    const candidates = buildJiraDeleteCandidates({
+      worklogs: result.worklogs,
+      dateKey,
+      expectedStarted: fingerprint.started,
+      seconds: fingerprint.seconds,
+      expectedComment: fingerprint.expectedComment,
+      rawComment: fingerprint.rawComment
+    }) as JiraDatedWorklogEntry[]
+    if (candidates.length > 1) {
+      throw new Error(
+        'More than one Jira worklog matched this report. Nothing was deleted; remove the ambiguity in Jira and retry.'
+      )
+    }
+    if (!candidates.length) return null
+    const candidate = candidates[0]
+    return {
+      key: getJiraTrackingKeys(removedEntry, dateKey)[0],
+      entry: {
+        issueKey: candidate.issueKey,
+        worklogId: candidate.id,
+        loggedAt: new Date().toISOString()
+      }
+    }
+  }
+
+  async function deleteLinkedJiraWorklog(
+    removedEntry: WorkReportEntry,
+    dateKey: string,
+    entryIndex: number,
+    jiraMatch: JiraLoggedEntryMatch,
+    trackedEntries: JiraLoggedEntries = jiraLoggedEntries,
+    timeRangeOverride?: { from: string; to: string } | null
+  ) {
+    const fingerprint = getJiraDeletionFingerprint(
+      removedEntry,
+      dateKey,
+      entryIndex,
+      timeRangeOverride
+    )
+    let worklogIds = jiraMatch.entry.worklogId ? [jiraMatch.entry.worklogId] : []
+    if (!worklogIds.length) {
+      const allLogs = await window.hrs.getJiraIssueWorklogs(jiraMatch.entry.issueKey)
+      const candidates = buildJiraDeleteCandidates({
+        worklogs: allLogs as JiraWorklogEntry[],
+        dateKey,
+        expectedStarted: fingerprint.started,
+        seconds: fingerprint.seconds,
+        expectedComment: fingerprint.expectedComment,
+        rawComment: fingerprint.rawComment
+      })
+      worklogIds = Array.from(new Set(candidates.map(entry => entry.id).filter(Boolean)))
+    }
+    if (worklogIds.length !== 1) {
+      throw new Error(
+        worklogIds.length
+          ? 'More than one Jira worklog matched this report. Nothing was deleted.'
+          : 'The linked Jira worklog could not be found. Nothing was deleted.'
+      )
+    }
+    try {
+      await window.hrs.deleteJiraWorklog({
+        issueKey: jiraMatch.entry.issueKey,
+        worklogId: worklogIds[0]
+      })
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('JIRA 404')) throw error
+      // A stale local link is equivalent to success when Jira confirms the worklog is gone.
+    }
+    jiraBudgetDetailsCacheRef.current.clear()
+    jiraIssuesCacheRef.current.clear()
+    void loadJiraWorklogHistory(jiraMatch.entry.issueKey)
+    return withoutJiraLoggedEntryAliases(trackedEntries, jiraMatch)
+  }
+
+  function applyOptimisticSharedUsageDeletion(
+    reports: Array<{ entry: WorkReportEntry; dateKey: string }>,
+    missionMap: Record<string, string> = reportMissionMap
+  ) {
+    const deletedSecondsByTask = new Map<string, number>()
+    for (const { entry, dateKey } of reports) {
+      const mission = findMappedMissionForReport(allProjectMissions, missionMap, {
+        date: dateKey,
+        taskId: entry.taskId,
+        hoursHHMM: entry.hours_HHMM,
+        comment: entry.comment,
+        reportingFrom: entry.reporting_from
+      })
+      if (!mission?.shared) continue
+      const seconds = Math.max(0, parseHoursHHMMToMinutes(entry.hours_HHMM) * 60)
+      deletedSecondsByTask.set(
+        mission.id,
+        (deletedSecondsByTask.get(mission.id) ?? 0) + seconds
+      )
+    }
+    if (!deletedSecondsByTask.size) return
+    setSharedFictiveTaskUsage(previous => {
+      const next = { ...previous }
+      for (const [taskId, deletedSeconds] of deletedSecondsByTask) {
+        const current = next[taskId]
+        if (!current) continue
+        next[taskId] = {
+          ...current,
+          usedSeconds: Math.max(0, current.usedSeconds - deletedSeconds)
+        }
+      }
+      return next
+    })
+  }
+
   async function deleteReportEntry(dateKey: string, entryIndex: number) {
     const dayInfo = reportsByDate.get(dateKey)
     if (!dayInfo) return
@@ -7662,24 +8541,46 @@ export default function App() {
     const remaining = dayInfo.day.reports.filter((_, idx) => idx !== entryIndex)
     const removedEntry = dayInfo.day.reports[entryIndex]
     const removedKey = removedEntry ? getReportEntryKey(removedEntry, dateKey) : null
-    const jiraEntry = removedKey ? jiraLoggedEntries[removedKey] : null
-    const timeRange =
-      removedEntry
-        ? reportTimeRangesByIndex.get(dateKey)?.get(entryIndex) ??
-          buildReportEntryKeys(removedEntry, dateKey)
-            .map(key => reportTimeRanges.get(key))
-            .find(Boolean) ??
-          null
-        : null
 
     setDeleteLoading(true)
     setLogError(null)
     setLogSuccess(null)
     try {
       const detailed = await ensureReportWorkLogsForDate(dateKey, dayInfo.day.reports.length)
+      const deletionTimeRange = getDetailedDeletionTimeRange(
+        detailed,
+        entryIndex,
+        removedEntry
+      )
+      const jiraMatch = await resolveJiraLoggedEntryForDeletion(
+        removedEntry,
+        dateKey,
+        entryIndex,
+        jiraLoggedEntries,
+        deletionTimeRange
+      )
+      let jiraDeleted = false
+      let jiraDeletionSkipped = false
+      let nextJiraEntries = jiraLoggedEntries
+      if (jiraMatch) {
+        try {
+          nextJiraEntries = await deleteLinkedJiraWorklog(
+            removedEntry,
+            dateKey,
+            entryIndex,
+            jiraMatch,
+            jiraLoggedEntries,
+            deletionTimeRange
+          )
+          jiraDeleted = true
+        } catch (error) {
+          if (!isJiraDeletionPermissionError(error)) throw error
+          jiraDeletionSkipped = true
+          nextJiraEntries = withoutJiraLoggedEntryAliases(jiraLoggedEntries, jiraMatch)
+        }
+      }
       if (!remaining.length) {
         await window.hrs.deleteLog(dateKey)
-        setLogSuccess(`All logs cleared for ${dateKey}.`)
       } else {
         const items = dayInfo.day.reports
           .map((report, idx) => ({ report, sourceIndex: idx }))
@@ -7691,9 +8592,39 @@ export default function App() {
           detailed
         )
         await window.hrs.logWork(payload)
-        setLogSuccess(`Log removed for ${dateKey}.`)
       }
-      void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
+      if (jiraMatch) persistJiraLoggedEntries(nextJiraEntries)
+      applyOptimisticSharedUsageDeletion([{ entry: removedEntry, dateKey }])
+      const removedMissionMapKey = buildReportMissionMapKey({
+        date: dateKey,
+        taskId: removedEntry.taskId,
+        hoursHHMM: removedEntry.hours_HHMM,
+        comment: removedEntry.comment,
+        reportingFrom: removedEntry.reporting_from
+      })
+      let missionMapForSync = reportMissionMap
+      if (reportMissionMap[removedMissionMapKey]) {
+        missionMapForSync = { ...reportMissionMap }
+        delete missionMapForSync[removedMissionMapKey]
+        setReportMissionMap(missionMapForSync)
+      }
+      const reconciliation = await syncHrsMonthToSupabaseReliably(dayjs(dateKey).toDate(), {
+        missionMapOverride: missionMapForSync
+      })
+      const hrsSuccessMessage =
+        !remaining.length
+          ? `All logs cleared for ${dateKey}${jiraDeleted ? ', including the linked Jira worklog' : ''}.`
+          : `Log removed for ${dateKey}${jiraDeleted ? ', including the linked Jira worklog' : ''}.`
+      const successMessage = jiraDeletionSkipped
+        ? `${hrsSuccessMessage} The Jira worklog for ${jiraMatch?.entry.issueKey ?? 'this report'} was kept because Jira denied deletion.`
+        : hrsSuccessMessage
+      if (reconciliation.error) {
+        setLogError(
+          `${successMessage} Shared gauge reconciliation is queued and will retry automatically: ${reconciliation.error}`
+        )
+      } else {
+        setLogSuccess(successMessage)
+      }
       if (monthlyReport) {
         const updated = updateMonthlyReportDay(monthlyReport, dateKey, remaining)
         setMonthlyReport(updated)
@@ -7705,11 +8636,6 @@ export default function App() {
         setCurrentMonthReport(updated)
       }
       void refreshReportWorkLogsForDate(dateKey)
-      if (removedKey && jiraLoggedEntries[removedKey]) {
-        const next = { ...jiraLoggedEntries }
-        delete next[removedKey]
-        persistJiraLoggedEntries(next)
-      }
       if (removedKey) {
         setSelectedReportEntries(prev => {
           if (!prev[removedKey]) return prev
@@ -7717,64 +8643,6 @@ export default function App() {
           delete next[removedKey]
           return next
         })
-      }
-      if (jiraEntry) {
-        try {
-          const started =
-            timeRange && removedEntry
-              ? buildJiraStarted(dayjs(dateKey).toDate(), timeRange.from)
-              : null
-          const seconds =
-            removedEntry && removedEntry.hours_HHMM
-              ? Math.max(1, parseHoursHHMMToMinutes(removedEntry.hours_HHMM) * 60)
-              : null
-          const meta = removedEntry
-            ? taskMetaById.get(removedEntry.taskId) ?? {
-                taskId: removedEntry.taskId,
-                taskName: removedEntry.taskName,
-                customerName: '',
-                projectName: removedEntry.projectInstance || 'Project'
-              }
-            : null
-          const expectedComment = removedEntry
-            ? buildJiraComment(meta, stripMissionCommentMarkers(removedEntry.comment))
-            : ''
-          let worklogIds: string[] = []
-          if (jiraEntry.worklogId) {
-            worklogIds = [jiraEntry.worklogId]
-          } else if (removedEntry && jiraEntry.issueKey) {
-            const allLogs = await window.hrs.getJiraIssueWorklogs(jiraEntry.issueKey)
-            const candidates = buildJiraDeleteCandidates({
-              worklogs: allLogs as JiraWorklogEntry[],
-              dateKey,
-              expectedStarted: started,
-              seconds,
-              expectedComment,
-              rawComment: stripMissionCommentMarkers(removedEntry.comment)
-            })
-            worklogIds = candidates.map(entry => entry.id).filter(Boolean)
-          }
-          if (worklogIds.length) {
-            for (const worklogId of worklogIds) {
-              await window.hrs.deleteJiraWorklog({
-                issueKey: jiraEntry.issueKey,
-                worklogId
-              })
-            }
-          } else {
-            console.warn('[jira] Worklog not found for deletion after HRS delete.', {
-              dateKey,
-              issueKey: jiraEntry.issueKey
-            })
-          }
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err)
-          console.warn('[jira] Delete worklog failed after HRS delete.', {
-            dateKey,
-            issueKey: jiraEntry.issueKey,
-            message
-          })
-        }
       }
       const monthKey = dayjs(dateKey).format('YYYY-MM')
       reportsCacheRef.current.delete(monthKey)
@@ -7800,7 +8668,7 @@ export default function App() {
       }
       loadReportsForMonth(dayjs(dateKey).toDate())
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      const message = formatJiraDeletionError(err)
       if (message === 'AUTH_REQUIRED') {
         setLoggedIn(false)
         setLogError('Session expired. Please login again.')
@@ -7844,6 +8712,14 @@ export default function App() {
     setEditLoading(true)
     setEditError(null)
     try {
+      const oldEntry = dayInfo.day.reports[index]
+      const mappedMission = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
+        date: dateKey,
+        taskId: oldEntry.taskId,
+        hoursHHMM: oldEntry.hours_HHMM,
+        comment: oldEntry.comment,
+        reportingFrom: oldEntry.reporting_from
+      })
       const updated = dayInfo.day.reports.map((report, idx) =>
         idx === index
           ? {
@@ -7862,19 +8738,43 @@ export default function App() {
         detailed
       )
       await window.hrs.logWork(payload)
-      const oldEntry = dayInfo.day.reports[index]
       const oldKey = getReportEntryKey(oldEntry, dateKey)
       const newEntry = { ...oldEntry, hours_HHMM: normalizedHours, comment: trimmedComment }
       const newKey = getReportEntryKey(newEntry, dateKey)
-      if (oldKey !== newKey && jiraLoggedEntries[oldKey]) {
-        const next = { ...jiraLoggedEntries }
-        next[newKey] = next[oldKey]
-        delete next[oldKey]
+      let missionMapForSync = reportMissionMap
+      if (mappedMission?.virtual) {
+        const oldMissionKey = buildReportMissionMapKey({
+          date: dateKey,
+          taskId: oldEntry.taskId,
+          hoursHHMM: oldEntry.hours_HHMM,
+          comment: oldEntry.comment,
+          reportingFrom: oldEntry.reporting_from
+        })
+        const newMissionKey = buildReportMissionMapKey({
+          date: dateKey,
+          taskId: newEntry.taskId,
+          hoursHHMM: newEntry.hours_HHMM,
+          comment: newEntry.comment,
+          reportingFrom: newEntry.reporting_from
+        })
+        missionMapForSync = { ...reportMissionMap }
+        delete missionMapForSync[oldMissionKey]
+        missionMapForSync[newMissionKey] = mappedMission.id
+        setReportMissionMap(missionMapForSync)
+      }
+      const jiraMatch = findJiraLoggedEntry(jiraLoggedEntries, oldEntry, dateKey)
+      if (oldKey !== newKey && jiraMatch) {
+        const withoutOld = withoutJiraLoggedEntryAliases(jiraLoggedEntries, jiraMatch)
+        const next = withJiraLoggedEntryAliases(withoutOld, newEntry, dateKey, jiraMatch.entry)
         persistJiraLoggedEntries(next)
       }
       setLogSuccess(`Log updated for ${dateKey}.`)
       setEditHours(normalizedHours)
       setEditingEntry(null)
+      void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
+        silent: true,
+        missionMapOverride: missionMapForSync
+      })
       void refreshReportWorkLogsForDate(dateKey)
       loadReportsForMonth(dayjs(dateKey).toDate())
     } catch (err) {
@@ -7946,9 +8846,22 @@ export default function App() {
     }
     setDeleteLoading(true)
     setBulkActionError(null)
+    let nextJiraEntries = { ...jiraLoggedEntries }
+    let nextMissionMap = { ...reportMissionMap }
+    const affectedMonths = new Set<string>()
+    const reconciliationFailures = new Map<string, string>()
+    const skippedJiraWorklogs: Array<{ issueKey: string; dateKey: string }> = []
+    const refreshAffectedMonths = () => {
+      for (const monthKey of affectedMonths) {
+        reportsCacheRef.current.delete(monthKey)
+        if (currentMonthKey === monthKey) {
+          setCurrentMonthReport(null)
+          setCurrentMonthKey(null)
+        }
+      }
+      if (affectedMonths.size) loadReportsForMonth(reportMonth)
+    }
     try {
-      const nextJiraEntries = { ...jiraLoggedEntries }
-      const affectedMonths = new Set<string>()
       for (const [dateKey, entries] of byDate.entries()) {
         const dayInfo = reportsByDate.get(dateKey)
         if (!dayInfo) continue
@@ -7956,11 +8869,40 @@ export default function App() {
         const remaining = dayInfo.day.reports.filter((_, idx) =>
           !entries.some(entry => entry.dayIndex === idx)
         )
+        let dayJiraEntries = nextJiraEntries
         for (const entry of entries) {
           const removed = dayInfo.day.reports[entry.dayIndex]
-          const removedKey = removed ? getReportEntryKey(removed, dateKey) : null
-          if (removedKey) {
-            delete nextJiraEntries[removedKey]
+          if (!removed) continue
+          const deletionTimeRange = getDetailedDeletionTimeRange(
+            detailed,
+            entry.dayIndex,
+            removed
+          )
+          const jiraMatch = await resolveJiraLoggedEntryForDeletion(
+            removed,
+            dateKey,
+            entry.dayIndex,
+            dayJiraEntries,
+            deletionTimeRange
+          )
+          if (jiraMatch) {
+            try {
+              dayJiraEntries = await deleteLinkedJiraWorklog(
+                removed,
+                dateKey,
+                entry.dayIndex,
+                jiraMatch,
+                dayJiraEntries,
+                deletionTimeRange
+              )
+            } catch (error) {
+              if (!isJiraDeletionPermissionError(error)) throw error
+              dayJiraEntries = withoutJiraLoggedEntryAliases(dayJiraEntries, jiraMatch)
+              skippedJiraWorklogs.push({
+                issueKey: jiraMatch.entry.issueKey,
+                dateKey
+              })
+            }
           }
         }
         if (!remaining.length) {
@@ -7977,22 +8919,73 @@ export default function App() {
           )
           await window.hrs.logWork(payload)
         }
-        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
-        affectedMonths.add(dayjs(dateKey).format('YYYY-MM'))
+        if (dayJiraEntries !== nextJiraEntries) {
+          nextJiraEntries = dayJiraEntries
+          persistJiraLoggedEntries(nextJiraEntries)
+        }
+        const removedReports = entries
+          .map(entry => dayInfo.day.reports[entry.dayIndex])
+          .filter((entry): entry is WorkReportEntry => Boolean(entry))
+          .map(entry => ({ entry, dateKey }))
+        applyOptimisticSharedUsageDeletion(removedReports, nextMissionMap)
+        let dayMissionMap = nextMissionMap
+        for (const entry of entries) {
+          const removed = dayInfo.day.reports[entry.dayIndex]
+          if (!removed) continue
+          const missionMapKey = buildReportMissionMapKey({
+            date: dateKey,
+            taskId: removed.taskId,
+            hoursHHMM: removed.hours_HHMM,
+            comment: removed.comment,
+            reportingFrom: removed.reporting_from
+          })
+          if (dayMissionMap[missionMapKey]) {
+            if (dayMissionMap === nextMissionMap) dayMissionMap = { ...nextMissionMap }
+            delete dayMissionMap[missionMapKey]
+          }
+        }
+        if (dayMissionMap !== nextMissionMap) {
+          nextMissionMap = dayMissionMap
+          setReportMissionMap(nextMissionMap)
+        }
+        const reconciliation = await syncHrsMonthToSupabaseReliably(dayjs(dateKey).toDate(), {
+          missionMapOverride: nextMissionMap
+        })
+        const monthKey = dayjs(dateKey).format('YYYY-MM')
+        if (reconciliation.error) {
+          reconciliationFailures.set(monthKey, reconciliation.error)
+        }
+        affectedMonths.add(monthKey)
         void refreshReportWorkLogsForDate(dateKey)
       }
-      persistJiraLoggedEntries(nextJiraEntries)
       clearReportSelection()
-      for (const monthKey of affectedMonths) {
-        reportsCacheRef.current.delete(monthKey)
-        if (currentMonthKey === monthKey) {
-          setCurrentMonthReport(null)
-          setCurrentMonthKey(null)
-        }
+      refreshAffectedMonths()
+      if (skippedJiraWorklogs.length) {
+        const uniqueIssues = Array.from(
+          new Set(skippedJiraWorklogs.map(worklog => worklog.issueKey))
+        )
+        setLogSuccess(
+          `Reports were removed from HRS and shared gauges. ${skippedJiraWorklogs.length} Jira ${
+            skippedJiraWorklogs.length === 1 ? 'worklog was' : 'worklogs were'
+          } kept because Jira denied deletion (${uniqueIssues.join(', ')}).`
+        )
       }
-      loadReportsForMonth(reportMonth)
+      if (reconciliationFailures.size) {
+        setBulkActionError(
+          `Reports were removed from HRS${
+            skippedJiraWorklogs.length
+              ? `; ${skippedJiraWorklogs.length} Jira ${
+                  skippedJiraWorklogs.length === 1 ? 'worklog was' : 'worklogs were'
+                } kept because Jira denied deletion`
+              : ' and linked Jira worklogs were removed'
+          }. Shared gauge reconciliation is queued for ${Array.from(
+            reconciliationFailures.keys()
+          ).join(', ')} and will retry automatically.`
+        )
+      }
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err)
+      refreshAffectedMonths()
+      const message = formatJiraDeletionError(err)
       setBulkActionError(message)
     } finally {
       setDeleteLoading(false)
@@ -8021,6 +9014,8 @@ export default function App() {
     setBulkActionError(null)
     try {
       let nextJiraEntries = { ...jiraLoggedEntries }
+      let nextMissionMap = { ...reportMissionMap }
+      let missionMapChanged = false
       const byDate = new Map<string, ReportItem[]>()
       for (const item of items) {
         const list = byDate.get(item.dateKey) ?? []
@@ -8048,14 +9043,43 @@ export default function App() {
         for (const entry of entries) {
           const oldEntry = dayInfo.day.reports[entry.dayIndex]
           const newEntry = updated[entry.dayIndex]
+          const mappedMission = findMappedMissionForReport(allProjectMissions, nextMissionMap, {
+            date: dateKey,
+            taskId: oldEntry.taskId,
+            hoursHHMM: oldEntry.hours_HHMM,
+            comment: oldEntry.comment,
+            reportingFrom: oldEntry.reporting_from
+          })
+          if (mappedMission?.virtual) {
+            const oldMissionKey = buildReportMissionMapKey({
+              date: dateKey,
+              taskId: oldEntry.taskId,
+              hoursHHMM: oldEntry.hours_HHMM,
+              comment: oldEntry.comment,
+              reportingFrom: oldEntry.reporting_from
+            })
+            const newMissionKey = buildReportMissionMapKey({
+              date: dateKey,
+              taskId: newEntry.taskId,
+              hoursHHMM: newEntry.hours_HHMM,
+              comment: newEntry.comment,
+              reportingFrom: newEntry.reporting_from
+            })
+            delete nextMissionMap[oldMissionKey]
+            nextMissionMap[newMissionKey] = mappedMission.id
+            missionMapChanged = true
+          }
           const oldKey = getReportEntryKey(oldEntry, dateKey)
           const newKey = getReportEntryKey(newEntry, dateKey)
-          if (oldKey !== newKey && nextJiraEntries[oldKey]) {
-            nextJiraEntries = {
-              ...nextJiraEntries,
-              [newKey]: nextJiraEntries[oldKey]
-            }
-            delete nextJiraEntries[oldKey]
+          const jiraMatch = findJiraLoggedEntry(nextJiraEntries, oldEntry, dateKey)
+          if (oldKey !== newKey && jiraMatch) {
+            const withoutOld = withoutJiraLoggedEntryAliases(nextJiraEntries, jiraMatch)
+            nextJiraEntries = withJiraLoggedEntryAliases(
+              withoutOld,
+              newEntry,
+              dateKey,
+              jiraMatch.entry
+            )
           }
         }
         const payload = buildLogWorkPayloadForMutation(
@@ -8065,9 +9089,13 @@ export default function App() {
           detailed
         )
         await window.hrs.logWork(payload)
-        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), { silent: true })
+        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
+          silent: true,
+          missionMapOverride: nextMissionMap
+        })
         void refreshReportWorkLogsForDate(dateKey)
       }
+      if (missionMapChanged) setReportMissionMap(nextMissionMap)
       if (nextJiraEntries !== jiraLoggedEntries) {
         persistJiraLoggedEntries(nextJiraEntries)
       }
@@ -8089,8 +9117,7 @@ export default function App() {
     }
     setBulkActionError(null)
     for (const item of items) {
-      const entryKey = getReportEntryKey(item, item.dateKey)
-      if (jiraLoggedEntries[entryKey]) continue
+      if (findJiraLoggedEntry(jiraLoggedEntries, item, item.dateKey)) continue
       const meta = taskMetaById.get(item.taskId)
       const customer = meta?.customerName || 'Customer'
       const displayCustomer = getCustomerDisplayName(customer)
@@ -8450,7 +9477,7 @@ export default function App() {
       if (mission.virtual) {
         const dateKey = 'dateKey' in item ? item.dateKey : null
         const mappedMission = dateKey
-          ? findMappedMissionForReport(projectManagementConfig?.missions ?? [], reportMissionMap, {
+          ? findMappedMissionForReport(allProjectMissions, reportMissionMap, {
               date: dateKey,
               taskId: item.taskId,
               hoursHHMM: item.hours_HHMM,
@@ -8466,7 +9493,7 @@ export default function App() {
   }
 
   const taskOptions = useMemo(() => {
-    const visibleVirtualMissions = (projectManagementConfig?.missions ?? [])
+    const visibleVirtualMissions = allProjectMissions
       .filter(mission => mission.virtual)
       .filter(mission => !customerName || mission.customerName === customerName)
       .map(mission => {
@@ -8483,7 +9510,7 @@ export default function App() {
           originalTask,
           originalTaskId: String(originalTaskId),
           value: getMissionOptionValue(mission.id),
-          label: mission.name
+          label: mission.shared ? `${mission.name} · Shared` : mission.name
         }
       })
       .filter(
@@ -8504,7 +9531,7 @@ export default function App() {
       .filter(log => !hiddenOriginalTaskIds.has(String(log.taskId)))
       .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
       .map(log => {
-        const cappedMission = (projectManagementConfig?.missions ?? []).find(
+        const cappedMission = allProjectMissions.find(
           mission =>
             !mission.virtual &&
             mission.cappedHours &&
@@ -8528,7 +9555,7 @@ export default function App() {
     return [...addOption, ...visibleVirtualMissions, ...realOptions]
   }, [
     taskNameMap,
-    projectManagementConfig,
+    allProjectMissions,
     customerName,
     projectName,
     activeTaskScope,
@@ -8557,7 +9584,7 @@ export default function App() {
             radius="xl"
             variant="light"
             color="cyan"
-            title="Creates a UI-only task for caps and progress. Reports still go to the original HRS task."
+            title="Creates a shared team task for caps and progress. Reports still go to the original HRS task."
             aria-label="Add task explanation"
           >
             <IconInfoCircle size={12} />
@@ -8568,8 +9595,14 @@ export default function App() {
 
     const missionId = getMissionIdFromTaskValue(option.value)
     const virtualMission = missionId
-      ? projectManagementConfig?.missions.find(mission => mission.id === missionId && mission.virtual)
+      ? allProjectMissions.find(mission => mission.id === missionId && mission.virtual)
       : null
+    const canDeleteVirtualMission = Boolean(
+      virtualMission &&
+        (!virtualMission.shared ||
+          supabaseStatus?.profile?.role === 'manager' ||
+          virtualMission.createdBy === supabaseStatus?.profile?.id)
+    )
 
     return (
       <Group justify="space-between" align="center" wrap="nowrap" gap="xs" className="task-select-option">
@@ -8577,7 +9610,7 @@ export default function App() {
           {option.label}
         </Text>
         <Group gap={6} wrap="nowrap" className="task-select-option-actions">
-          {virtualMission && (
+          {virtualMission && canDeleteVirtualMission && (
             <ActionIcon
               size="sm"
               radius="xl"
@@ -9174,7 +10207,21 @@ export default function App() {
     void loadSlackStatus()
     void loadHrsCredentials()
     void loadJiraLoggedEntries()
+    void loadPendingReportSyncMonths()
   }, [])
+
+  useEffect(() => {
+    if (!loggedIn || !supabaseStatus?.profile?.employee_id || !pendingReportSyncMonths.length) {
+      return
+    }
+    for (const monthKey of pendingReportSyncMonths) {
+      const month = dayjs(`${monthKey}-01`)
+      if (!month.isValid()) continue
+      void syncHrsMonthToSupabaseReliably(month.toDate(), {
+        missionMapOverride: reportMissionMap
+      })
+    }
+  }, [loggedIn, supabaseStatus?.profile?.employee_id, pendingReportSyncMonths, reportMissionMap])
 
   useEffect(() => {
     if (bootComplete) return
@@ -10046,8 +11093,8 @@ export default function App() {
   const selectedQuickLogMission = useMemo(() => {
     const missionId = getMissionIdFromTaskValue(debouncedTaskName)
     if (!missionId) return null
-    return projectManagementConfig?.missions.find(mission => mission.id === missionId) ?? null
-  }, [debouncedTaskName, projectManagementConfig])
+    return allProjectMissions.find(mission => mission.id === missionId) ?? null
+  }, [debouncedTaskName, allProjectMissions])
 
   const selectedQuickLogMissionTaskId = useMemo(() => {
     const originalTaskId = selectedQuickLogMission?.hrsTaskIds?.[0]
@@ -10060,7 +11107,12 @@ export default function App() {
     if (!selectedQuickLogMission?.virtual || !selectedQuickLogMission.cappedHours) return null
     const capMinutes = Math.round(selectedQuickLogMission.cappedHours * 60)
     if (capMinutes <= 0) return null
-    const usedMinutes = getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
+    const sharedUsage = selectedQuickLogMission.shared
+      ? sharedFictiveTaskUsage[selectedQuickLogMission.id]
+      : null
+    const usedMinutes = sharedUsage
+      ? Math.round(sharedUsage.usedSeconds / 60)
+      : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
     const percent = (usedMinutes / capMinutes) * 100
     const status = percent > 75 ? 'red' : percent > 50 ? 'yellow' : 'green'
     return {
@@ -10068,9 +11120,10 @@ export default function App() {
       usedMinutes,
       capMinutes,
       percent,
-      status
+      status,
+      contributorCount: sharedUsage?.contributorCount ?? null
     }
-  }, [selectedQuickLogMission, allReportItems])
+  }, [selectedQuickLogMission, allReportItems, sharedFictiveTaskUsage])
 
   const filteredLogs = useMemo(() => {
     const preferredTaskId = selectedQuickLogMissionTaskId
@@ -10634,7 +11687,11 @@ export default function App() {
   )
 
   const quickMeetingButtonStep = useMemo(() => {
-    if (meetingsDuoWaiting) return '2/4 Approve DUO on phone'
+    if (meetingsDuoWaiting) {
+      return meetingsDuoSelectedAction === 'call'
+        ? '2/4 Answer DUO phone call'
+        : '2/4 Approve DUO on phone'
+    }
     if (meetingsLoading) {
       if (meetingsFetchPhase === 'init') return '1/4 Start browser'
       if (meetingsFetchPhase === 'auth') return '2/4 Authenticate Microsoft'
@@ -10645,15 +11702,69 @@ export default function App() {
     if (meetingsFetchPhase === 'error') return 'Sync failed'
     if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) return 'Meetings synced'
     return 'Sync Meetings'
-  }, [meetingsDuoWaiting, meetingsFetchPhase, meetingsLoading, meetingsUpdatedAt])
+  }, [
+    meetingsDuoSelectedAction,
+    meetingsDuoWaiting,
+    meetingsFetchPhase,
+    meetingsLoading,
+    meetingsUpdatedAt
+  ])
 
   const quickMeetingButtonSubline = useMemo(() => {
-    if (meetingsDuoWaiting) return 'Check your phone'
+    if (meetingsDuoWaiting) {
+      return meetingsDuoSelectedAction === 'call' ? 'Answer the call' : 'Check your phone'
+    }
     if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) {
       return dayjs(meetingsUpdatedAt).format('DD/MM HH:mm')
     }
     return null
-  }, [meetingsDuoWaiting, meetingsFetchPhase, meetingsUpdatedAt])
+  }, [
+    meetingsDuoSelectedAction,
+    meetingsDuoWaiting,
+    meetingsFetchPhase,
+    meetingsUpdatedAt
+  ])
+
+  const meetingsDuoActionButtons = (
+    <span
+      className="quick-duo-actions"
+      role="group"
+      aria-label="Choose DUO verification method"
+    >
+      <Button
+        size="xs"
+        variant="light"
+        className="quick-duo-action-button is-push"
+        leftSection={
+          meetingsDuoActionSending === 'push' ? (
+            <Loader size={12} />
+          ) : (
+            <IconBellRinging size={14} />
+          )
+        }
+        disabled={meetingsDuoActionSending !== null}
+        onClick={() => void selectMeetingsDuoAction('push')}
+      >
+        Send DUO push
+      </Button>
+      <Button
+        size="xs"
+        variant="light"
+        className="quick-duo-action-button is-call"
+        leftSection={
+          meetingsDuoActionSending === 'call' ? (
+            <Loader size={12} />
+          ) : (
+            <IconPhoneCall size={14} />
+          )
+        }
+        disabled={meetingsDuoActionSending !== null}
+        onClick={() => void selectMeetingsDuoAction('call')}
+      >
+        Make a call
+      </Button>
+    </span>
+  )
 
   const quickLogMeetingsPanel = (
     <Stack gap="xs" className="quick-meetings-panel">
@@ -10670,51 +11781,55 @@ export default function App() {
             <span
               className="quick-sync-meetings-target"
               onContextMenu={event => {
-                if (!canOpenQuickMeetingNames) return
+                if (!canOpenQuickMeetingNames || meetingsDuoActionRequired) return
                 event.preventDefault()
                 setQuickMeetingNamesMenuOpen(true)
               }}
             >
-              <Button
-                size="xs"
-                variant="light"
-                onClick={() => {
-                  setTrayMeetingsProgressOpen(true)
-                  setQuickMeetingNamesMenuOpen(false)
-                  void fetchMeetings()
-                }}
-                disabled={meetingsLoading}
-                aria-live="polite"
-                title={
-                  canOpenQuickMeetingNames
-                    ? 'Right click to show or hide meeting names'
-                    : undefined
-                }
-                className={[
-                  'quick-sync-meetings-button',
-                  meetingsDuoWaiting ? 'is-duo-waiting' : '',
-                  meetingsLoading ? 'is-syncing' : ''
-                ]
-                  .join(' ')
-                  .trim()}
-                rightSection={quickMeetingSyncIcon}
-              >
-                <span className="quick-sync-meetings-content">
-                  <span>{quickMeetingButtonStep}</span>
-                  {quickMeetingButtonSubline && (
-                    <span
-                      className={[
-                        'quick-sync-meetings-subline',
-                        meetingsDuoWaiting ? 'is-duo-alert' : ''
-                      ]
-                        .join(' ')
-                        .trim()}
-                    >
-                      {quickMeetingButtonSubline}
-                    </span>
-                  )}
-                </span>
-              </Button>
+              {meetingsDuoActionRequired ? (
+                meetingsDuoActionButtons
+              ) : (
+                <Button
+                  size="xs"
+                  variant="light"
+                  onClick={() => {
+                    setTrayMeetingsProgressOpen(true)
+                    setQuickMeetingNamesMenuOpen(false)
+                    void fetchMeetings()
+                  }}
+                  disabled={meetingsLoading}
+                  aria-live="polite"
+                  title={
+                    canOpenQuickMeetingNames
+                      ? 'Right click to show or hide meeting names'
+                      : undefined
+                  }
+                  className={[
+                    'quick-sync-meetings-button',
+                    meetingsDuoWaiting ? 'is-duo-waiting' : '',
+                    meetingsLoading ? 'is-syncing' : ''
+                  ]
+                    .join(' ')
+                    .trim()}
+                  rightSection={quickMeetingSyncIcon}
+                >
+                  <span className="quick-sync-meetings-content">
+                    <span>{quickMeetingButtonStep}</span>
+                    {quickMeetingButtonSubline && (
+                      <span
+                        className={[
+                          'quick-sync-meetings-subline',
+                          meetingsDuoWaiting ? 'is-duo-alert' : ''
+                        ]
+                          .join(' ')
+                          .trim()}
+                      >
+                        {quickMeetingButtonSubline}
+                      </span>
+                    )}
+                  </span>
+                </Button>
+              )}
             </span>
           </Popover.Target>
           <Popover.Dropdown className="quick-meeting-subject-popover">
@@ -10904,12 +12019,14 @@ export default function App() {
 
   const selectedProjectMissions = useMemo(() => {
     if (!projectDashboardCustomer) return []
-    return (projectManagementConfig?.missions ?? []).filter(
+    return allProjectMissions.filter(
       mission => mission.customerName === projectDashboardCustomer
     )
-  }, [projectDashboardCustomer, projectManagementConfig])
+  }, [projectDashboardCustomer, allProjectMissions])
 
   const getMissionUsedMinutes = (mission: ProjectMission) => {
+    const sharedUsage = mission.shared ? sharedFictiveTaskUsage[mission.id] : null
+    if (sharedUsage) return Math.round(sharedUsage.usedSeconds / 60)
     const hrsTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
     return selectedProjectReportItems.reduce((sum, item) => {
       const taskMatch = hrsTaskIds.size
@@ -10917,7 +12034,7 @@ export default function App() {
         : (taskMetaById.get(item.taskId)?.taskName || item.taskName) === mission.name
       if (!taskMatch) return sum
       if (mission.virtual) {
-        const mappedMission = findMappedMissionForReport(projectManagementConfig?.missions ?? [], reportMissionMap, {
+        const mappedMission = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
           date: item.dateKey,
           taskId: item.taskId,
           hoursHHMM: item.hours_HHMM,
@@ -10955,7 +12072,14 @@ export default function App() {
                       : null
       return { mission, usedMinutes, usedHours, cap, utilization, warning }
     })
-  }, [selectedProjectMissions, selectedProjectReportItems, taskMetaById, projectManagementConfig, reportMissionMap])
+  }, [
+    selectedProjectMissions,
+    selectedProjectReportItems,
+    taskMetaById,
+    allProjectMissions,
+    reportMissionMap,
+    sharedFictiveTaskUsage
+  ])
 
   const selectedProjectJiraIssueOptions = useMemo(() => {
     const options = new Map<string, string>()
@@ -11077,6 +12201,16 @@ export default function App() {
       setQuickFictiveError('Connect Jira before adding this task.')
       return
     }
+    if (!supabaseStatus?.email) {
+      setQuickFictiveError('Connect Supabase before creating a shared task.')
+      return
+    }
+    if (sharedFictiveTasksAvailable !== true || !window.hrs?.upsertSharedFictiveTask) {
+      setQuickFictiveError(
+        'Shared tasks are not available. Apply Supabase migration 002_shared_fictive_tasks.sql and reopen the app.'
+      )
+      return
+    }
 
     const plannedHours = parseMissionHoursInput(quickFictivePlannedHours)
     const cappedHours = parseMissionHoursInput(quickFictiveCappedHours)
@@ -11127,14 +12261,40 @@ export default function App() {
         dependencies: [],
         notes: description
       })
+      let sharedMission: ProjectMission = mission
+      let sharingFailure: string | null = null
+      try {
+        sharedMission = await window.hrs.upsertSharedFictiveTask({
+          id: mission.id,
+          customerName: customer,
+          projectName: originalTask.projectName || originalTask.projectInstance || null,
+          originalHrsTaskId: quickFictiveOriginalTaskId,
+          originalHrsTaskName: originalTask.taskName,
+          jiraIssueKey: createdIssue.key,
+          name: safeName,
+          plannedHours,
+          cappedHours,
+          status: 'in_progress',
+          notes: description
+        })
+        setSharedFictiveTasks(previous => {
+          const byId = new Map(previous.map(task => [task.id, task]))
+          byId.set(sharedMission.id, sharedMission)
+          return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
+        })
+        await refreshSharedFictiveTaskUsage([sharedMission])
+      } catch (error) {
+        sharingFailure = error instanceof Error ? error.message : String(error)
+        console.warn('[SHARED FICTIVE TASK CREATE]', error)
+      }
       await window.hrs.addProjectSyncAuditEntry({
         action: 'create',
         entity: 'mission',
         source: 'system',
         status: 'applied',
         customerName: customer,
-        taskName: mission.name,
-        jiraIssueKey: mission.jiraIssueKey,
+        taskName: sharedMission.name,
+        jiraIssueKey: sharedMission.jiraIssueKey,
         hrsTaskId: quickFictiveOriginalTaskId,
         message: `Quick-log task created under ${selectedParentIssueKey} from HRS task ${quickFictiveOriginalTaskId}.`
       })
@@ -11145,8 +12305,8 @@ export default function App() {
         title: 'Task created',
         lines: [
           `Reporter: ${reporterName}`,
-          `Task: ${mission.name}`,
-          `Jira: ${mission.jiraIssueKey}`,
+          `Task: ${sharedMission.name}`,
+          `Jira: ${sharedMission.jiraIssueKey}`,
           createdCapMinutes > 0 ? `Cap: ${formatMinutesToLabel(createdCapMinutes)}` : '',
           createdCapMinutes > 0 ? `Used: 00:00 (0%)` : '',
           createdCapMinutes > 0 ? `Remaining: ${minutesToHHMM(createdCapMinutes)}` : '',
@@ -11166,9 +12326,12 @@ export default function App() {
       })
       void loadJiraWorkItems(selectedParentIssueKey, true)
       await loadProjectManagementConfig()
-      setTaskName(getMissionOptionValue(mission.id))
+      setTaskName(getMissionOptionValue(sharedMission.id))
       setSuppressTaskAutoSelect(false)
       setQuickFictiveModalOpen(false)
+      if (sharingFailure) {
+        setLogError(`Task created locally; team sharing will retry automatically: ${sharingFailure}`)
+      }
     } catch (err) {
       setQuickFictiveError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -11261,6 +12424,9 @@ export default function App() {
           <Text size={compact ? 'xs' : 'sm'} c="dimmed" className="quick-fictive-usage-hours">
             {minutesToHHMM(selectedQuickLogMissionUsage.usedMinutes)} /{' '}
             {formatMinutesToLabel(selectedQuickLogMissionUsage.capMinutes)} · {percentLabel}
+            {selectedQuickLogMissionUsage.contributorCount !== null
+              ? ` · ${selectedQuickLogMissionUsage.contributorCount} people`
+              : ''}
           </Text>
         </Group>
         <div className="quick-fictive-usage-track" aria-label="Task utilization">
@@ -11298,6 +12464,15 @@ export default function App() {
     setProjectManagementLoading(true)
     setProjectManagementError(null)
     try {
+      if (mission.shared && window.hrs?.archiveSharedFictiveTask) {
+        await window.hrs.archiveSharedFictiveTask(mission.id)
+        setSharedFictiveTasks(previous => previous.filter(task => task.id !== mission.id))
+        setSharedFictiveTaskUsage(previous => {
+          const next = { ...previous }
+          delete next[mission.id]
+          return next
+        })
+      }
       const config = await window.hrs.removeProjectMission(mission.id)
       setProjectManagementConfig(config)
       await window.hrs.addProjectSyncAuditEntry({
@@ -11440,7 +12615,7 @@ export default function App() {
                     Add real mission
                   </Text>
                   <Text size="xs" c="dimmed">
-                    UI tasks are created from the Quick Log task picker and stay local to HRS Desktop.
+                    Shared UI tasks are created from the Quick Log task picker and synchronized to every connected user.
                   </Text>
                 </Stack>
               </Group>
@@ -11598,7 +12773,7 @@ export default function App() {
                                 {row.mission.name}
                               </Text>
                               <Badge size="xs" color={row.mission.virtual ? 'grape' : 'blue'} variant="light">
-                                {row.mission.virtual ? 'UI task' : 'Real'}
+                                {row.mission.shared ? 'Shared task' : row.mission.virtual ? 'UI task' : 'Real'}
                               </Badge>
                               <Badge size="xs" color="gray" variant="outline">
                                 {row.mission.status.replace('_', ' ')}
@@ -11702,7 +12877,7 @@ export default function App() {
         const bTime = dayjs(`${b.dateKey}T${b.from ?? '00:00'}`).valueOf()
         return bTime - aTime
       })) {
-      const mappedMission = findMappedMissionForReport(projectManagementConfig?.missions ?? [], reportMissionMap, {
+      const mappedMission = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
         date: item.dateKey,
         taskId: item.taskId,
         hoursHHMM: item.hours_HHMM,
@@ -11735,7 +12910,7 @@ export default function App() {
       if (distinctItems.length >= 4) break
     }
     return distinctItems
-  }, [allReportItems, taskMetaById, projectManagementConfig, jiraCustomerAliases, reportMissionMap])
+  }, [allReportItems, taskMetaById, allProjectMissions, jiraCustomerAliases, reportMissionMap])
 
   const clockHistoryTotalMinutes = useMemo(
     () => clockHistoryItems.reduce((sum, item) => sum + parseHoursHHMMToMinutes(item.hours_HHMM), 0),
@@ -12279,7 +13454,7 @@ export default function App() {
     return Array.from(taskMap.values())
       .map(row => {
         const taskIds = Array.from(row.taskIds)
-        const cappedMission = (projectManagementConfig?.missions ?? []).find(mission => {
+        const cappedMission = allProjectMissions.find(mission => {
           if (!mission.cappedHours || mission.cappedHours <= 0) return false
           if (mission.customerName && mission.customerName !== row.rawCustomer) return false
           const missionTaskIds = (mission.hrsTaskIds ?? []).map(String)
@@ -12305,7 +13480,7 @@ export default function App() {
           a.customer.localeCompare(b.customer) ||
           a.task.localeCompare(b.task)
       )
-  }, [employeeWorkloadEntries, projectManagementConfig])
+  }, [employeeWorkloadEntries, allProjectMissions])
 
   const employeeSharedTaskKeys = useMemo(
     () => new Set(employeeSharedTasks.map(row => `${row.rawCustomer}\u0000${row.task}`)),
@@ -13326,8 +14501,7 @@ export default function App() {
         if (!haystack.includes(query)) return false
       }
       if (searchFilters.includes('jira')) {
-        const entryKey = getReportEntryKey(item, item.dateKey)
-        if (jiraLoggedEntries[entryKey]) return false
+        if (findJiraLoggedEntry(jiraLoggedEntries, item, item.dateKey)) return false
       }
       if (searchFilters.includes('today')) {
         if (item.dateKey !== todayKey) return false
@@ -13522,7 +14696,7 @@ export default function App() {
     const projectLabel = meta?.projectName || report.projectInstance || 'Project'
     const customerLabel = getCustomerDisplayName(meta?.customerName || 'Customer')
     const entryKey = getReportEntryKey(report, report.dateKey)
-    const isJiraLogged = Boolean(jiraLoggedEntries[entryKey])
+    const isJiraLogged = Boolean(findJiraLoggedEntry(jiraLoggedEntries, report, report.dateKey))
     const isSelected = Boolean(selectedReportEntries[entryKey])
     const strippedComment = stripMissionCommentMarkers(report.comment)
     const commentLabel = strippedComment || 'No comment'
@@ -13666,7 +14840,10 @@ export default function App() {
                     color="red"
                     loading={deleteLoading}
                     onClick={() => {
-                      if (window.confirm('Delete this log entry?')) {
+                      const message = isJiraLogged
+                        ? 'Delete this report and its linked Jira worklog?'
+                        : 'Delete this log entry?'
+                      if (window.confirm(message)) {
                         deleteReportEntry(report.dateKey, report.dayIndex)
                       }
                     }}
@@ -13775,8 +14952,7 @@ export default function App() {
         if (!haystack.includes(query)) return false
       }
       if (searchFilters.includes('jira')) {
-        const entryKey = getReportEntryKey(item, item.dateKey)
-        if (jiraLoggedEntries[entryKey]) return false
+        if (findJiraLoggedEntry(jiraLoggedEntries, item, item.dateKey)) return false
       }
       if (searchFilters.includes('today')) {
         if (item.dateKey !== todayKey) return false
@@ -13808,8 +14984,7 @@ export default function App() {
       const meta = taskMetaById.get(item.taskId)
       const project = meta?.projectName || item.projectInstance || 'Project'
       const customer = getCustomerDisplayName(meta?.customerName || 'Customer')
-      const entryKey = getReportEntryKey(item, item.dateKey)
-      const jiraEntry = jiraLoggedEntries[entryKey]
+      const jiraEntry = findJiraLoggedEntry(jiraLoggedEntries, item, item.dateKey)?.entry
       return {
         date: item.dateKey,
         project,
@@ -14240,12 +15415,37 @@ export default function App() {
           placeholder="Select a task"
           data={meetingLogTaskOptions}
           value={meetingLogTaskId}
-          onChange={value => setMeetingLogTaskId(value)}
+          onChange={value => {
+            setMeetingLogTaskId(value)
+            const missionId = getMissionIdFromTaskValue(value)
+            const mission = missionId
+              ? allProjectMissions.find(item => item.id === missionId && item.virtual)
+              : null
+            setMeetingLogIssueKey(mission?.jiraIssueKey ?? null)
+          }}
           searchable
           clearable
           nothingFoundMessage="No tasks found"
           disabled={!meetingMappingProject || !meetingMappingClient}
         />
+
+        {meetingLogMission && (
+          <Alert color="teal" variant="light" radius="md">
+            This meeting will be reported to the original HRS task and attributed to{' '}
+            <strong>{meetingLogMission.name}</strong>. Its hours will update the
+            {meetingLogMission.shared ? ' shared team' : ''} gauge
+            {meetingLogMission.cappedHours
+              ? ` (${minutesToHHMM(
+                  Math.round(
+                    (meetingLogMission.shared
+                      ? (sharedFictiveTaskUsage[meetingLogMission.id]?.usedSeconds ?? 0) / 60
+                      : getMissionUsedMinutesFromReports(meetingLogMission, allReportItems))
+                  )
+                )} / ${formatMinutesToLabel(Math.round(meetingLogMission.cappedHours * 60))})`
+              : ''}
+            .
+          </Alert>
+        )}
 
         {meetingMappingProject &&
           meetingMappingClient &&
@@ -14273,25 +15473,29 @@ export default function App() {
             </Text>
           )}
 
-          {meetingLogToJira && meetingMappingClient && !meetingMappedEpicKey && jiraConfigured && (
+          {meetingLogToJira && meetingMappingClient && !meetingEffectiveJiraIssueKey && jiraConfigured && (
             <Text size="xs" c="dimmed">
-              Map this client to a Jira epic first.
+              Select a Jira work item or map this client to a Jira epic first.
             </Text>
           )}
 
-          {meetingLogToJira && meetingMappedEpicKey && (
+          {meetingLogToJira && meetingEffectiveJiraIssueKey && (
             <Text size="xs" c="dimmed">
-              Jira target: {meetingMappedEpicKey}
-              {meetingMappedEpic ? ` · ${meetingMappedEpic.summary}` : ''}
+              Jira target: {meetingEffectiveJiraIssueKey}
+              {meetingEffectiveJiraIssueKey === meetingMappedEpicKey && meetingMappedEpic
+                ? ` · ${meetingMappedEpic.summary}`
+                : meetingLogMission
+                  ? ` · ${meetingLogMission.name}`
+                  : ''}
             </Text>
           )}
 
-          {meetingLogToJira && meetingMappedEpicKey && (
+          {meetingLogToJira && meetingEffectiveJiraIssueKey && (
             <Select
               label="Jira work item (optional)"
               placeholder="Choose a task or subtask"
               data={meetingLogIssueOptions}
-              value={meetingLogIssueKey}
+              value={meetingLogIssueKey ?? meetingLogMission?.jiraIssueKey ?? null}
               onChange={value => setMeetingLogIssueKey(value)}
               searchable
               clearable
@@ -14360,9 +15564,20 @@ export default function App() {
     >
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
-          This task is only for HRS Desktop progress, caps, and milestones. Reports still go to the
-          original HRS task.
+          This shared task is visible to every connected HRS Desktop user. Reports still go to the
+          original HRS task, while team hours update the same shared cap and progress gauge.
         </Text>
+        <Alert
+          color={supabaseStatus?.email && sharedFictiveTasksAvailable === true ? 'teal' : 'yellow'}
+          variant="light"
+          radius="md"
+        >
+          {supabaseStatus?.email
+            ? sharedFictiveTasksAvailable === true
+              ? 'Team sharing is connected.'
+              : 'Apply Supabase migration 002_shared_fictive_tasks.sql to enable team sharing.'
+            : 'Connect Supabase in Settings to create shared tasks.'}
+        </Alert>
         <Select
           label="Original HRS task"
           placeholder="Select the task that receives the API report"
@@ -14439,8 +15654,12 @@ export default function App() {
           <Button variant="subtle" onClick={closeQuickFictiveTaskModal}>
             Cancel
           </Button>
-          <Button onClick={() => void saveQuickFictiveTask()} loading={projectManagementLoading}>
-            Add Task
+          <Button
+            onClick={() => void saveQuickFictiveTask()}
+            loading={projectManagementLoading}
+            disabled={!supabaseStatus?.email || sharedFictiveTasksAvailable !== true}
+          >
+            Add Shared Task
           </Button>
         </Group>
       </Stack>
@@ -17146,7 +18365,13 @@ export default function App() {
                                       color="red"
                                       loading={deleteLoading}
                                       onClick={() => {
-                                        if (!window.confirm('Delete this report?')) return
+                                        const hasJiraWorklog = Boolean(
+                                          findJiraLoggedEntry(jiraLoggedEntries, report, dateKey)
+                                        )
+                                        const message = hasJiraWorklog
+                                          ? 'Delete this report and its linked Jira worklog?'
+                                          : 'Delete this report?'
+                                        if (!window.confirm(message)) return
                                         void deleteReportEntry(dateKey, report.dayIndex)
                                       }}
                                     >
@@ -17748,16 +18973,20 @@ export default function App() {
 
               <Group justify="space-between" align="center">
                 <Group gap="xs">
-                  <Button
-                    size="sm"
-                    variant="light"
-                    onClick={() => {
-                      void fetchMeetings()
-                    }}
-                    loading={meetingsLoading}
-                  >
-                    Fetch meetings now
-                  </Button>
+                  {meetingsDuoActionRequired ? (
+                    meetingsDuoActionButtons
+                  ) : (
+                    <Button
+                      size="sm"
+                      variant="light"
+                      onClick={() => {
+                        void fetchMeetings()
+                      }}
+                      loading={meetingsLoading}
+                    >
+                      Fetch meetings now
+                    </Button>
+                  )}
                   {!loggedIn && (
                     <Button
                       size="sm"

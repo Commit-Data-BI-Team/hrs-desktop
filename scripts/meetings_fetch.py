@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import argparse
 import base64
 import json
@@ -35,6 +37,7 @@ GRAPH_EXPLORER_SCOPES = (
     "https://graph.microsoft.com/User.Read "
     "openid profile"
 )
+DUO_ACTION_REQUIRED_SIGNAL = "__HRS_DUO_ACTION_REQUIRED__"
 WINDOWS_TZ_MAP = {
     "Israel Standard Time": "Asia/Jerusalem",
     "UTC": "UTC",
@@ -56,6 +59,54 @@ except Exception:
 
 def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
+
+
+def request_duo_action() -> str:
+    log(DUO_ACTION_REQUIRED_SIGNAL)
+    selected = sys.stdin.readline().strip().lower()
+    if selected not in {"push", "call"}:
+        if not selected:
+            raise RuntimeError("DUO verification choice was not received from HRS Desktop.")
+        raise RuntimeError(f"Unsupported DUO verification choice: {selected[:40]}")
+    return selected
+
+
+def find_duo_action_button(driver, action: str):
+    expected_terms = (
+        ("send me a push", "send a push", "duo push", "push")
+        if action == "push"
+        else ("call me", "phone call", "make a call", "call")
+    )
+    for element in driver.find_elements(
+        By.CSS_SELECTOR,
+        "button, input[type='button'], input[type='submit'], [role='button']",
+    ):
+        try:
+            if not element.is_displayed() or not element.is_enabled():
+                continue
+            label = " ".join(
+                filter(
+                    None,
+                    [
+                        element.text,
+                        element.get_attribute("value"),
+                        element.get_attribute("aria-label"),
+                        element.get_attribute("title"),
+                    ],
+                )
+            ).strip().lower()
+            if any(term in label for term in expected_terms):
+                return element
+        except (StaleElementReferenceException, WebDriverException):
+            continue
+    if action == "push":
+        try:
+            fallback = driver.find_element(By.CSS_SELECTOR, "button.auth-button.positive")
+            if fallback.is_displayed() and fallback.is_enabled():
+                return fallback
+        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+            pass
+    return None
 
 
 def parse_args() -> argparse.Namespace:
@@ -1216,17 +1267,34 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                     log("Microsoft auth window closed before DUO inspection. Continuing token recovery from Graph Explorer.")
                 else:
                     try:
-                        send_me_push_button = WebDriverWait(driver, 10).until(
-                            EC.element_to_be_clickable((By.CSS_SELECTOR, "button.auth-button.positive"))
+                        WebDriverWait(driver, 10).until(
+                            lambda current_driver: find_duo_action_button(current_driver, "push")
+                            or find_duo_action_button(current_driver, "call")
                         )
-                        send_me_push_button.click()
+                        duo_action = request_duo_action()
+                        try:
+                            duo_action_button = WebDriverWait(driver, 10).until(
+                                lambda current_driver: find_duo_action_button(
+                                    current_driver, duo_action
+                                )
+                            )
+                        except TimeoutException as exc:
+                            action_label = "phone call" if duo_action == "call" else "push"
+                            raise RuntimeError(
+                                f"The DUO {action_label} button is not available on the sign-in page."
+                            ) from exc
+                        duo_action_button.click()
                         duo_clicked = True
-                        log("Clicked DUO push button.")
-                        log("Waiting for DUO approval on user's phone.")
+                        if duo_action == "call":
+                            log("Requested DUO phone call.")
+                            log("Waiting for DUO phone call approval.")
+                        else:
+                            log("Sent DUO push request.")
+                            log("Waiting for DUO approval on user's phone.")
                         driver.switch_to.default_content()
                         time.sleep(10)
                     except TimeoutException:
-                        log("DUO push button not found. Continuing.")
+                        log("DUO verification buttons not found. Continuing.")
                     except (NoSuchWindowException, WebDriverException, ProtocolError, OSError) as exc:
                         if isinstance(exc, NoSuchWindowException) or is_browser_transport_error(exc):
                             auth_window_closed = True

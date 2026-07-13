@@ -30,6 +30,7 @@ type WorkReportRow = {
   reporting_from: string | null
   from_time: string | null
   to_time: string | null
+  shared_fictive_task_id: string | null
   source: string
   synced_at?: string
 }
@@ -37,6 +38,43 @@ type WorkReportRow = {
 type WorkReportInput = Omit<WorkReportRow, 'source' | 'synced_at'> & {
   source?: string
 }
+
+type MissionStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived'
+
+type SharedFictiveTaskRow = {
+  id: string
+  customer: string
+  project: string | null
+  original_hrs_task_id: number
+  original_hrs_task_name: string | null
+  jira_issue_key: string
+  name: string
+  planned_seconds: number | null
+  capped_seconds: number | null
+  status: MissionStatus
+  notes: string | null
+  assigned_employee_ids: number[] | null
+  created_by: string
+  created_at: string
+  updated_at: string
+  archived_at: string | null
+}
+
+type SharedFictiveTaskUsageRow = {
+  task_id: string
+  used_seconds: number
+  contributor_count: number
+  last_reported_at: string | null
+}
+
+const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const MISSION_STATUSES = new Set<MissionStatus>([
+  'todo',
+  'in_progress',
+  'blocked',
+  'done',
+  'archived'
+])
 
 function cleanString(value: unknown, max = 500) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -58,6 +96,59 @@ function validateDate(value: unknown) {
     throw new Error('Invalid date')
   }
   return text
+}
+
+function cleanUuid(value: unknown, required = false) {
+  const uuid = cleanString(value, 80)
+  if (!uuid && !required) return null
+  if (!UUID_REGEX.test(uuid)) throw new Error('Invalid shared task ID')
+  return uuid
+}
+
+function cleanNullableHours(value: unknown) {
+  if (value === undefined || value === null || value === '') return null
+  const hours = cleanNumber(value)
+  if (hours === null || hours < 0 || hours > 100_000) {
+    throw new Error('Invalid shared task hours')
+  }
+  return hours
+}
+
+function normalizeSharedFictiveTask(row: SharedFictiveTaskRow) {
+  return {
+    id: row.id,
+    customerName: row.customer,
+    projectName: row.project,
+    name: row.name,
+    jiraIssueKey: row.jira_issue_key,
+    hrsTaskIds: [String(row.original_hrs_task_id)],
+    originalHrsTaskName: row.original_hrs_task_name,
+    virtual: true,
+    assignedEmployees: (row.assigned_employee_ids ?? []).map(String),
+    plannedHours:
+      typeof row.planned_seconds === 'number' ? row.planned_seconds / 3600 : null,
+    cappedHours:
+      typeof row.capped_seconds === 'number' ? row.capped_seconds / 3600 : null,
+    status: row.status,
+    dependencies: [],
+    notes: row.notes ?? undefined,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    shared: true,
+    createdBy: row.created_by,
+    archivedAt: row.archived_at
+  }
+}
+
+function isSharedSchemaMissing(error: { code?: string; message?: string } | null | undefined) {
+  const message = error?.message?.toLowerCase() ?? ''
+  return (
+    error?.code === '42P01' ||
+    error?.code === '42703' ||
+    message.includes('shared_fictive_tasks') ||
+    message.includes('shared_fictive_task_id') ||
+    message.includes('get_shared_fictive_task_usage')
+  )
 }
 
 async function createSupabaseClient() {
@@ -125,6 +216,7 @@ function normalizeReportRows(rows: unknown): WorkReportInput[] {
       reporting_from: cleanNullableString(record.reporting_from, 100),
       from_time: cleanNullableString(record.from_time, 20),
       to_time: cleanNullableString(record.to_time, 20),
+      shared_fictive_task_id: cleanUuid(record.shared_fictive_task_id),
       source: cleanString(record.source, 40) || 'hrs'
     }
   })
@@ -237,6 +329,159 @@ export function registerSupabaseIpc() {
     return (data ?? []) as WorkReportRow[]
   })
 
+  ipcMain.handle('supabase:getSharedFictiveTasks', async () => {
+    const client = await createSupabaseClient()
+    const { data: userData, error: userError } = await client.auth.getUser()
+    if (userError || !userData.user) {
+      return { available: false, tasks: [] }
+    }
+    const { data, error } = await client
+      .from('shared_fictive_tasks')
+      .select('*')
+      .is('archived_at', null)
+      .order('customer', { ascending: true })
+      .order('name', { ascending: true })
+    if (error) {
+      if (isSharedSchemaMissing(error)) return { available: false, tasks: [] }
+      throw new Error(error.message)
+    }
+    return {
+      available: true,
+      tasks: ((data ?? []) as SharedFictiveTaskRow[]).map(normalizeSharedFictiveTask)
+    }
+  })
+
+  ipcMain.handle('supabase:upsertSharedFictiveTask', async (_event, payload: unknown) => {
+    const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const client = await createSupabaseClient()
+    const { data: userData, error: userError } = await client.auth.getUser()
+    if (userError || !userData.user) throw new Error('Supabase auth required to share a task')
+    const profile = await getProfile(client)
+    const requestedId = cleanUuid(record.id)
+    const originalTaskId = cleanNumber(record.originalHrsTaskId ?? record.hrsTaskId)
+    if (!originalTaskId || originalTaskId <= 0) throw new Error('Original HRS task is required')
+    const jiraIssueKey = cleanString(record.jiraIssueKey, 120).toUpperCase()
+    if (!jiraIssueKey) throw new Error('Jira issue is required for a shared task')
+    const customer = cleanString(record.customerName, 250)
+    const name = cleanString(record.name, 500)
+    if (!customer || !name) throw new Error('Customer and task name are required')
+    const statusValue = cleanString(record.status, 40) || 'in_progress'
+    if (!MISSION_STATUSES.has(statusValue as MissionStatus)) {
+      throw new Error('Invalid shared task status')
+    }
+    const plannedHours = cleanNullableHours(record.plannedHours)
+    const cappedHours = cleanNullableHours(record.cappedHours)
+    const assignedEmployeeIds = Array.isArray(record.assignedEmployeeIds)
+      ? record.assignedEmployeeIds
+          .map(cleanNumber)
+          .filter((value): value is number => typeof value === 'number' && value > 0)
+          .slice(0, 200)
+      : []
+
+    const { data: existing, error: existingError } = await client
+      .from('shared_fictive_tasks')
+      .select('*')
+      .eq('jira_issue_key', jiraIssueKey)
+      .maybeSingle()
+    if (existingError) {
+      if (isSharedSchemaMissing(existingError)) {
+        throw new Error('Shared tasks database is not installed. Apply Supabase migration 002_shared_fictive_tasks.sql.')
+      }
+      throw new Error(existingError.message)
+    }
+
+    const existingRow = existing as SharedFictiveTaskRow | null
+    if (
+      existingRow &&
+      existingRow.created_by !== userData.user.id &&
+      profile?.role !== 'manager'
+    ) {
+      return normalizeSharedFictiveTask(existingRow)
+    }
+
+    const row = {
+      id: existingRow?.id ?? requestedId ?? undefined,
+      customer,
+      project: cleanNullableString(record.projectName, 250),
+      original_hrs_task_id: originalTaskId,
+      original_hrs_task_name: cleanNullableString(record.originalHrsTaskName, 500),
+      jira_issue_key: jiraIssueKey,
+      name,
+      planned_seconds: plannedHours === null ? null : Math.round(plannedHours * 3600),
+      capped_seconds: cappedHours === null ? null : Math.round(cappedHours * 3600),
+      status: statusValue,
+      notes: cleanNullableString(record.notes, 4000),
+      assigned_employee_ids: assignedEmployeeIds,
+      created_by: existingRow?.created_by ?? userData.user.id,
+      archived_at: null
+    }
+    const { data, error } = await client
+      .from('shared_fictive_tasks')
+      .upsert(row, { onConflict: 'id' })
+      .select('*')
+      .single()
+    if (error) {
+      if (error.code === '23505') {
+        const { data: concurrent, error: concurrentError } = await client
+          .from('shared_fictive_tasks')
+          .select('*')
+          .eq('jira_issue_key', jiraIssueKey)
+          .single()
+        if (!concurrentError && concurrent) {
+          return normalizeSharedFictiveTask(concurrent as SharedFictiveTaskRow)
+        }
+      }
+      if (isSharedSchemaMissing(error)) {
+        throw new Error('Shared tasks database is not installed. Apply Supabase migration 002_shared_fictive_tasks.sql.')
+      }
+      throw new Error(error.message)
+    }
+    return normalizeSharedFictiveTask(data as SharedFictiveTaskRow)
+  })
+
+  ipcMain.handle('supabase:archiveSharedFictiveTask', async (_event, taskId: unknown) => {
+    const id = cleanUuid(taskId, true) as string
+    const client = await createSupabaseClient()
+    const { data: userData, error: userError } = await client.auth.getUser()
+    if (userError || !userData.user) throw new Error('Supabase auth required to archive a task')
+    const { data, error } = await client
+      .from('shared_fictive_tasks')
+      .update({ archived_at: new Date().toISOString(), status: 'archived' })
+      .eq('id', id)
+      .select('id')
+      .maybeSingle()
+    if (error) {
+      if (isSharedSchemaMissing(error)) {
+        throw new Error('Shared tasks database is not installed. Apply Supabase migration 002_shared_fictive_tasks.sql.')
+      }
+      throw new Error(error.message)
+    }
+    if (!data) throw new Error('Shared task was not found, or you do not have permission to archive it')
+    return true
+  })
+
+  ipcMain.handle('supabase:getSharedFictiveTaskUsage', async (_event, taskIds: unknown) => {
+    const ids = Array.isArray(taskIds)
+      ? taskIds.slice(0, 500).map(value => cleanUuid(value, true) as string)
+      : []
+    const client = await createSupabaseClient()
+    const { data: userData, error: userError } = await client.auth.getUser()
+    if (userError || !userData.user) return []
+    const { data, error } = await client.rpc('get_shared_fictive_task_usage', {
+      task_ids: ids.length ? ids : null
+    })
+    if (error) {
+      if (isSharedSchemaMissing(error)) return []
+      throw new Error(error.message)
+    }
+    return ((data ?? []) as SharedFictiveTaskUsageRow[]).map(row => ({
+      taskId: row.task_id,
+      usedSeconds: Number(row.used_seconds) || 0,
+      contributorCount: Number(row.contributor_count) || 0,
+      lastReportedAt: row.last_reported_at ?? null
+    }))
+  })
+
   ipcMain.handle('supabase:syncWorkReports', async (_event, payload: unknown) => {
     const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const startDate = validateDate(record.startDate)
@@ -271,12 +516,39 @@ export function registerSupabaseIpc() {
       .single()
     if (syncRunError) throw new Error(syncRunError.message)
 
-    const rowsWithAudit = rows.map(row => ({
-      ...row,
-      source: row.source ?? 'hrs',
-      synced_by: userData.user.id,
-      synced_at: new Date().toISOString()
-    }))
+    const { data: existingRows, error: existingRowsError } = employeeIds.length
+      ? await client
+          .from('work_reports')
+          .select('id,shared_fictive_task_id')
+          .eq('source', 'hrs')
+          .gte('report_date', startDate)
+          .lte('report_date', endDate)
+          .in('employee_id', employeeIds)
+      : { data: [], error: null }
+    const sharedColumnAvailable = !existingRowsError
+    if (existingRowsError && !isSharedSchemaMissing(existingRowsError)) {
+      throw new Error(existingRowsError.message)
+    }
+    const existingSharedTaskById = new Map(
+      ((existingRows ?? []) as Array<{ id: string; shared_fictive_task_id: string | null }>)
+        .filter(row => row.shared_fictive_task_id)
+        .map(row => [row.id, row.shared_fictive_task_id as string])
+    )
+    const rowsWithAudit = rows.map(row => {
+      const { shared_fictive_task_id: requestedSharedTaskId, ...legacyRow } = row
+      const auditFields = {
+        source: row.source ?? 'hrs',
+        synced_by: userData.user.id,
+        synced_at: new Date().toISOString()
+      }
+      if (!sharedColumnAvailable) return { ...legacyRow, ...auditFields }
+      return {
+        ...row,
+        shared_fictive_task_id:
+          requestedSharedTaskId ?? existingSharedTaskById.get(row.id) ?? null,
+        ...auditFields
+      }
+    })
     const deleteResult = employeeIds.length
       ? await client
           .from('work_reports')

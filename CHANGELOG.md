@@ -1,5 +1,36 @@
 # HRS Desktop Changelog
 
+## 1.0.11
+
+### Shared team tasks and gauges
+
+- Added shared fictive tasks backed by Supabase, so a task created once is visible to every connected team member.
+- Combined reported time from all contributors into the same shared progress and cap gauges.
+- Preserved the original HRS task for reporting while keeping the shared task, Jira mapping, notes, milestones, and caps synchronized.
+- Added automatic migration of existing local fictive tasks into the shared task list.
+
+### Meetings and DUO sign-in
+
+- Added **Send DUO push** and **Make a call** choices directly inside meeting sync when DUO verification is required.
+- Added fictive and shared-task selection when logging meetings, including shared gauge updates and the task's Jira target.
+- Routed logged meetings to the customer's mapped Slack channel with the meeting, employee, task, Jira, and progress details.
+- Fixed packaged meeting sync on macOS Python 3.9 and LibreSSL environments, while retaining Windows Python launcher support.
+
+### Reliable report deletion
+
+- Made single and bulk report deletion reconcile HRS, Supabase, shared gauges, local task mappings, and linked Jira worklogs in a controlled order.
+- Added exact Jira worklog recovery by date, time, duration, and comment when an older local link is missing.
+- When Jira denies worklog deletion, HRS and Supabase deletion now continue and clearly report that the Jira worklog was kept.
+- Added persistent Supabase reconciliation retries so temporary sync failures are retried after restart instead of leaving gauges stale.
+
+### Integration and platform improvements
+
+- Validated Slack channel mappings before saving them and added actionable errors when the bot is missing from a channel.
+- Refreshed Jira work-item caches after worklog changes so displayed totals update promptly.
+- Hardened Electron bundling for optional WebSocket native modules on both macOS and Windows.
+
+> **Administrator note:** Apply `supabase/migrations/002_shared_fictive_tasks.sql` to the connected Supabase project before enabling shared fictive tasks.
+
 ## 1.0.10
 
 - Fixed Windows GitHub Actions release installs by making the macOS-only `electron-liquid-glass` native package optional.

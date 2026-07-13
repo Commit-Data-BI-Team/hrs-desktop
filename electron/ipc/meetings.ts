@@ -1,5 +1,6 @@
 import { app, ipcMain } from 'electron'
 import { spawn } from 'node:child_process'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import path from 'node:path'
 import {
   validateEnum,
@@ -32,7 +33,15 @@ type MeetingsOptions = {
   password?: string | null
 }
 
-const REQUIRED_PACKAGES = ['selenium', 'requests', 'pytz']
+const REQUIRED_PACKAGES = ['selenium<4.27', 'requests', 'pytz', 'urllib3<2']
+const DUO_ACTION_REQUIRED_SIGNAL = '__HRS_DUO_ACTION_REQUIRED__'
+
+type ActiveMeetingsRun = {
+  child: ChildProcessWithoutNullStreams
+  awaitingDuoAction: boolean
+}
+
+const activeMeetingsRuns = new Map<number, ActiveMeetingsRun>()
 
 function redactSensitiveText(input: string): string {
   let value = input
@@ -114,6 +123,7 @@ function validateMeetingsResultPayload(payload: unknown): MeetingsResult {
 function shouldIgnoreProgressLine(line: string) {
   const value = line.trim()
   if (!value) return true
+  if (value === DUO_ACTION_REQUIRED_SIGNAL) return true
   if (value === 'Stacktrace:') return true
   if (/Created TensorFlow Lite XNNPACK delegate for CPU/i.test(value)) return true
   if (/google_apis[\\/]+gcm[\\/]+engine[\\/]+registration_request\.cc/i.test(value)) return true
@@ -139,7 +149,25 @@ function sanitizeScriptError(stderr: string) {
 }
 
 export function registerMeetingsIpc() {
+  ipcMain.handle('meetings:duo-action', async (event, action: unknown) => {
+    const selected = validateEnum(action, ['push', 'call'] as const)
+    const activeRun = activeMeetingsRuns.get(event.sender.id)
+    if (!activeRun || !activeRun.awaitingDuoAction) {
+      throw new Error('There is no pending DUO verification choice for this meeting sync.')
+    }
+    if (!activeRun.child.stdin.writable || activeRun.child.stdin.destroyed) {
+      throw new Error('The meeting sync is no longer accepting a DUO verification choice.')
+    }
+    activeRun.child.stdin.write(`${selected}\n`)
+    activeRun.awaitingDuoAction = false
+    return true
+  })
+
   ipcMain.handle('meetings:run', async (event, options: MeetingsOptions) => {
+    const existingRun = activeMeetingsRuns.get(event.sender.id)
+    if (existingRun && existingRun.child.exitCode === null) {
+      throw new Error('A meeting sync is already running in this window.')
+    }
     const safe = validateExactObject<{
       browser?: unknown
       headless?: unknown
@@ -188,6 +216,8 @@ export function registerMeetingsIpc() {
     }
     return new Promise<MeetingsResult>((resolve, reject) => {
       const child = spawn(venvPython, args, { env })
+      const senderId = event.sender.id
+      activeMeetingsRuns.set(senderId, { child, awaitingDuoAction: false })
       let stdout = ''
       let stderr = ''
       let stderrBuffer = ''
@@ -202,15 +232,30 @@ export function registerMeetingsIpc() {
         stderrBuffer = lines.pop() ?? ''
         for (const line of lines) {
           const trimmed = sanitizeProgressLine(line)
+          if (trimmed === DUO_ACTION_REQUIRED_SIGNAL) {
+            const activeRun = activeMeetingsRuns.get(senderId)
+            if (activeRun?.child === child) {
+              activeRun.awaitingDuoAction = true
+              event.sender.send('meetings:duo-action-required')
+              event.sender.send('meetings:progress', 'Choose a DUO verification method.')
+            }
+            continue
+          }
           if (trimmed && !shouldIgnoreProgressLine(trimmed)) {
             event.sender.send('meetings:progress', trimmed)
           }
         }
       })
       child.on('error', err => {
+        if (activeMeetingsRuns.get(senderId)?.child === child) {
+          activeMeetingsRuns.delete(senderId)
+        }
         reject(err)
       })
       child.on('close', code => {
+        if (activeMeetingsRuns.get(senderId)?.child === child) {
+          activeMeetingsRuns.delete(senderId)
+        }
         const remaining = sanitizeProgressLine(stderrBuffer)
         if (remaining && !shouldIgnoreProgressLine(remaining)) {
           event.sender.send('meetings:progress', remaining)

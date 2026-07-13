@@ -96,7 +96,7 @@ type AgendaResult = {
   missions: AgendaItem[]
 }
 
-const REQUIRED_PACKAGES = ['selenium', 'requests', 'pytz']
+const REQUIRED_PACKAGES = ['selenium<4.27', 'requests', 'pytz', 'urllib3<2']
 const FALLBACK_FACTS = [
   'Octopuses have blue blood because they use copper-rich hemocyanin to move oxygen.',
   'The oldest known writing systems appeared in Mesopotamia and Egypt more than 5,000 years ago.',

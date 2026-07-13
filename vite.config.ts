@@ -14,17 +14,17 @@ export default defineConfig(({ command }) => ({
     react(),
     electron({
       main: {
-        // Shortcut of `build.lib.entry`.
-        entry: 'electron/main.ts',
         vite: {
           build: {
-            lib: {
-              entry: 'electron/main.ts',
-              formats: ['cjs'],
-              fileName: () => 'main.cjs'
-            },
             rollupOptions: {
-              external: ['keytar', 'electron-liquid-glass', 'node-gyp-build'],
+              input: path.join(__dirname, 'electron/main.ts'),
+              external: [
+                'keytar',
+                'electron-liquid-glass',
+                'node-gyp-build',
+                'bufferutil',
+                'utf-8-validate'
+              ],
               output: {
                 format: 'cjs',
                 entryFileNames: '[name].cjs',

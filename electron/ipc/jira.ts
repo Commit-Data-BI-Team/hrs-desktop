@@ -9,6 +9,7 @@ import {
 } from '../jira/config'
 import {
   sanitizeString,
+  validateDate,
   validateEmail,
   validateExactObject,
   validateJiraIssueKey,
@@ -392,6 +393,13 @@ function clearWorkItemCaches(parentIssueKey: string) {
   jiraStore.set('workItemsLight', lightStore)
 }
 
+function clearAllWorkItemCaches() {
+  jiraCache.clear()
+  workItemsLightRefreshInFlight.clear()
+  jiraStore.set('workItemDetails', {})
+  jiraStore.set('workItemsLight', {})
+}
+
 function validateCreateIssuePayload(payload: unknown): JiraIssueCreatePayload {
   const safe = validateExactObject<{
     parentIssueKey?: unknown
@@ -606,6 +614,7 @@ export function registerJiraIpc() {
       }
     })
     ipcMain.handle('jira:getIssueWorklogs', async () => [])
+    ipcMain.handle('jira:findWorklogsForDate', async () => ({ worklogs: [], partial: false }))
     ipcMain.handle('jira:addWorklog', async () => ({
       id: `e2e-${Date.now()}`,
       started: new Date().toISOString(),
@@ -947,6 +956,36 @@ export function registerJiraIpc() {
     return normalizeWorklogs(worklogs)
   })
 
+  ipcMain.handle('jira:findWorklogsForDate', async (_event, date: unknown) => {
+    const safeDate = validateDate(date)
+    const currentUser = (await jiraRequest('/rest/api/3/myself')) as {
+      accountId?: string
+    }
+    const result = await searchIssuesWithLimit(
+      `project = ${PROJECT_KEY} AND worklogDate = "${safeDate}" AND worklogAuthor = currentUser() ORDER BY updated DESC`,
+      ['summary'],
+      200
+    )
+    const issueQueue = result.issues.map(issue => issue.key)
+    const worklogs: Array<ReturnType<typeof normalizeWorklogs>[number] & { issueKey: string }> = []
+    const concurrency = Math.min(4, issueQueue.length)
+    await Promise.all(
+      Array.from({ length: concurrency }, async () => {
+        while (issueQueue.length) {
+          const issueKey = issueQueue.shift()
+          if (!issueKey) return
+          const issueWorklogs = normalizeWorklogs(await fetchAllWorklogs(issueKey))
+          worklogs.push(
+            ...issueWorklogs
+              .filter(entry => !currentUser.accountId || entry.authorId === currentUser.accountId)
+              .map(entry => ({ ...entry, issueKey }))
+          )
+        }
+      })
+    )
+    return { worklogs, partial: result.reachedLimit }
+  })
+
   ipcMain.handle('jira:createIssue', async (_event, payload: unknown) => {
     return createJiraIssueUnderParent(validateCreateIssuePayload(payload))
   })
@@ -991,6 +1030,7 @@ export function registerJiraIpc() {
           })
         }
       )) as JiraWorklogEntry
+      clearAllWorkItemCaches()
       const normalized = normalizeWorklogs(created ? [created] : [])
       return normalized[0] ?? null
     }
@@ -1006,6 +1046,40 @@ export function registerJiraIpc() {
       )
       const issueKey = validateJiraIssueKey(safe.issueKey)
       const worklogId = validateStringLength(safe.worklogId, 1, 64)
+      const permissionParams = new URLSearchParams({
+        issueKey,
+        permissions: 'DELETE_OWN_WORKLOGS,DELETE_ALL_WORKLOGS'
+      })
+      const [currentUser, worklog, permissionData] = await Promise.all([
+        jiraRequest('/rest/api/3/myself') as Promise<{
+          accountId?: string
+          displayName?: string
+        }>,
+        jiraRequest(
+          `/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog/${encodeURIComponent(
+            worklogId
+          )}`
+        ) as Promise<JiraWorklogEntry>,
+        jiraRequest(`/rest/api/3/mypermissions?${permissionParams.toString()}`) as Promise<{
+          permissions?: Record<string, { havePermission?: boolean }>
+        }>
+      ])
+      const ownsWorklog = Boolean(
+        currentUser.accountId && worklog.author?.accountId === currentUser.accountId
+      )
+      const canDeleteOwn = Boolean(
+        permissionData.permissions?.DELETE_OWN_WORKLOGS?.havePermission
+      )
+      const canDeleteAll = Boolean(
+        permissionData.permissions?.DELETE_ALL_WORKLOGS?.havePermission
+      )
+      if (!(canDeleteAll || (ownsWorklog && canDeleteOwn))) {
+        const requiredPermission = ownsWorklog ? 'Delete Own Worklogs' : 'Delete All Worklogs'
+        const displayName = currentUser.displayName?.trim() || 'The connected Jira user'
+        throw new Error(
+          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}. Ask a Jira administrator to grant it in the VDA project permission scheme. The HRS report and gauge were not changed.`
+        )
+      }
       await jiraRequest(
         `/rest/api/3/issue/${encodeURIComponent(issueKey)}/worklog/${encodeURIComponent(
           worklogId
@@ -1014,6 +1088,7 @@ export function registerJiraIpc() {
           method: 'DELETE'
         }
       )
+      clearAllWorkItemCaches()
       return true
     }
   )

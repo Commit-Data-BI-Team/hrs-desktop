@@ -33,6 +33,10 @@ type SlackConversationsListResponse = SlackApiResponse<{
   channels?: SlackChannel[]
 }>
 
+type SlackConversationsInfoResponse = SlackApiResponse<{
+  channel?: SlackChannel
+}>
+
 type SlackPostMessageResponse = SlackApiResponse<{
   channel?: string
   ts?: string
@@ -68,6 +72,14 @@ function validateChannelId(value: unknown) {
   return channelId
 }
 
+function formatSlackApiFailure(method: string, error?: string) {
+  const failure = error ? `Slack ${method} failed: ${error}` : `Slack ${method} failed`
+  if (error === 'channel_not_found' || error === 'not_in_channel') {
+    return `${failure}. The connected Slack bot cannot access the mapped channel. Verify that the channel belongs to the connected workspace and invite the HRS Desktop bot to it, then save the mapping again.`
+  }
+  return failure
+}
+
 async function callSlackApi<T>(
   method: string,
   token: string,
@@ -83,7 +95,7 @@ async function callSlackApi<T>(
   })
   const data = (await response.json()) as SlackApiResponse<T>
   if (!response.ok || !data.ok) {
-    throw new Error(data.error ? `Slack ${method} failed: ${data.error}` : `Slack ${method} failed`)
+    throw new Error(formatSlackApiFailure(method, data.error))
   }
   return data as T
 }
@@ -105,7 +117,7 @@ async function callSlackGetApi<T>(
   })
   const data = (await response.json()) as SlackApiResponse<T>
   if (!response.ok || !data.ok) {
-    throw new Error(data.error ? `Slack ${method} failed: ${data.error}` : `Slack ${method} failed`)
+    throw new Error(formatSlackApiFailure(method, data.error))
   }
   return data as T
 }
@@ -347,10 +359,22 @@ export function registerSlackIpc() {
       channelId?: unknown
       channelName?: unknown
     }>(payload ?? {}, ['customerName', 'channelId', 'channelName'], 'Slack mapping')
+    const customerName = validateStringLength(safe.customerName, 1, 200)
+    const channelId = validateChannelId(safe.channelId)
+    const requestedChannelName = validateStringLength(safe.channelName, 1, 200)
+    const token = await requireSlackToken()
+    const result = await callSlackGetApi<SlackConversationsInfoResponse>(
+      'conversations.info',
+      token,
+      { channel: channelId }
+    )
+    if (!result.channel || result.channel.is_archived) {
+      throw new Error('The selected Slack channel is unavailable or archived.')
+    }
     return setSlackChannelMapping(
-      validateStringLength(safe.customerName, 1, 200),
-      validateChannelId(safe.channelId),
-      validateStringLength(safe.channelName, 1, 200)
+      customerName,
+      channelId,
+      result.channel.name || requestedChannelName
     )
   })
 

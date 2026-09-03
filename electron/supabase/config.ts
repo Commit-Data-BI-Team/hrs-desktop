@@ -18,6 +18,7 @@ const DEFAULT_URL = 'https://qyafofkruvflczsxhqbt.supabase.co'
 const DEFAULT_PUBLISHABLE_KEY = 'sb_publishable_kK0PgoUdPPovoKWd6S3MWw_2ZeKNajY'
 const KEYTAR_SERVICE = 'hrs-desktop-supabase'
 const KEYTAR_ACCOUNT = 'session'
+const IS_E2E = process.env.HRS_E2E === '1'
 
 const store = new Store<Schema>({
   name: 'supabase-config'
@@ -56,6 +57,9 @@ export function setSupabaseConfig(url: string, publishableKey: string) {
 }
 
 export async function getSupabaseSession(): Promise<SupabaseSession | null> {
+  // Automated HRS fixtures must never inherit a developer's real OS-keychain session.
+  // Otherwise an automatic report sync can publish synthetic data to production.
+  if (IS_E2E) return null
   const keytar = await getKeytar()
   if (keytar) {
     try {
@@ -67,6 +71,7 @@ export async function getSupabaseSession(): Promise<SupabaseSession | null> {
 }
 
 export async function setSupabaseSession(session: SupabaseSession | null) {
+  if (IS_E2E) return
   const keytar = await getKeytar()
   if (!session) {
     if (keytar) {
@@ -90,5 +95,5 @@ export async function setSupabaseSession(session: SupabaseSession | null) {
 
 export async function clearSupabaseConfig() {
   store.clear()
-  await setSupabaseSession(null)
+  if (!IS_E2E) await setSupabaseSession(null)
 }

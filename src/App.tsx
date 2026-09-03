@@ -51,7 +51,8 @@ import {
   IconChevronRight,
   IconInfoCircle,
   IconBellRinging,
-  IconPhoneCall
+  IconPhoneCall,
+  IconPin
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -63,6 +64,15 @@ import { useDebouncedValue } from '@mantine/hooks'
 import { FixedSizeList, type ListChildComponentProps } from 'react-window'
 import * as XLSX from 'xlsx'
 import LiquidGlass from 'liquid-glass-react'
+import {
+  aggregateEmployeeProjects,
+  aggregateSharedProjects,
+  getGlobalProjectCapMinutes,
+  getSharedProjectCapMinutes,
+  getSharedProjectKey,
+  replaceEmployeeEntriesWithLive,
+  type SharedProjectSourceEntry
+} from './sharedProjects'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -215,11 +225,42 @@ type SupabaseWorkReportRow = {
   synced_at?: string
 }
 
+type SupabaseProjectUsage = {
+  customer: string
+  project: string
+  usedSeconds: number
+  contributorCount: number
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+  }>
+}
+
 type SharedFictiveTaskUsage = {
   taskId: string
   usedSeconds: number
   contributorCount: number
   lastReportedAt: string | null
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+  }>
+}
+
+type QuickUsageGauge = {
+  kind: 'project' | 'task'
+  title: string
+  usedMinutes: number
+  capMinutes: number
+  percent: number
+  status: 'green' | 'yellow' | 'red'
+  employees: Array<{
+    employeeId: number | null
+    employeeName: string
+    minutes: number
+  }>
 }
 
 type EmployeeAdminItem = {
@@ -427,6 +468,7 @@ type AppPreferences = {
   filtersOpen: boolean
   reportsOpen: boolean
   logWorkOpen: boolean
+  trayPinned: boolean
   autoLoginEnabled: boolean
   autoSuggestEnabled: boolean
   heatmapEnabled: boolean
@@ -1947,6 +1989,17 @@ const JIRA_DETAIL_TIMEOUT_MS = 60000
 const JIRA_PREFETCH_FAILURE_COOLDOWN_MS = 5 * 60 * 1000
 const JIRA_PREFETCH_MAX_RETRIES = 1
 const JIRA_PREFETCH_CONCURRENCY = 15
+
+function isTemporaryHrsSessionError(message: string | null | undefined) {
+  const normalized = message?.toLowerCase() ?? ''
+  return (
+    normalized.includes('hrs_temporary_unavailable') ||
+    normalized.includes('temporarily unavailable') ||
+    normalized.includes('timed out') ||
+    normalized.includes('network') ||
+    normalized.includes('fetch failed')
+  )
+}
 const ATLASSIAN_TOKEN_URL = 'https://id.atlassian.com/manage-profile/security/api-tokens'
 
 async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -2090,7 +2143,6 @@ export default function App() {
   const [duoHint, setDuoHint] = useState(false)
   const sessionRetryCount = useRef(0)
   const sessionRetryErrorRef = useRef<string | null>(null)
-  const credentialsAutoSaveRef = useRef(false)
 
   const [projectName, setProjectName] = useState<string | null>(null)
   const [customerName, setCustomerName] = useState<string | null>(null)
@@ -2173,6 +2225,17 @@ export default function App() {
   const [supabaseMessage, setSupabaseMessage] = useState<string | null>(null)
   const supabaseAutoSetupRef = useRef('')
   const [supabaseReportRows, setSupabaseReportRows] = useState<SupabaseWorkReportRow[]>([])
+  const [sharedProjectReportRows, setSharedProjectReportRows] = useState<
+    SupabaseWorkReportRow[]
+  >([])
+  const [sharedProjectReportMonthKey, setSharedProjectReportMonthKey] = useState<string | null>(null)
+  const [sharedProjectReportsLoading, setSharedProjectReportsLoading] = useState(false)
+  const [sharedProjectReportsError, setSharedProjectReportsError] = useState<string | null>(null)
+  const sharedProjectReportsRequestId = useRef(0)
+  const sharedProjectReportsCacheRef = useRef(new Map<string, SupabaseWorkReportRow[]>())
+  const [supabaseProjectUsageByKey, setSupabaseProjectUsageByKey] = useState<
+    Record<string, SupabaseProjectUsage>
+  >({})
   const [reportWorkLogsByDate, setReportWorkLogsByDate] = useState<
     Record<string, ReportLogEntry[]>
   >({})
@@ -2257,6 +2320,7 @@ export default function App() {
   const [projectManagementError, setProjectManagementError] = useState<string | null>(null)
   const [sharedFictiveTasks, setSharedFictiveTasks] = useState<ProjectMission[]>([])
   const [sharedFictiveTasksAvailable, setSharedFictiveTasksAvailable] = useState<boolean | null>(null)
+  const [sharedProjectHoursAvailable, setSharedProjectHoursAvailable] = useState<boolean | null>(null)
   const [sharedFictiveTaskUsage, setSharedFictiveTaskUsage] = useState<
     Record<string, SharedFictiveTaskUsage>
   >({})
@@ -2265,6 +2329,7 @@ export default function App() {
   const reportReconciliationPromisesRef = useRef(
     new Map<string, Promise<{ synced: number; error: string | null }>>()
   )
+  const automaticReportSyncKeysRef = useRef(new Set<string>())
   const [slackStatus, setSlackStatus] = useState<SlackStatus | null>(null)
   const [slackToken, setSlackToken] = useState('')
   const [slackChannels, setSlackChannels] = useState<SlackChannelOption[]>([])
@@ -2290,6 +2355,9 @@ export default function App() {
   const [quickFictiveName, setQuickFictiveName] = useState('')
   const [quickFictivePlannedHours, setQuickFictivePlannedHours] = useState<string | number>('')
   const [quickFictiveCappedHours, setQuickFictiveCappedHours] = useState<string | number>('')
+  const [quickFictiveProjectCappedHours, setQuickFictiveProjectCappedHours] = useState<
+    string | number
+  >('')
   const [quickFictiveNotes, setQuickFictiveNotes] = useState('')
   const [quickFictiveError, setQuickFictiveError] = useState<string | null>(null)
   const [quickFictiveJiraParentKey, setQuickFictiveJiraParentKey] = useState<string | null>(null)
@@ -2466,6 +2534,7 @@ export default function App() {
   const [reminderIdleMinutes, setReminderIdleMinutes] = useState(30)
   const [trayEnterAnimating, setTrayEnterAnimating] = useState(false)
   const [trayClosingAnimating, setTrayClosingAnimating] = useState(false)
+  const [trayPinned, setTrayPinned] = useState(false)
   const [trayPanel, setTrayPanel] = useState<
     'log' | 'clockify' | 'meetings' | 'agenda' | 'employees' | 'reports' | 'settings'
   >('log')
@@ -3787,6 +3856,24 @@ export default function App() {
     }
   }
 
+  async function toggleTrayPinned() {
+    try {
+      const next = await window.hrs.setTrayPinned(!trayPinned)
+      setTrayPinned(next)
+      setTrayClosingAnimating(false)
+    } catch (err) {
+      setBridgeError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
+  async function dismissTray() {
+    try {
+      await window.hrs.dismissTray()
+    } catch (err) {
+      setBridgeError(err instanceof Error ? err.message : String(err))
+    }
+  }
+
   async function closeFloatingTimer() {
     try {
       await window.hrs.closeFloatingTimer()
@@ -3830,12 +3917,14 @@ export default function App() {
     setLoggedIn(false)
     setDuoPending(false)
     setDuoHint(true)
-    setSessionError(`${reason} DUO approval was not detected. Try again or reset credentials.`)
+    setSessionError(
+      `${reason} DUO approval was not detected. Your saved credentials were kept. Approve the request and press Login again.`
+    )
     return false
   }
 
   async function tryAutoLogin(reason: string): Promise<boolean | null> {
-    const autoLoginActive = hasStoredPassword && (autoLoginEnabled || isTray)
+    const autoLoginActive = hasStoredPassword && autoLoginEnabled
     if (!autoLoginActive) return null
     if (autoLoginInFlightRef.current) return null
     const now = Date.now()
@@ -3896,14 +3985,22 @@ export default function App() {
       return ok
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
-      if (message.includes('timed out') && sessionRetryCount.current < SESSION_RETRY_LIMIT) {
+      const temporaryFailure = isTemporaryHrsSessionError(message)
+      if (temporaryFailure && sessionRetryCount.current < SESSION_RETRY_LIMIT) {
         sessionRetryCount.current += 1
         shouldRetry = true
-        setBootStatus('Session check is slow. Retrying…')
-        setSessionError('Session check is taking longer than expected. Retrying…')
+        setBootStatus('HRS is temporarily unavailable. Retrying…')
+        setSessionError('HRS is temporarily unavailable. Saved credentials were kept. Retrying…')
         window.setTimeout(() => {
           void checkSession()
         }, 1200)
+        return false
+      }
+      if (temporaryFailure) {
+        setBootStatus('HRS is temporarily unavailable.')
+        setSessionError(
+          'HRS is temporarily unavailable. Saved credentials were kept; the app will retry automatically.'
+        )
         return false
       }
       const autoLoginResult = await tryAutoLogin('Session check failed.')
@@ -3923,7 +4020,11 @@ export default function App() {
     autoLoginLastAttemptAtRef.current = 0
     sessionRetryErrorRef.current = null
     setSessionError(null)
-    await checkSession()
+    if (autoLoginEnabled && hasStoredPassword) {
+      await checkSession()
+      return
+    }
+    await login()
   }
 
   function switchTrayPanel(
@@ -3981,7 +4082,15 @@ export default function App() {
     lastPanelRefreshRef.current[key] = now
 
     if (panel === 'log') {
-      await loadReportsForMonth(reportMonth, { force: true })
+      const quickLogScope = getQuickLogProjectScope()
+      const refreshes: Array<Promise<unknown>> = [
+        loadReportsForMonth(reportMonth, { force: true }),
+        loadSharedProjectReports(reportMonth, { force: true })
+      ]
+      if (quickLogScope) {
+        refreshes.push(loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project))
+      }
+      await Promise.all(refreshes)
       return
     }
 
@@ -3997,7 +4106,10 @@ export default function App() {
     if (panel === 'reports') {
       void loadEmployees({ silent: true })
       setEmployeeReport(null)
-      await loadReportsForMonth(reportMonth, { force: true })
+      await Promise.all([
+        loadReportsForMonth(reportMonth, { force: true }),
+        loadSharedProjectReports(reportMonth, { force: true })
+      ])
     }
   }
 
@@ -4281,12 +4393,110 @@ export default function App() {
         setSharedFictiveTasks([])
         setSharedFictiveTaskUsage({})
         setSharedFictiveTasksAvailable(null)
+        setSharedProjectHoursAvailable(null)
+        setSharedProjectReportRows([])
+        setSharedProjectReportMonthKey(null)
+        setSharedProjectReportsError(null)
+        sharedProjectReportsCacheRef.current.clear()
+        setSupabaseProjectUsageByKey({})
       }
       return status
     } catch (error) {
       setSupabaseError(error instanceof Error ? error.message : String(error))
       return null
     }
+  }
+
+  async function loadSharedProjectReports(
+    month: Date,
+    options: { force?: boolean } = {}
+  ): Promise<SupabaseWorkReportRow[]> {
+    const employeeId = supabaseStatus?.profile?.employee_id
+    if (!supabaseStatus?.email || !employeeId || !window.hrs?.getSupabaseWorkReports) {
+      setSharedProjectReportRows([])
+      setSharedProjectReportMonthKey(null)
+      setSharedProjectReportsError(null)
+      return []
+    }
+
+    const monthKey = dayjs(month).format('YYYY-MM')
+    const visibleMonthKey = dayjs(reportMonth).format('YYYY-MM')
+    const cacheKey = `${employeeId}:${monthKey}`
+    const cached = sharedProjectReportsCacheRef.current.get(cacheKey)
+    if (cached && !options.force) {
+      if (monthKey === visibleMonthKey) {
+        setSharedProjectReportRows(cached)
+        setSharedProjectReportMonthKey(monthKey)
+        setSharedProjectReportsError(null)
+      }
+      return cached
+    }
+
+    const requestId = ++sharedProjectReportsRequestId.current
+    if (monthKey === visibleMonthKey) {
+      setSharedProjectReportsLoading(true)
+      setSharedProjectReportsError(null)
+    }
+    try {
+      const { start, end } = getMonthRange(month)
+      const rows = await window.hrs.getSupabaseWorkReports(start, end)
+      sharedProjectReportsCacheRef.current.set(cacheKey, rows)
+      if (requestId === sharedProjectReportsRequestId.current && monthKey === visibleMonthKey) {
+        setSharedProjectReportRows(rows)
+        setSharedProjectReportMonthKey(monthKey)
+      }
+      return rows
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      if (requestId === sharedProjectReportsRequestId.current && monthKey === visibleMonthKey) {
+        setSharedProjectReportsError(message)
+      }
+      console.warn('[SHARED PROJECT REPORTS]', message)
+      return []
+    } finally {
+      if (requestId === sharedProjectReportsRequestId.current && monthKey === visibleMonthKey) {
+        setSharedProjectReportsLoading(false)
+      }
+    }
+  }
+
+  async function loadSupabaseProjectUsage(
+    customer: string | null | undefined,
+    project: string | null | undefined
+  ): Promise<SupabaseProjectUsage | null> {
+    const normalizedCustomer = customer?.trim() ?? ''
+    const normalizedProject = project?.trim() ?? ''
+    if (
+      !normalizedCustomer ||
+      !normalizedProject ||
+      !supabaseStatus?.email ||
+      !supabaseStatus.profile?.employee_id ||
+      !window.hrs?.getSupabaseProjectUsage
+    ) {
+      return null
+    }
+    try {
+      const usage = await window.hrs.getSupabaseProjectUsage(
+        normalizedCustomer,
+        normalizedProject
+      )
+      const key = getSharedProjectKey(normalizedCustomer, normalizedProject)
+      setSupabaseProjectUsageByKey(previous => ({ ...previous, [key]: usage }))
+      return usage
+    } catch (error) {
+      console.warn('[SHARED PROJECT USAGE]', error)
+      return null
+    }
+  }
+
+  function getQuickLogProjectScope() {
+    const missionId = getMissionIdFromTaskValue(taskName)
+    const mission = missionId
+      ? allProjectMissions.find(item => item.id === missionId) ?? null
+      : null
+    const customer = mission?.customerName?.trim() || customerName?.trim() || ''
+    const project = mission?.projectName?.trim() || projectName?.trim() || ''
+    return customer && project ? { customer, project } : null
   }
 
   function getSupabaseErrorMessage(error: unknown) {
@@ -4417,7 +4627,7 @@ export default function App() {
       setSupabasePassword('')
       setSupabaseMessage(
         result.needsConfirmation
-          ? 'Supabase user created. Confirm email, then sign in.'
+          ? 'Supabase user created. Keep HRS Desktop open, confirm the email, then return here and press Sign in.'
           : 'Supabase user created and connected.'
       )
     } catch (error) {
@@ -4433,7 +4643,9 @@ export default function App() {
     setSupabaseMessage(null)
     try {
       await window.hrs.resendSupabaseConfirmation(supabaseEmail)
-      setSupabaseMessage('Confirmation email sent. Open the link from your inbox, then sign in.')
+      setSupabaseMessage(
+        'Confirmation email sent. Keep HRS Desktop open, open the link, then return here and press Sign in.'
+      )
     } catch (error) {
       setSupabaseError(getSupabaseErrorMessage(error))
     } finally {
@@ -4524,8 +4736,8 @@ export default function App() {
           comment: entry.comment,
           reportingFrom: entry.reporting_from
         })
-        const customer = meta?.customerName || entry.projectInstance || 'Unknown'
-        const project = meta?.projectName || entry.projectInstance || customer
+        const customer = mission?.customerName || meta?.customerName || entry.projectInstance || 'Unknown'
+        const project = mission?.projectName || meta?.projectName || entry.projectInstance || customer
         const externalTaskName = mission?.virtual ? mission.name : entry.taskName
         const seconds = parseHoursHHMMToMinutes(entry.hours_HHMM) * 60
         rows.push({
@@ -4600,6 +4812,11 @@ export default function App() {
       )
       const monthKey = dayjs(month).format('YYYY-MM')
       reportsCacheRef.current.delete(`supabase:${monthKey}`)
+      await loadSharedProjectReports(month, { force: true })
+      const quickLogScope = getQuickLogProjectScope()
+      if (quickLogScope) {
+        await loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project)
+      }
       if (sharedFictiveTasks.length) {
         await refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
       }
@@ -4695,6 +4912,11 @@ export default function App() {
         employeeId: supabaseStatus?.profile?.employee_id ?? undefined,
         rows
       })
+      await loadSharedProjectReports(reportMonth, { force: true })
+      const quickLogScope = getQuickLogProjectScope()
+      if (quickLogScope) {
+        await loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project)
+      }
       if (sharedFictiveTasks.length) {
         await refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
       }
@@ -4785,6 +5007,7 @@ export default function App() {
       setFiltersOpen(true)
       setReportsOpen(prefs.reportsOpen)
       setLogWorkOpen(prefs.logWorkOpen)
+      setTrayPinned(prefs.trayPinned ?? false)
       setAutoLoginEnabled(prefs.autoLoginEnabled)
       setAutoSuggestEnabled(false)
       setHeatmapEnabled(prefs.heatmapEnabled)
@@ -4929,6 +5152,7 @@ export default function App() {
     try {
       const result = await window.hrs.getSharedFictiveTasks()
       setSharedFictiveTasksAvailable(result.available)
+      setSharedProjectHoursAvailable(result.globalHoursAvailable)
       setSharedFictiveTasks(result.tasks)
       if (result.available) {
         await refreshSharedFictiveTaskUsage(result.tasks, true)
@@ -4999,13 +5223,14 @@ export default function App() {
         const sharedTask = await window.hrs.upsertSharedFictiveTask({
           id: mission.id,
           customerName: mission.customerName,
-          projectName: originalTask?.projectName ?? null,
+          projectName: mission.projectName ?? originalTask?.projectName ?? null,
           originalHrsTaskId: originalTaskId,
           originalHrsTaskName: originalTask?.taskName ?? null,
           jiraIssueKey: mission.jiraIssueKey,
           name: mission.name,
           plannedHours: mission.plannedHours,
           cappedHours: mission.cappedHours,
+          projectCappedHours: mission.projectCappedHours,
           status: mission.status,
           notes: mission.notes,
           assignedEmployeeIds: mission.assignedEmployees
@@ -5315,7 +5540,7 @@ export default function App() {
                   size={compact ? 'xs' : 'sm'}
                 />
               </SimpleGrid>
-              <Group justify="space-between" align="center">
+              <Group justify="flex-end" align="center">
                 {needsConfirmation ? (
                   <Button
                     size={compact ? 'xs' : 'sm'}
@@ -5326,17 +5551,16 @@ export default function App() {
                   >
                     Resend email
                   </Button>
-                ) : (
-                  <Button
-                    size={compact ? 'xs' : 'sm'}
-                    variant="subtle"
-                    disabled={!supabaseEmail.trim() || !supabasePassword}
-                    loading={supabaseLoading}
-                    onClick={() => void signInSupabase()}
-                  >
-                    Sign in
-                  </Button>
-                )}
+                ) : null}
+                <Button
+                  size={compact ? 'xs' : 'sm'}
+                  variant="subtle"
+                  disabled={!supabaseEmail.trim() || !supabasePassword}
+                  loading={supabaseLoading}
+                  onClick={() => void signInSupabase()}
+                >
+                  Sign in
+                </Button>
                 <Button
                   size={compact ? 'xs' : 'sm'}
                   loading={supabaseLoading}
@@ -5682,7 +5906,6 @@ export default function App() {
     try {
       await window.hrs.setCredentials(credentialsUsername, credentialsPassword)
       setCredentialsPassword('')
-      setAutoLoginEnabled(true)
       await loadHrsCredentials()
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -5804,12 +6027,15 @@ export default function App() {
       }
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
       setMeetingsProgress('Authenticating with Microsoft…')
-      const result = await window.hrs.getMeetings({
-        browser: 'chrome',
-        headless: true,
+      const meetingRequest = {
+        browser: 'chrome' as const,
         month: monthKey,
         username: meetingsUsername.trim() || null,
         password: meetingsPassword || null
+      }
+      const result = await window.hrs.getMeetings({
+        ...meetingRequest,
+        headless: true
       })
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'finalize'))
       setMeetingsProgress('Finalizing meetings data…')
@@ -6230,7 +6456,18 @@ export default function App() {
 
     const effectiveMission = options.mission ?? null
     const effectiveTask = taskMetaById.get(taskId) ?? selectedTask
-    const effectiveCustomerName = effectiveTask?.customerName ?? meetingMappingClient ?? customerName
+    const effectiveCustomerName =
+      effectiveMission?.customerName?.trim() ||
+      effectiveTask?.customerName?.trim() ||
+      meetingMappingClient?.trim() ||
+      customerName?.trim() ||
+      ''
+    const effectiveProjectName =
+      effectiveMission?.projectName?.trim() ||
+      effectiveTask?.projectName?.trim() ||
+      effectiveTask?.projectInstance?.trim() ||
+      meetingMappingProject?.trim() ||
+      effectiveCustomerName
     const mappedEpicForLog = effectiveCustomerName
       ? jiraMappings[effectiveCustomerName] ?? null
       : null
@@ -6238,24 +6475,55 @@ export default function App() {
       options.jiraIssueKey ?? effectiveMission?.jiraIssueKey ?? mappedEpicForLog
     const shouldLogToJira = Boolean(options.logToJira && effectiveJiraIssueKey && jiraStatus?.configured)
 
-    if (effectiveMission?.cappedHours && effectiveMission.cappedHours > 0) {
+    if (
+      effectiveMission &&
+      ((effectiveMission.cappedHours ?? 0) > 0 ||
+        (effectiveMission.projectCappedHours ?? 0) > 0)
+    ) {
       try {
         const addedMinutes = prepared.reduce((sum, item) => sum + item.duration.minutes, 0)
-        let usedMinutes = getMissionUsedMinutesFromReports(effectiveMission, allReportItems)
-        if (effectiveMission.shared && window.hrs?.getSharedFictiveTaskUsage) {
-          const usage = await window.hrs.getSharedFictiveTaskUsage([effectiveMission.id])
-          const current = usage.find(item => item.taskId === effectiveMission.id)
-          usedMinutes = Math.round((current?.usedSeconds ?? 0) / 60)
-          if (current) {
-            setSharedFictiveTaskUsage(previous => ({ ...previous, [effectiveMission.id]: current }))
+        const projectCapMinutes = getGlobalProjectCapMinutes(
+          allProjectMissions,
+          effectiveCustomerName,
+          effectiveProjectName
+        )
+        if (projectCapMinutes > 0) {
+          const projectUsage = await loadSupabaseProjectUsage(
+            effectiveCustomerName,
+            effectiveProjectName
+          )
+          const usedProjectMinutes = projectUsage
+            ? Math.round(projectUsage.usedSeconds / 60)
+            : getProjectUsedMinutesFromReports(
+                effectiveCustomerName,
+                effectiveProjectName,
+                allReportItems
+              )
+          if (usedProjectMinutes + addedMinutes > projectCapMinutes) {
+            const message = `${effectiveCustomerName} / ${effectiveProjectName} is capped at ${formatMinutesToLabel(projectCapMinutes)}. The selected meeting time would exceed the global project cap.`
+            options.onError?.(message)
+            setLogError(message)
+            return false
           }
         }
-        const capMinutes = Math.round(effectiveMission.cappedHours * 60)
-        if (usedMinutes + addedMinutes > capMinutes) {
-          const message = `${effectiveMission.name} is capped at ${effectiveMission.cappedHours}h. The selected meeting time would exceed the shared cap.`
-          options.onError?.(message)
-          setLogError(message)
-          return false
+
+        const taskCapMinutes = Math.round((effectiveMission.cappedHours ?? 0) * 60)
+        if (taskCapMinutes > 0) {
+          let usedTaskMinutes = getMissionUsedMinutesFromReports(effectiveMission, allReportItems)
+          if (effectiveMission.shared && window.hrs?.getSharedFictiveTaskUsage) {
+            const usage = await window.hrs.getSharedFictiveTaskUsage([effectiveMission.id])
+            const current = usage.find(item => item.taskId === effectiveMission.id)
+            usedTaskMinutes = Math.round((current?.usedSeconds ?? 0) / 60)
+            if (current) {
+              setSharedFictiveTaskUsage(previous => ({ ...previous, [effectiveMission.id]: current }))
+            }
+          }
+          if (usedTaskMinutes + addedMinutes > taskCapMinutes) {
+            const message = `${effectiveMission.name} is capped at ${formatMinutesToLabel(taskCapMinutes)}. The selected meeting time would exceed the task cap.`
+            options.onError?.(message)
+            setLogError(message)
+            return false
+          }
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error)
@@ -6523,6 +6791,9 @@ export default function App() {
         const refreshedUsage = await refreshSharedFictiveTaskUsage([effectiveMission])
         sharedUsageAfterSync =
           refreshedUsage.find(item => item.taskId === effectiveMission.id) ?? null
+      }
+      if (effectiveCustomerName && effectiveProjectName) {
+        await loadSupabaseProjectUsage(effectiveCustomerName, effectiveProjectName)
       }
 
       if (effectiveCustomerName && slackStatus?.mappings) {
@@ -7733,13 +8004,21 @@ export default function App() {
     const effectiveToTime = overrides?.toTime ?? toTime
     const effectiveReportingFrom = overrides?.reportingFrom ?? reportingFrom
     const shouldLogToJira = overrides?.logToJira ?? logToJira
-    const effectiveCustomerName = effectiveTask?.customerName ?? customerName
+    const effectiveCustomerName =
+      effectiveMission?.customerName?.trim() || effectiveTask?.customerName || customerName
+    const effectiveProjectName =
+      effectiveMission?.projectName?.trim() ||
+      effectiveTask?.projectName?.trim() ||
+      effectiveTask?.projectInstance?.trim() ||
+      projectName?.trim() ||
+      effectiveCustomerName
     const mappedEpicForLog = effectiveCustomerName
       ? jiraMappings[effectiveCustomerName] ?? null
       : null
     const effectiveJiraIssueKey =
       overrides?.jiraIssueKey ?? effectiveMission?.jiraIssueKey ?? jiraIssueKey ?? mappedEpicForLog
     let sharedUsageAfterSync: SharedFictiveTaskUsage | null = null
+    let projectUsageAfterSync: SupabaseProjectUsage | null = null
     setLogLoading(true)
     setLogError(null)
     setLogSuccess(null)
@@ -7822,6 +8101,32 @@ export default function App() {
 	        taskId
 	      }
 
+        const projectCapMinutes = getGlobalProjectCapMinutes(
+          allProjectMissions,
+          effectiveCustomerName,
+          effectiveProjectName
+        )
+        if (projectCapMinutes > 0) {
+          const freshProjectUsage = await loadSupabaseProjectUsage(
+            effectiveCustomerName,
+            effectiveProjectName
+          )
+          const usedProjectMinutes = freshProjectUsage
+            ? Math.round(freshProjectUsage.usedSeconds / 60)
+            : getProjectUsedMinutesFromReports(
+                effectiveCustomerName,
+                effectiveProjectName,
+                capSourceReports
+              )
+          const nextProjectMinutes = usedProjectMinutes + duration.minutes
+          if (nextProjectMinutes > projectCapMinutes) {
+            const message = `${effectiveCustomerName} / ${effectiveProjectName} is capped at ${formatMinutesToLabel(projectCapMinutes)}. Current usage is ${minutesToHHMM(usedProjectMinutes)}, this report would reach ${minutesToHHMM(nextProjectMinutes)}.`
+            setLogError(message)
+            overrides?.onError?.(message)
+            return false
+          }
+        }
+
         const matchingCappedMissions = effectiveMission
           ? [effectiveMission].filter(mission => mission.cappedHours && mission.cappedHours > 0)
           : allProjectMissions.filter(
@@ -7831,8 +8136,7 @@ export default function App() {
                 (mission.hrsTaskIds ?? []).map(String).includes(String(taskId))
             )
         for (const mission of matchingCappedMissions) {
-          const missionTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
-          let usedMinutes: number
+          let usedMinutes = getMissionUsedMinutesFromReports(mission, capSourceReports)
           if (mission.shared && window.hrs?.getSharedFictiveTaskUsage) {
             const freshUsage = await window.hrs.getSharedFictiveTaskUsage([mission.id])
             const taskUsage = freshUsage.find(item => item.taskId === mission.id)
@@ -7843,30 +8147,11 @@ export default function App() {
                 [mission.id]: taskUsage
               }))
             }
-          } else {
-            usedMinutes = capSourceReports.reduce((sum, report) => {
-              if (!missionTaskIds.has(String(report.taskId))) return sum
-              if (mission.virtual) {
-                const mappedMission = findMappedMissionForReport(
-                  allProjectMissions,
-                  reportMissionMap,
-                  {
-                    date: report.dateKey,
-                    taskId: report.taskId,
-                    hoursHHMM: report.hours_HHMM,
-                    comment: report.comment,
-                    reportingFrom: report.reporting_from
-                  }
-                )
-                if (mappedMission?.id !== mission.id) return sum
-              }
-              return sum + parseHoursHHMMToMinutes(report.hours_HHMM)
-            }, 0)
           }
           const capMinutes = Math.round((mission.cappedHours ?? 0) * 60)
           const nextMinutes = usedMinutes + duration.minutes
           if (capMinutes > 0 && nextMinutes > capMinutes) {
-            const message = `${mission.name} is capped at ${mission.cappedHours}h. Current usage is ${Math.round((usedMinutes / 60) * 10) / 10}h, this report would reach ${Math.round((nextMinutes / 60) * 10) / 10}h.`
+            const message = `${mission.name} is capped at ${formatMinutesToLabel(capMinutes)}. Current usage is ${minutesToHHMM(usedMinutes)}, this report would reach ${minutesToHHMM(nextMinutes)}.`
             setLogError(message)
             overrides?.onError?.(message)
             return false
@@ -7978,6 +8263,12 @@ export default function App() {
         missionMapOverride: missionMapForSync
       })
       const supabaseFailure = supabaseSyncResult?.error ?? null
+      if (!supabaseFailure && effectiveCustomerName && effectiveProjectName) {
+        projectUsageAfterSync = await loadSupabaseProjectUsage(
+          effectiveCustomerName,
+          effectiveProjectName
+        )
+      }
       if (effectiveMission?.shared && !supabaseFailure) {
         const refreshedUsage = await refreshSharedFictiveTaskUsage([effectiveMission])
         sharedUsageAfterSync =
@@ -8070,11 +8361,28 @@ export default function App() {
             slackLines.splice(
               4,
               0,
-              `Cap: ${formatMinutesToLabel(capMinutes)}`,
-              `Used: ${minutesToHHMM(usedMinutes)} (${percent}%)`,
-              `Remaining: ${minutesToHHMM(remainingMinutes)}`
+              `Task cap: ${formatMinutesToLabel(capMinutes)}`,
+              `Task used: ${minutesToHHMM(usedMinutes)} (${percent}%)`,
+              `Task remaining: ${minutesToHHMM(remainingMinutes)}`
             )
           }
+        }
+        const globalProjectCapMinutes = getGlobalProjectCapMinutes(
+          allProjectMissions,
+          effectiveCustomerName,
+          effectiveProjectName
+        )
+        if (globalProjectCapMinutes > 0 && projectUsageAfterSync) {
+          const projectUsedMinutes = Math.round(projectUsageAfterSync.usedSeconds / 60)
+          const projectPercent = Math.round(
+            (projectUsedMinutes / globalProjectCapMinutes) * 100
+          )
+          slackLines.splice(
+            4,
+            0,
+            `Project cap: ${formatMinutesToLabel(globalProjectCapMinutes)}`,
+            `Project used: ${minutesToHHMM(projectUsedMinutes)} (${projectPercent}%)`
+          )
         }
         void postSlackCustomerUpdate({
           customer: effectiveCustomerName,
@@ -9492,6 +9800,33 @@ export default function App() {
     }, 0)
   }
 
+  const getProjectUsedMinutesFromReports = (
+    customer: string,
+    project: string,
+    reports: Array<ReportItem | WorkReportEntry>
+  ) => {
+    const requestedProjectKey = getSharedProjectKey(customer, project)
+    return reports.reduce((sum, item) => {
+      const meta = taskMetaById.get(item.taskId)
+      const dateKey = 'dateKey' in item ? item.dateKey : null
+      const mappedMission = dateKey
+        ? findMappedMissionForReport(allProjectMissions, reportMissionMap, {
+            date: dateKey,
+            taskId: item.taskId,
+            hoursHHMM: item.hours_HHMM,
+            comment: item.comment,
+            reportingFrom: item.reporting_from
+          })
+        : null
+      const itemCustomer =
+        mappedMission?.customerName || meta?.customerName || item.projectInstance || 'Unknown'
+      const itemProject =
+        mappedMission?.projectName || meta?.projectName || item.projectInstance || itemCustomer
+      if (getSharedProjectKey(itemCustomer, itemProject) !== requestedProjectKey) return sum
+      return sum + parseHoursHHMMToMinutes(item.hours_HHMM)
+    }, 0)
+  }
+
   const taskOptions = useMemo(() => {
     const visibleVirtualMissions = allProjectMissions
       .filter(mission => mission.virtual)
@@ -10224,6 +10559,41 @@ export default function App() {
   }, [loggedIn, supabaseStatus?.profile?.employee_id, pendingReportSyncMonths, reportMissionMap])
 
   useEffect(() => {
+    if (
+      !isTray ||
+      !loggedIn ||
+      reportSource !== 'hrs' ||
+      !monthlyReport ||
+      !supabaseStatus?.email ||
+      !supabaseStatus.profile?.id ||
+      !supabaseStatus.profile.employee_id
+    ) {
+      return
+    }
+
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    const syncKey = `${supabaseStatus.profile.id}:${monthKey}`
+    if (automaticReportSyncKeysRef.current.has(syncKey)) return
+    automaticReportSyncKeysRef.current.add(syncKey)
+
+    void syncHrsMonthToSupabaseReliably(reportMonth, {
+      missionMapOverride: reportMissionMap
+    }).then(result => {
+      if (result.error) automaticReportSyncKeysRef.current.delete(syncKey)
+    })
+  }, [
+    isTray,
+    loggedIn,
+    reportSource,
+    monthlyReport,
+    reportMonth,
+    reportMissionMap,
+    supabaseStatus?.email,
+    supabaseStatus?.profile?.id,
+    supabaseStatus?.profile?.employee_id
+  ])
+
+  useEffect(() => {
     if (bootComplete) return
     if (preferencesLoaded && jiraStatusLoaded && !checkingSession) {
       setBootComplete(true)
@@ -10237,10 +10607,10 @@ export default function App() {
   }, [loggedIn])
 
   useEffect(() => {
-    if (!(hasStoredPassword && (autoLoginEnabled || isTray))) {
+    if (!(hasStoredPassword && autoLoginEnabled)) {
       setDuoHint(false)
     }
-  }, [autoLoginEnabled, hasStoredPassword, isTray])
+  }, [autoLoginEnabled, hasStoredPassword])
 
   useEffect(() => {
     if (isTray) return
@@ -10275,7 +10645,7 @@ export default function App() {
   }, [isTray])
 
   useEffect(() => {
-    if (!(hasStoredPassword && (autoLoginEnabled || isTray))) {
+    if (!(hasStoredPassword && autoLoginEnabled)) {
       sessionRetryErrorRef.current = null
       autoLoginAttemptedRef.current = false
       autoLoginInFlightRef.current = false
@@ -10289,10 +10659,10 @@ export default function App() {
     if (sessionRetryErrorRef.current === sessionError) return
     sessionRetryErrorRef.current = sessionError
     void checkSession()
-  }, [autoLoginEnabled, hasStoredPassword, isTray, loggedIn, checkingSession, sessionError])
+  }, [autoLoginEnabled, hasStoredPassword, loggedIn, checkingSession, sessionError])
 
   useEffect(() => {
-    if (!isTray || !hasStoredPassword) return
+    if (!isTray || !autoLoginEnabled || !hasStoredPassword) return
     if (loggedIn || checkingSession) return
     const retryId = window.setTimeout(() => {
       void checkSession()
@@ -10301,30 +10671,26 @@ export default function App() {
   }, [isTray, autoLoginEnabled, hasStoredPassword, loggedIn, checkingSession, sessionError])
 
   useEffect(() => {
-    if (!credentialsModalOpen) {
-      credentialsAutoSaveRef.current = false
-      return
-    }
-    if (storedUsername || hasStoredPassword) return
-    if (!credentialsUsername || !credentialsPassword) {
-      credentialsAutoSaveRef.current = false
-      return
-    }
-    if (credentialsAutoSaveRef.current) return
-    credentialsAutoSaveRef.current = true
-    void saveHrsCredentials()
-  }, [
-    credentialsModalOpen,
-    storedUsername,
-    hasStoredPassword,
-    credentialsUsername,
-    credentialsPassword
-  ])
-
-  useEffect(() => {
     if (!loggedIn || !shouldLoadLogData) return
     loadReportsForMonth(reportMonth)
   }, [loggedIn, shouldLoadLogData, reportMonth, reportSource])
+
+  useEffect(() => {
+    if (!loggedIn || !shouldLoadLogData) return
+    if (!supabaseStatus?.email || !supabaseStatus.profile?.employee_id) {
+      setSharedProjectReportRows([])
+      setSharedProjectReportMonthKey(null)
+      setSharedProjectReportsError(null)
+      return
+    }
+    void loadSharedProjectReports(reportMonth)
+  }, [
+    loggedIn,
+    shouldLoadLogData,
+    reportMonth,
+    supabaseStatus?.email,
+    supabaseStatus?.profile?.employee_id
+  ])
 
   useEffect(() => {
     const syncMonthOnRollover = () => {
@@ -10374,12 +10740,14 @@ export default function App() {
     if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
     const intervalId = window.setInterval(() => {
       void loadReportsForMonth(reportMonth, { force: true })
+      void loadSharedProjectReports(reportMonth, { force: true })
     }, CURRENT_MONTH_REFRESH_INTERVAL_MS)
     const onFocus = () => {
       if (isTray) {
         void refreshPanelData(trayPanel, { reason: 'focus' })
       } else {
         void loadReportsForMonth(reportMonth, { force: true })
+        void loadSharedProjectReports(reportMonth, { force: true })
       }
     }
     window.addEventListener('focus', onFocus)
@@ -10387,7 +10755,15 @@ export default function App() {
       window.clearInterval(intervalId)
       window.removeEventListener('focus', onFocus)
     }
-  }, [loggedIn, shouldLoadLogData, reportMonth, isTray, trayPanel])
+  }, [
+    loggedIn,
+    shouldLoadLogData,
+    reportMonth,
+    isTray,
+    trayPanel,
+    supabaseStatus?.email,
+    supabaseStatus?.profile?.employee_id
+  ])
 
   useEffect(() => {
     if (!isTray || !loggedIn) return
@@ -10416,6 +10792,10 @@ export default function App() {
       trayEnterTimeoutRef.current = window.setTimeout(() => {
         setTrayEnterAnimating(false)
       }, 220)
+      void window.hrs
+        .getTrayPinned()
+        .then(setTrayPinned)
+        .catch(error => console.warn('[tray] failed to refresh pinned state', error))
       if (!loggedIn) return
       if (!dayjs(reportMonth).isSame(dayjs(), 'month')) return
       void refreshPanelData(trayPanel, { reason: 'focus' })
@@ -10432,6 +10812,52 @@ export default function App() {
       disposeClosing?.()
     }
   }, [isTray, loggedIn, reportMonth, trayPanel])
+
+  useEffect(() => {
+    if (!isTray || !window.hrs?.resizeTrayToContent) return
+    const shell = document.querySelector<HTMLElement>('.tray-shell')
+    const content = document.querySelector<HTMLElement>('.tray-content')
+    if (!shell || !content) return
+
+    let resizeFrame: number | null = null
+    const syncTrayHeight = () => {
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
+      resizeFrame = window.requestAnimationFrame(() => {
+        resizeFrame = null
+        const shellStyle = window.getComputedStyle(shell)
+        const shellFrameHeight =
+          Number.parseFloat(shellStyle.paddingTop || '0') +
+          Number.parseFloat(shellStyle.paddingBottom || '0') +
+          Number.parseFloat(shellStyle.borderTopWidth || '0') +
+          Number.parseFloat(shellStyle.borderBottomWidth || '0')
+        const desiredHeight = Math.ceil(content.scrollHeight + shellFrameHeight)
+        if (desiredHeight <= 0) return
+        void window.hrs.resizeTrayToContent(desiredHeight).catch(error => {
+          console.warn('[tray] failed to resize to content', error)
+        })
+      })
+    }
+
+    const resizeObserver = new ResizeObserver(syncTrayHeight)
+    resizeObserver.observe(shell)
+    resizeObserver.observe(content)
+    const mutationObserver = new MutationObserver(syncTrayHeight)
+    mutationObserver.observe(content, {
+      subtree: true,
+      childList: true,
+      characterData: true,
+      attributes: true
+    })
+    window.addEventListener('resize', syncTrayHeight)
+    syncTrayHeight()
+
+    return () => {
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
+      resizeObserver.disconnect()
+      mutationObserver.disconnect()
+      window.removeEventListener('resize', syncTrayHeight)
+    }
+  }, [isTray])
 
   useEffect(() => {
     if (!isTray || !loggedIn || trayPanel !== 'meetings') return
@@ -11103,27 +11529,109 @@ export default function App() {
     return Number.isFinite(parsed) ? parsed : null
   }, [selectedQuickLogMission])
 
-  const selectedQuickLogMissionUsage = useMemo(() => {
-    if (!selectedQuickLogMission?.virtual || !selectedQuickLogMission.cappedHours) return null
-    const capMinutes = Math.round(selectedQuickLogMission.cappedHours * 60)
-    if (capMinutes <= 0) return null
-    const sharedUsage = selectedQuickLogMission.shared
-      ? sharedFictiveTaskUsage[selectedQuickLogMission.id]
+  const selectedQuickLogUsageCustomer =
+    selectedQuickLogMission?.customerName?.trim() || customerName?.trim() || ''
+  const selectedQuickLogUsageProject =
+    selectedQuickLogMission?.projectName?.trim() || projectName?.trim() || ''
+  const selectedQuickLogProjectKey =
+    selectedQuickLogUsageCustomer && selectedQuickLogUsageProject
+      ? getSharedProjectKey(selectedQuickLogUsageCustomer, selectedQuickLogUsageProject)
       : null
-    const usedMinutes = sharedUsage
-      ? Math.round(sharedUsage.usedSeconds / 60)
-      : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
-    const percent = (usedMinutes / capMinutes) * 100
-    const status = percent > 75 ? 'red' : percent > 50 ? 'yellow' : 'green'
-    return {
-      missionName: selectedQuickLogMission.name,
-      usedMinutes,
-      capMinutes,
-      percent,
-      status,
-      contributorCount: sharedUsage?.contributorCount ?? null
+  const selectedQuickLogProjectUsage = selectedQuickLogProjectKey
+    ? supabaseProjectUsageByKey[selectedQuickLogProjectKey] ?? null
+    : null
+
+  useEffect(() => {
+    if (!selectedQuickLogUsageCustomer || !selectedQuickLogUsageProject) return
+    if (!supabaseStatus?.email || !supabaseStatus.profile?.employee_id) return
+    void loadSupabaseProjectUsage(
+      selectedQuickLogUsageCustomer,
+      selectedQuickLogUsageProject
+    )
+  }, [
+    selectedQuickLogUsageCustomer,
+    selectedQuickLogUsageProject,
+    supabaseStatus?.email,
+    supabaseStatus?.profile?.employee_id
+  ])
+
+  const selectedQuickLogUsageGauges = useMemo<QuickUsageGauge[]>(() => {
+    if (!selectedQuickLogMission?.virtual) return []
+    const gauges: QuickUsageGauge[] = []
+    const toStatus = (percent: number): QuickUsageGauge['status'] =>
+      percent > 75 ? 'red' : percent > 50 ? 'yellow' : 'green'
+    const currentEmployeeName = getCurrentReporterName()
+    const projectCapMinutes = Math.round(
+      Math.max(0, selectedQuickLogMission.projectCappedHours ?? 0) * 60
+    )
+    if (projectCapMinutes > 0) {
+      const usedMinutes = selectedQuickLogProjectUsage
+        ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
+        : getProjectUsedMinutesFromReports(
+            selectedQuickLogUsageCustomer,
+            selectedQuickLogUsageProject,
+            allReportItems
+          )
+      const employees = selectedQuickLogProjectUsage
+        ? selectedQuickLogProjectUsage.employees.map(employee => ({
+            employeeId: employee.employeeId,
+            employeeName: employee.employeeName,
+            minutes: Math.round(employee.seconds / 60)
+          }))
+        : usedMinutes > 0
+          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+          : []
+      const percent = (usedMinutes / projectCapMinutes) * 100
+      gauges.push({
+        kind: 'project',
+        title: selectedQuickLogUsageProject || selectedQuickLogUsageCustomer || 'Project',
+        usedMinutes,
+        capMinutes: projectCapMinutes,
+        percent,
+        status: toStatus(percent),
+        employees
+      })
     }
-  }, [selectedQuickLogMission, allReportItems, sharedFictiveTaskUsage])
+
+    const taskCapMinutes = Math.round(
+      Math.max(0, selectedQuickLogMission.cappedHours ?? 0) * 60
+    )
+    if (taskCapMinutes > 0) {
+      const sharedUsage = selectedQuickLogMission.shared
+        ? sharedFictiveTaskUsage[selectedQuickLogMission.id]
+        : null
+      const usedMinutes = sharedUsage
+        ? Math.round(sharedUsage.usedSeconds / 60)
+        : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
+      const employees = sharedUsage
+        ? sharedUsage.employees.map(employee => ({
+            employeeId: employee.employeeId,
+            employeeName: employee.employeeName,
+            minutes: Math.round(employee.seconds / 60)
+          }))
+        : usedMinutes > 0
+          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+          : []
+      const percent = (usedMinutes / taskCapMinutes) * 100
+      gauges.push({
+        kind: 'task',
+        title: selectedQuickLogMission.name,
+        usedMinutes,
+        capMinutes: taskCapMinutes,
+        percent,
+        status: toStatus(percent),
+        employees
+      })
+    }
+    return gauges
+  }, [
+    selectedQuickLogMission,
+    selectedQuickLogProjectUsage,
+    selectedQuickLogUsageCustomer,
+    selectedQuickLogUsageProject,
+    allReportItems,
+    sharedFictiveTaskUsage
+  ])
 
   const filteredLogs = useMemo(() => {
     const preferredTaskId = selectedQuickLogMissionTaskId
@@ -12146,6 +12654,10 @@ export default function App() {
     setQuickFictiveName('')
     setQuickFictivePlannedHours('')
     setQuickFictiveCappedHours('')
+    const originalTask = selectedOriginalTaskId
+      ? taskMetaById.get(Number(selectedOriginalTaskId)) ?? null
+      : null
+    setQuickFictiveProjectCappedHours(getExistingProjectCappedHours(originalTask) ?? '')
     setQuickFictiveNotes('')
     setQuickFictiveError(null)
     setQuickFictiveJiraParentKey(null)
@@ -12214,6 +12726,8 @@ export default function App() {
 
     const plannedHours = parseMissionHoursInput(quickFictivePlannedHours)
     const cappedHours = parseMissionHoursInput(quickFictiveCappedHours)
+    const projectCappedHours = parseMissionHoursInput(quickFictiveProjectCappedHours)
+    const sharedProjectName = originalTask.projectName || originalTask.projectInstance || customer
     const description =
       quickFictiveNotes.trim() ||
       `UI task for ${originalTask.taskName || `HRS task ${quickFictiveOriginalTaskId}`}`
@@ -12226,7 +12740,8 @@ export default function App() {
         `parent=${selectedParentIssueKey}`,
         `customer=${customer}`,
         `originalTaskId=${quickFictiveOriginalTaskId}`,
-        `capHours=${cappedHours ?? 'none'}`
+        `taskCapHours=${cappedHours ?? 'none'}`,
+        `projectCapHours=${projectCappedHours ?? 'none'}`
       )
       if (quickFictiveJiraParentKey && quickFictiveJiraParentKey !== parentIssueKey) {
         await updateJiraMapping(customer, quickFictiveJiraParentKey)
@@ -12250,6 +12765,7 @@ export default function App() {
       )
       const mission = await window.hrs.upsertProjectMission({
         customerName: customer,
+        projectName: sharedProjectName,
         name: safeName,
         jiraIssueKey: createdIssue.key,
         hrsTaskIds: [quickFictiveOriginalTaskId],
@@ -12257,6 +12773,7 @@ export default function App() {
         assignedEmployees: [],
         plannedHours,
         cappedHours,
+        projectCappedHours,
         status: 'in_progress',
         dependencies: [],
         notes: description
@@ -12267,13 +12784,14 @@ export default function App() {
         sharedMission = await window.hrs.upsertSharedFictiveTask({
           id: mission.id,
           customerName: customer,
-          projectName: originalTask.projectName || originalTask.projectInstance || null,
+          projectName: sharedProjectName,
           originalHrsTaskId: quickFictiveOriginalTaskId,
           originalHrsTaskName: originalTask.taskName,
           jiraIssueKey: createdIssue.key,
           name: safeName,
           plannedHours,
           cappedHours,
+          projectCappedHours,
           status: 'in_progress',
           notes: description
         })
@@ -12282,7 +12800,7 @@ export default function App() {
           byId.set(sharedMission.id, sharedMission)
           return Array.from(byId.values()).sort((a, b) => a.name.localeCompare(b.name))
         })
-        await refreshSharedFictiveTaskUsage([sharedMission])
+        await loadSharedFictiveTasks()
       } catch (error) {
         sharingFailure = error instanceof Error ? error.message : String(error)
         console.warn('[SHARED FICTIVE TASK CREATE]', error)
@@ -12310,6 +12828,9 @@ export default function App() {
           createdCapMinutes > 0 ? `Cap: ${formatMinutesToLabel(createdCapMinutes)}` : '',
           createdCapMinutes > 0 ? `Used: 00:00 (0%)` : '',
           createdCapMinutes > 0 ? `Remaining: ${minutesToHHMM(createdCapMinutes)}` : '',
+          projectCappedHours && projectCappedHours > 0
+            ? `Global project cap: ${formatMinutesToLabel(Math.round(projectCappedHours * 60))}`
+            : '',
           plannedHours && plannedHours > 0 ? `Planned: ${plannedHours}h` : '',
           `Original HRS task: ${originalTask.taskName}`,
           description ? `Notes: ${description}` : ''
@@ -12412,29 +12933,73 @@ export default function App() {
   }
 
   function renderQuickFictiveUsageBar(compact = false) {
-    if (!selectedQuickLogMissionUsage) return null
-    const width = `${Math.min(Math.max(selectedQuickLogMissionUsage.percent, 0), 100)}%`
-    const percentLabel = `${Math.round(selectedQuickLogMissionUsage.percent)}%`
+    if (!selectedQuickLogUsageGauges.length) return null
     return (
-      <div className={`quick-fictive-usage${compact ? ' is-compact' : ''}`}>
-        <Group justify="space-between" align="center" wrap="nowrap" gap="xs">
-          <Text size={compact ? 'xs' : 'sm'} fw={700} truncate>
-            {selectedQuickLogMissionUsage.missionName}
-          </Text>
-          <Text size={compact ? 'xs' : 'sm'} c="dimmed" className="quick-fictive-usage-hours">
-            {minutesToHHMM(selectedQuickLogMissionUsage.usedMinutes)} /{' '}
-            {formatMinutesToLabel(selectedQuickLogMissionUsage.capMinutes)} · {percentLabel}
-            {selectedQuickLogMissionUsage.contributorCount !== null
-              ? ` · ${selectedQuickLogMissionUsage.contributorCount} people`
-              : ''}
-          </Text>
-        </Group>
-        <div className="quick-fictive-usage-track" aria-label="Task utilization">
-          <div
-            className={`quick-fictive-usage-fill is-${selectedQuickLogMissionUsage.status}`}
-            style={{ '--quick-fictive-progress': width } as CSSProperties}
-          />
-        </div>
+      <div className={`quick-fictive-usage-stack${compact ? ' is-compact' : ''}`}>
+        {selectedQuickLogUsageGauges.map(gauge => {
+          const width = `${Math.min(Math.max(gauge.percent, 0), 100)}%`
+          const percentLabel = `${Math.round(gauge.percent)}%`
+          return (
+            <div
+              className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
+              key={gauge.kind}
+            >
+              <Group justify="space-between" align="flex-start" wrap="nowrap" gap="xs">
+                <div className="quick-fictive-usage-title">
+                  <span className="quick-fictive-usage-kind">
+                    {gauge.kind === 'project' ? 'Overall project' : 'Shared task'}
+                  </span>
+                  <Text size={compact ? 'xs' : 'sm'} fw={700} truncate>
+                    {gauge.title}
+                  </Text>
+                </div>
+                <Text
+                  size={compact ? 'xs' : 'sm'}
+                  c="dimmed"
+                  className="quick-fictive-usage-hours"
+                >
+                  {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
+                  {percentLabel}
+                </Text>
+              </Group>
+              <div
+                className="quick-fictive-usage-track"
+                aria-label={`${gauge.kind === 'project' ? 'Project' : 'Task'} utilization`}
+              >
+                <div
+                  className={`quick-fictive-usage-fill is-${gauge.status}`}
+                  style={{ '--quick-fictive-progress': width } as CSSProperties}
+                />
+              </div>
+              {gauge.employees.length > 0 && (
+                <div className="quick-fictive-usage-employees">
+                  {gauge.employees.map(employee => {
+                    const share = gauge.usedMinutes > 0
+                      ? Math.round((employee.minutes / gauge.usedMinutes) * 100)
+                      : 0
+                    return (
+                      <div
+                        className="quick-fictive-usage-employee"
+                        key={`${gauge.kind}-${employee.employeeId ?? employee.employeeName}`}
+                        title={`${share}% of used ${gauge.kind} hours`}
+                      >
+                        <span className="quick-fictive-usage-avatar">
+                          {employee.employeeName.trim().charAt(0).toUpperCase() || '?'}
+                        </span>
+                        <span className="quick-fictive-usage-employee-name">
+                          {employee.employeeName}
+                        </span>
+                        <span className="quick-fictive-usage-employee-value">
+                          {minutesToHHMM(employee.minutes)} · {share}%
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </div>
+          )
+        })}
       </div>
     )
   }
@@ -13169,22 +13734,77 @@ export default function App() {
     setCustomerAliasDraft('')
   }
 
-  const getEmployeeWorkloadProjectKey = (entry: {
-    rawCustomer?: string
-    customer?: string
-    milestone?: string
-  }) => {
-    const rawCustomer = entry.rawCustomer?.trim() || entry.customer?.trim() || 'No customer'
-    const project = entry.milestone?.trim() || rawCustomer
-    return `${normalizeText(rawCustomer).toLowerCase()}\u0000${normalizeText(project).toLowerCase()}`
-  }
+  const visibleSharedProjectMonthKey = dayjs(reportMonth).format('YYYY-MM')
+  const automaticSharedProjectRows =
+    sharedProjectReportMonthKey === visibleSharedProjectMonthKey ? sharedProjectReportRows : []
+  const employeeWorkloadUsesSupabase = Boolean(
+    supabaseStatus?.email &&
+      supabaseStatus.profile?.employee_id
+  )
+
+  const ownLiveHrsWorkloadEntries = useMemo(() => {
+    const employeeId = supabaseStatus?.profile?.employee_id
+    if (reportSource !== 'hrs' || !monthlyReport || !employeeId) return []
+    const normalizedEmployeeId = String(employeeId)
+    const employee =
+      supabaseStatus.profile?.display_name?.trim() ||
+      supabaseStatus.email?.trim() ||
+      storedUsername?.trim() ||
+      `Employee ${normalizedEmployeeId}`
+
+    return monthlyReport.days.flatMap(day =>
+      day.reports.flatMap(report => {
+        const minutes = parseHoursHHMMToMinutes(report.hours_HHMM)
+        if (minutes <= 0) return []
+        const meta = taskMetaById.get(report.taskId)
+        const mission = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
+          date: day.date,
+          taskId: report.taskId,
+          hoursHHMM: report.hours_HHMM,
+          comment: report.comment,
+          reportingFrom: report.reporting_from
+        })
+        const rawCustomer =
+          mission?.customerName || meta?.customerName || report.projectInstance || 'Unknown'
+        const project =
+          mission?.projectName || meta?.projectName || report.projectInstance || rawCustomer
+        return [
+          {
+            date: normalizeReportDateKey(day.date),
+            employeeId: normalizedEmployeeId,
+            employee,
+            customer: getReportCustomerDisplayName(rawCustomer),
+            rawCustomer,
+            task: mission?.virtual ? mission.name : report.taskName,
+            project,
+            milestone: project,
+            hoursHHMM: report.hours_HHMM,
+            minutes,
+            rawValue: report.hours_HHMM,
+            taskId: String(report.taskId)
+          }
+        ]
+      })
+    )
+  }, [
+    allProjectMissions,
+    getReportCustomerDisplayName,
+    monthlyReport,
+    reportMissionMap,
+    reportSource,
+    storedUsername,
+    supabaseStatus,
+    taskMetaById
+  ])
 
   const employeeWorkloadBaseEntries = useMemo(() => {
-    if (reportSource === 'supabase') {
-      const rows = supabaseReportRows
+    if (employeeWorkloadUsesSupabase) {
+      const sourceRows = reportSource === 'supabase' ? supabaseReportRows : automaticSharedProjectRows
+      const rows = sourceRows
         .filter(row => row.seconds > 0)
         .map(row => {
           const rawCustomer = row.customer?.trim() || 'No customer'
+          const project = row.project?.trim() || rawCustomer
           return {
             date: normalizeReportDateKey(row.report_date),
             employeeId: String(row.employee_id),
@@ -13192,7 +13812,8 @@ export default function App() {
             customer: getReportCustomerDisplayName(rawCustomer),
             rawCustomer,
             task: row.task_name?.trim() || row.project?.trim() || 'No task',
-            milestone: row.project?.trim() || '',
+            project,
+            milestone: project,
             hoursHHMM: secondsToHHMM(row.seconds),
             minutes: Math.round(row.seconds / 60),
             rawValue: secondsToHHMM(row.seconds),
@@ -13207,19 +13828,24 @@ export default function App() {
         : ''
       if (!viewerEmployeeId) return []
 
+      const rowsWithLiveOwnData =
+        reportSource === 'hrs' && monthlyReport
+          ? replaceEmployeeEntriesWithLive(rows, viewerEmployeeId, ownLiveHrsWorkloadEntries)
+          : rows
+
       const ownShareableProjectKeys = new Set(
-        rows
+        rowsWithLiveOwnData
           .filter(row => {
             if (row.employeeId !== viewerEmployeeId) return false
             return !isNonBillableEmployeeCustomer(row.rawCustomer)
           })
-          .map(row => getEmployeeWorkloadProjectKey(row))
+          .map(row => getSharedProjectKey(row.rawCustomer, row.project))
       )
 
-      return rows.filter(row => {
+      return rowsWithLiveOwnData.filter(row => {
         if (row.employeeId === viewerEmployeeId) return true
         if (isNonBillableEmployeeCustomer(row.rawCustomer)) return false
-        return ownShareableProjectKeys.has(getEmployeeWorkloadProjectKey(row))
+        return ownShareableProjectKeys.has(getSharedProjectKey(row.rawCustomer, row.project))
       })
     }
     return (employeeReport?.entries ?? []).filter(entry => {
@@ -13231,13 +13857,24 @@ export default function App() {
         ...entry,
         employeeId: null,
         customer: getReportCustomerDisplayName(rawCustomer),
-        rawCustomer
+        rawCustomer,
+        project: entry.milestone?.trim() || rawCustomer
       }
     })
-  }, [employeeReport, getReportCustomerDisplayName, reportSource, supabaseReportRows, supabaseStatus])
+  }, [
+    automaticSharedProjectRows,
+    employeeReport,
+    employeeWorkloadUsesSupabase,
+    getReportCustomerDisplayName,
+    monthlyReport,
+    ownLiveHrsWorkloadEntries,
+    reportSource,
+    supabaseReportRows,
+    supabaseStatus
+  ])
 
   const isRegularSupabaseReporter =
-    reportSource === 'supabase' && supabaseStatus?.profile?.role !== 'manager'
+    employeeWorkloadUsesSupabase && supabaseStatus?.profile?.role !== 'manager'
   const regularSupabaseEmployeeId = supabaseStatus?.profile?.employee_id
     ? String(supabaseStatus.profile.employee_id)
     : ''
@@ -13258,6 +13895,7 @@ export default function App() {
     isRegularSupabaseReporter && regularSupabaseVisibleEmployees.size > 1
   const regularSupabaseFiltersLocked =
     isRegularSupabaseReporter && !regularSupabaseHasCrossProjectPeers
+  const regularSupabaseFiltersWereLockedRef = useRef(false)
 
   const employeeWorkloadFilterOptions = useMemo(() => {
     const employees = new Map<string, number>()
@@ -13290,12 +13928,20 @@ export default function App() {
 
   useEffect(() => {
     if (regularSupabaseFiltersLocked) {
+      regularSupabaseFiltersWereLockedRef.current = true
       if (regularSupabaseEmployeeName && employeeWorkloadEmployeeFilter !== regularSupabaseEmployeeName) {
         setEmployeeWorkloadEmployeeFilter(regularSupabaseEmployeeName)
       }
       if (employeeWorkloadCustomerFilter) setEmployeeWorkloadCustomerFilter(null)
       if (employeeWorkloadTaskFilter) setEmployeeWorkloadTaskFilter(null)
       return
+    }
+    if (regularSupabaseFiltersWereLockedRef.current) {
+      regularSupabaseFiltersWereLockedRef.current = false
+      if (employeeWorkloadEmployeeFilter === regularSupabaseEmployeeName) {
+        setEmployeeWorkloadEmployeeFilter(null)
+        return
+      }
     }
     if (
       employeeWorkloadEmployeeFilter &&
@@ -13341,194 +13987,54 @@ export default function App() {
     employeeWorkloadTaskFilter
   ])
 
-  const employeeProjectWorkload = useMemo(() => {
-    const employeeMap = new Map<
-      string,
-      {
-        employee: string
-        totalMinutes: number
-        customers: Map<
-          string,
-          {
-            customer: string
-            rawCustomer: string
-            totalMinutes: number
-            tasks: Map<string, { task: string; totalMinutes: number }>
-          }
-        >
-      }
-    >()
-
-    for (const entry of employeeWorkloadEntries) {
-      const employee = entry.employee?.trim() || 'Employee'
-      const customer = entry.customer?.trim() || 'No customer'
-      const rawCustomer = entry.rawCustomer?.trim() || customer
-      const task = entry.task?.trim() || 'No task'
-      const employeeRow =
-        employeeMap.get(employee) ?? {
-          employee,
-          totalMinutes: 0,
-          customers: new Map<
-            string,
-            {
-              customer: string
-              rawCustomer: string
-              totalMinutes: number
-              tasks: Map<string, { task: string; totalMinutes: number }>
-            }
-          >()
-        }
-
-      employeeRow.totalMinutes += entry.minutes
-
-      const customerRow =
-        employeeRow.customers.get(rawCustomer) ?? {
-          customer,
-          rawCustomer,
-          totalMinutes: 0,
-          tasks: new Map<string, { task: string; totalMinutes: number }>()
-        }
-      customerRow.totalMinutes += entry.minutes
-
-      const taskRow = customerRow.tasks.get(task) ?? { task, totalMinutes: 0 }
-      taskRow.totalMinutes += entry.minutes
-      customerRow.tasks.set(task, taskRow)
-      employeeRow.customers.set(rawCustomer, customerRow)
-      employeeMap.set(employee, employeeRow)
-    }
-
-    return Array.from(employeeMap.values())
-      .map(employee => ({
-        employee: employee.employee,
-        totalMinutes: employee.totalMinutes,
-        customers: Array.from(employee.customers.values())
-          .map(customer => ({
-            customer: customer.customer,
-            rawCustomer: customer.rawCustomer,
-            totalMinutes: customer.totalMinutes,
-            tasks: Array.from(customer.tasks.values()).sort(
-              (a, b) => b.totalMinutes - a.totalMinutes || a.task.localeCompare(b.task)
-            )
-          }))
-          .sort((a, b) => b.totalMinutes - a.totalMinutes || a.customer.localeCompare(b.customer))
-      }))
-      .sort((a, b) => b.totalMinutes - a.totalMinutes || a.employee.localeCompare(b.employee))
-  }, [employeeWorkloadEntries])
-
-  const employeeSharedTasks = useMemo(() => {
-    const taskMap = new Map<
-      string,
-      {
-        customer: string
-        task: string
-        rawCustomer: string
-        totalMinutes: number
-        taskIds: Set<string>
-        employees: Map<string, { employee: string; totalMinutes: number }>
-      }
-    >()
-
-    for (const entry of employeeWorkloadEntries) {
-      const employee = entry.employee?.trim() || 'Employee'
-      const customer = entry.customer?.trim() || 'No customer'
-      const rawCustomer = entry.rawCustomer?.trim() || customer
-      const task = entry.task?.trim() || 'No task'
-      const key = `${rawCustomer}\u0000${task}`
-      const row =
-        taskMap.get(key) ?? {
-          customer,
-          rawCustomer,
-          task,
-          totalMinutes: 0,
-          taskIds: new Set<string>(),
-          employees: new Map<string, { employee: string; totalMinutes: number }>()
-        }
-      row.totalMinutes += entry.minutes
-      if (entry.taskId) row.taskIds.add(String(entry.taskId))
-      const employeeRow = row.employees.get(employee) ?? { employee, totalMinutes: 0 }
-      employeeRow.totalMinutes += entry.minutes
-      row.employees.set(employee, employeeRow)
-      taskMap.set(key, row)
-    }
-
-    return Array.from(taskMap.values())
-      .map(row => {
-        const taskIds = Array.from(row.taskIds)
-        const cappedMission = allProjectMissions.find(mission => {
-          if (!mission.cappedHours || mission.cappedHours <= 0) return false
-          if (mission.customerName && mission.customerName !== row.rawCustomer) return false
-          const missionTaskIds = (mission.hrsTaskIds ?? []).map(String)
-          return missionTaskIds.some(taskId => taskIds.includes(taskId))
-        })
-        return {
-          customer: row.customer,
-          rawCustomer: row.rawCustomer,
-          task: row.task,
-          totalMinutes: row.totalMinutes,
-          capMinutes: cappedMission?.cappedHours
-            ? Math.round(cappedMission.cappedHours * 60)
-            : null,
-          employees: Array.from(row.employees.values()).sort(
-            (a, b) => b.totalMinutes - a.totalMinutes || a.employee.localeCompare(b.employee)
-          )
-        }
-      })
-      .filter(row => row.employees.length > 1 && !isNonBillableEmployeeCustomer(row.rawCustomer))
-      .sort(
-        (a, b) =>
-          b.totalMinutes - a.totalMinutes ||
-          a.customer.localeCompare(b.customer) ||
-          a.task.localeCompare(b.task)
-      )
-  }, [employeeWorkloadEntries, allProjectMissions])
-
-  const employeeSharedTaskKeys = useMemo(
-    () => new Set(employeeSharedTasks.map(row => `${row.rawCustomer}\u0000${row.task}`)),
-    [employeeSharedTasks]
+  const employeeProjectWorkload = useMemo(
+    () => aggregateEmployeeProjects(employeeWorkloadEntries as SharedProjectSourceEntry[]),
+    [employeeWorkloadEntries]
   )
 
-  const individualEmployeeProjectWorkload = useMemo(() => {
-    return employeeProjectWorkload
-      .map(employee => {
-        const customers = employee.customers
-          .filter(customer => !isNonBillableEmployeeCustomer(customer.rawCustomer))
-          .map(customer => {
-            const tasks = customer.tasks.filter(
-              task => !employeeSharedTaskKeys.has(`${customer.rawCustomer}\u0000${task.task}`)
-            )
-            const totalMinutes = tasks.reduce((sum, task) => sum + task.totalMinutes, 0)
-            return {
-              ...customer,
-              tasks,
-              totalMinutes
-            }
-          })
-          .filter(customer => customer.tasks.length)
-
-        return {
-          ...employee,
-          customers,
-          totalMinutes: customers.reduce((sum, customer) => sum + customer.totalMinutes, 0)
-        }
-      })
-      .filter(employee => employee.customers.length)
-  }, [employeeProjectWorkload, employeeSharedTaskKeys])
-
-  const internalEmployeeProjectWorkload = useMemo(() => {
-    return employeeProjectWorkload
-      .map(employee => {
-        const customers = employee.customers.filter(customer =>
-          isNonBillableEmployeeCustomer(customer.rawCustomer)
+  const employeeSharedProjects = useMemo(() => {
+    return aggregateSharedProjects(employeeWorkloadEntries as SharedProjectSourceEntry[])
+      .filter(row => row.employees.length > 1 && !isNonBillableEmployeeCustomer(row.rawCustomer))
+      .map(row => {
+        const capMinutes = getSharedProjectCapMinutes(
+          allProjectMissions,
+          row.rawCustomer,
+          row.project
         )
-
         return {
-          ...employee,
-          customers,
-          totalMinutes: customers.reduce((sum, customer) => sum + customer.totalMinutes, 0)
+          ...row,
+          capMinutes: capMinutes > 0 ? capMinutes : null
         }
       })
-      .filter(employee => employee.customers.length)
-  }, [employeeProjectWorkload])
+  }, [employeeWorkloadEntries, allProjectMissions])
+
+  const employeeSharedProjectKeys = useMemo(
+    () => new Set(employeeSharedProjects.map(row => row.key)),
+    [employeeSharedProjects]
+  )
+
+  const individualEmployeeProjectWorkload = useMemo(
+    () =>
+      aggregateEmployeeProjects(
+        employeeWorkloadEntries.filter(entry => {
+          if (isNonBillableEmployeeCustomer(entry.rawCustomer)) return false
+          return !employeeSharedProjectKeys.has(
+            getSharedProjectKey(entry.rawCustomer, entry.project)
+          )
+        }) as SharedProjectSourceEntry[]
+      ),
+    [employeeWorkloadEntries, employeeSharedProjectKeys]
+  )
+
+  const internalEmployeeProjectWorkload = useMemo(
+    () =>
+      aggregateEmployeeProjects(
+        employeeWorkloadEntries.filter(entry =>
+          isNonBillableEmployeeCustomer(entry.rawCustomer)
+        ) as SharedProjectSourceEntry[]
+      ),
+    [employeeWorkloadEntries]
+  )
 
   const renderEditableReportCustomerName = (customer: string, rawCustomer: string) => {
     const key = getReportCustomerAliasKey(rawCustomer)
@@ -13618,12 +14124,14 @@ export default function App() {
   }
 
   function renderEmployeeProjectWorkloadCard() {
-    const hasEmployeeAccess =
-      reportSource === 'supabase'
-        ? Boolean(supabaseStatus?.profile)
-        : Boolean(employeesResult?.hasAccess && getReportableEmployees().length)
-    const workloadLoading =
-      reportSource === 'supabase' ? reportsLoading : employeeReportLoading || employeesLoading
+    const hasEmployeeAccess = employeeWorkloadUsesSupabase
+      ? Boolean(supabaseStatus?.profile)
+      : Boolean(employeesResult?.hasAccess && getReportableEmployees().length)
+    const workloadLoading = employeeWorkloadUsesSupabase
+      ? reportSource === 'supabase'
+        ? reportsLoading
+        : sharedProjectReportsLoading
+      : employeeReportLoading || employeesLoading
     const filtersDisabled = workloadLoading || !employeeWorkloadBaseEntries.length
     const workloadFiltersLocked = regularSupabaseFiltersLocked
     const filtersActive = Boolean(
@@ -13631,7 +14139,9 @@ export default function App() {
     )
     const hasInternalWorkloadRows = internalEmployeeProjectWorkload.length > 0
     const hasWorkloadRows =
-      individualEmployeeProjectWorkload.length || employeeSharedTasks.length || hasInternalWorkloadRows
+      individualEmployeeProjectWorkload.length ||
+      employeeSharedProjects.length ||
+      hasInternalWorkloadRows
     return (
       <Card radius="md" withBorder className="tray-employee-workload-card">
         <Stack gap="xs">
@@ -13641,13 +14151,15 @@ export default function App() {
                 Employee projects
               </Text>
               <Text size="xs" c="dimmed" lineClamp={2}>
-                Customers, tasks, and reported hours by employee for{' '}
-                {dayjs(reportMonth).format('MMMM YYYY')}.
+                Personal KPIs stay on Live HRS. Cross projects combine Supabase hours by customer
+                and project for {dayjs(reportMonth).format('MMMM YYYY')}.
               </Text>
             </Stack>
-            <Badge size="xs" variant="light" color="teal">
-              {employeeProjectWorkload.length} people
-            </Badge>
+            {employeeProjectWorkload.length > 1 ? (
+              <Badge size="xs" variant="light" color="teal">
+                {employeeProjectWorkload.length} people
+              </Badge>
+            ) : null}
           </Group>
 
           <SimpleGrid cols={3} spacing="xs" className="tray-employee-workload-filters">
@@ -13736,6 +14248,10 @@ export default function App() {
                 Loading employee workload...
               </Text>
             </Group>
+          ) : sharedProjectReportsError && employeeWorkloadUsesSupabase && reportSource === 'hrs' ? (
+            <Text size="xs" c="red">
+              Cross-project data could not be loaded: {sharedProjectReportsError}
+            </Text>
           ) : hasWorkloadRows ? (
             <div className="tray-employee-workload-results">
               <div className="tray-employee-workload-split">
@@ -13766,7 +14282,7 @@ export default function App() {
                                 <Stack gap={6}>
                                   {employee.customers.map(customer => (
                                     <div
-                                      key={`${employee.employee}-${customer.customer}`}
+                                      key={`${employee.employee}-${customer.projectKey}`}
                                       className="tray-employee-workload-customer"
                                     >
                                       <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
@@ -13778,6 +14294,9 @@ export default function App() {
                                           {minutesToHHMM(customer.totalMinutes)}
                                         </Text>
                                       </Group>
+                                      <Text size="xs" c="dimmed" lineClamp={1} mt={2}>
+                                        {customer.project}
+                                      </Text>
                                       <Stack gap={3} mt={4}>
                                         {customer.tasks.map(task => (
                                           <Group
@@ -13818,28 +14337,47 @@ export default function App() {
                     <Text size="xs" fw={800}>
                       Cross projects
                     </Text>
-                    {employeeSharedTasks.length ? (
+                    {employeeSharedProjects.length ? (
                       <Stack gap={6} className="tray-employee-workload-list">
-                        {employeeSharedTasks.map(row => (
+                        {employeeSharedProjects.map(row => (
                           <div
-                            key={`${row.customer}-${row.task}`}
+                            key={row.key}
                             className="tray-employee-workload-shared-task"
                           >
                             <Group justify="space-between" align="flex-start" gap="xs" wrap="nowrap">
                               <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
                                 {renderEditableReportCustomerName(row.customer, row.rawCustomer)}
                                 <Text size="xs" c="dimmed" lineClamp={1}>
-                                  {row.task}
+                                  {row.project}
                                 </Text>
+                                {row.tasks.length ? (
+                                  <Text size="xs" c="dimmed" lineClamp={1}>
+                                    Tasks: {row.tasks.map(task => task.task).join(' · ')}
+                                  </Text>
+                                ) : null}
                               </Stack>
                               <Text size="xs" fw={800} className="tray-employee-workload-hours">
                                 {minutesToHHMM(row.totalMinutes)}
+                                {row.capMinutes ? ` / ${minutesToHHMM(row.capMinutes)}` : ''}
                               </Text>
                             </Group>
+                            {row.capMinutes ? (
+                              <div className="tray-employee-workload-cap-track">
+                                <div
+                                  className="tray-employee-workload-cap-fill"
+                                  style={{
+                                    width: `${Math.min(
+                                      100,
+                                      Math.round((row.totalMinutes / row.capMinutes) * 100)
+                                    )}%`
+                                  }}
+                                />
+                              </div>
+                            ) : null}
                             <Stack gap={5} mt={6} className="tray-employee-workload-people">
                               {row.employees.map(person => (
                                 <div
-                                  key={`${row.customer}-${row.task}-${person.employee}`}
+                                  key={`${row.key}-${person.employee}`}
                                   className="tray-employee-workload-person-row"
                                 >
                                   <Group justify="space-between" gap="xs" wrap="nowrap">
@@ -13848,21 +14386,12 @@ export default function App() {
                                     </Text>
                                     <Text size="xs" fw={800} className="tray-employee-workload-hours">
                                       {minutesToHHMM(person.totalMinutes)}
-                                      {row.capMinutes ? ` / ${minutesToHHMM(row.capMinutes)}` : ''}
                                     </Text>
                                   </Group>
-                                  {row.capMinutes ? (
-                                    <div className="tray-employee-workload-cap-track">
-                                      <div
-                                        className="tray-employee-workload-cap-fill"
-                                        style={{
-                                          width: `${Math.min(
-                                            100,
-                                            Math.round((person.totalMinutes / row.capMinutes) * 100)
-                                          )}%`
-                                        }}
-                                      />
-                                    </div>
+                                  {person.tasks.length ? (
+                                    <Text size="xs" c="dimmed" lineClamp={1}>
+                                      {person.tasks.map(task => task.task).join(' · ')}
+                                    </Text>
                                   ) : null}
                                 </div>
                               ))}
@@ -13904,7 +14433,7 @@ export default function App() {
                               <Stack gap={6}>
                                 {employee.customers.map(customer => (
                                   <div
-                                    key={`internal-${employee.employee}-${customer.rawCustomer}`}
+                                    key={`internal-${employee.employee}-${customer.projectKey}`}
                                     className="tray-employee-workload-customer"
                                   >
                                     <Group justify="space-between" align="center" gap="xs" wrap="nowrap">
@@ -13916,6 +14445,9 @@ export default function App() {
                                         {minutesToHHMM(customer.totalMinutes)}
                                       </Text>
                                     </Group>
+                                    <Text size="xs" c="dimmed" lineClamp={1} mt={2}>
+                                      {customer.project}
+                                    </Text>
                                     <Stack gap={3} mt={4}>
                                       {customer.tasks.map(task => (
                                         <Group
@@ -15433,7 +15965,7 @@ export default function App() {
           <Alert color="teal" variant="light" radius="md">
             This meeting will be reported to the original HRS task and attributed to{' '}
             <strong>{meetingLogMission.name}</strong>. Its hours will update the
-            {meetingLogMission.shared ? ' shared team' : ''} gauge
+            {meetingLogMission.shared ? ' shared team' : ''} task gauge
             {meetingLogMission.cappedHours
               ? ` (${minutesToHHMM(
                   Math.round(
@@ -15442,6 +15974,11 @@ export default function App() {
                       : getMissionUsedMinutesFromReports(meetingLogMission, allReportItems))
                   )
                 )} / ${formatMinutesToLabel(Math.round(meetingLogMission.cappedHours * 60))})`
+              : ''}
+            {meetingLogMission.projectCappedHours
+              ? ` and the overall project gauge (${formatMinutesToLabel(
+                  Math.round(meetingLogMission.projectCappedHours * 60)
+                )} cap)`
               : ''}
             .
           </Alert>
@@ -15553,6 +16090,22 @@ export default function App() {
     : null
   const quickFictiveJiraParentValue = quickFictiveJiraParentKey ?? quickFictiveMappedJiraParent
 
+  function getExistingProjectCappedHours(task: WorkLog | null) {
+    if (!task) return null
+    const taskCustomer = task.customerName?.trim()
+    const taskProject = (task.projectName || task.projectInstance || taskCustomer)?.trim()
+    if (!taskCustomer || !taskProject) return null
+    const projectKey = getSharedProjectKey(taskCustomer, taskProject)
+    return (
+      allProjectMissions.find(
+        mission =>
+          mission.projectCappedHours !== null &&
+          mission.projectCappedHours !== undefined &&
+          getSharedProjectKey(mission.customerName, mission.projectName) === projectKey
+      )?.projectCappedHours ?? null
+    )
+  }
+
   const quickFictiveTaskModal = (
     <Modal
       opened={quickFictiveModalOpen}
@@ -15565,16 +16118,24 @@ export default function App() {
       <Stack gap="sm">
         <Text size="sm" c="dimmed">
           This shared task is visible to every connected HRS Desktop user. Reports still go to the
-          original HRS task, while team hours update the same shared cap and progress gauge.
+          original HRS task. The project budget and this task's budget are measured independently.
         </Text>
         <Alert
-          color={supabaseStatus?.email && sharedFictiveTasksAvailable === true ? 'teal' : 'yellow'}
+          color={
+            supabaseStatus?.email &&
+            sharedFictiveTasksAvailable === true &&
+            sharedProjectHoursAvailable === true
+              ? 'teal'
+              : 'yellow'
+          }
           variant="light"
           radius="md"
         >
           {supabaseStatus?.email
             ? sharedFictiveTasksAvailable === true
-              ? 'Team sharing is connected.'
+              ? sharedProjectHoursAvailable === true
+                ? 'Team sharing and global project hours are connected.'
+                : 'Team sharing is connected. Apply migration 003_global_project_hours.sql to add global project hours.'
               : 'Apply Supabase migration 002_shared_fictive_tasks.sql to enable team sharing.'
             : 'Connect Supabase in Settings to create shared tasks.'}
         </Alert>
@@ -15586,6 +16147,8 @@ export default function App() {
           onChange={value => {
             setQuickFictiveOriginalTaskId(value)
             setQuickFictiveJiraParentKey(null)
+            const task = value ? taskMetaById.get(Number(value)) ?? null : null
+            setQuickFictiveProjectCappedHours(getExistingProjectCappedHours(task) ?? '')
           }}
           searchable
           nothingFoundMessage="No HRS tasks in the current scope"
@@ -15631,13 +16194,26 @@ export default function App() {
             min={0}
           />
           <NumberInput
-            label="Cap hours"
+            label="Task cap hours"
             placeholder="Hard cap"
             value={quickFictiveCappedHours}
             onChange={setQuickFictiveCappedHours}
             min={0}
           />
         </SimpleGrid>
+        <NumberInput
+          label="Global project hours"
+          description="One shared budget for every task and employee in this customer/project."
+          placeholder={
+            sharedProjectHoursAvailable === true
+              ? 'Overall project cap'
+              : 'Requires Supabase migration 003'
+          }
+          value={quickFictiveProjectCappedHours}
+          onChange={setQuickFictiveProjectCappedHours}
+          min={0}
+          disabled={sharedProjectHoursAvailable !== true}
+        />
         <Textarea
           label="Notes"
           placeholder="Milestone, scope, or reporting rule"
@@ -15904,6 +16480,44 @@ export default function App() {
       >
         {quickFictiveTaskModal}
         <Stack gap="sm" className="tray-content">
+          {window.hrs && (
+            <Group gap={4} justify="flex-end" className="tray-window-controls">
+              <Tooltip
+                label={trayPinned ? 'Unpin: close when focus is lost' : 'Pin: keep open'}
+                withArrow
+                openDelay={120}
+                withinPortal
+              >
+                <ActionIcon
+                  className={`tray-window-control-btn${trayPinned ? ' is-active' : ''}`}
+                  size={30}
+                  radius="md"
+                  variant={trayPinned ? 'light' : 'subtle'}
+                  color="cyan"
+                  onClick={() => void toggleTrayPinned()}
+                  aria-label={trayPinned ? 'Unpin tray' : 'Pin tray'}
+                  aria-pressed={trayPinned}
+                  title={trayPinned ? 'Unpin tray' : 'Pin tray'}
+                >
+                  <IconPin size={16} stroke={2.2} />
+                </ActionIcon>
+              </Tooltip>
+              <Tooltip label="Close tray" withArrow openDelay={120} withinPortal>
+                <ActionIcon
+                  className="tray-window-control-btn is-close"
+                  size={30}
+                  radius="md"
+                  variant="subtle"
+                  color="red"
+                  onClick={() => void dismissTray()}
+                  aria-label="Close tray"
+                  title="Close tray"
+                >
+                  <IconX size={16} stroke={2.2} />
+                </ActionIcon>
+              </Tooltip>
+            </Group>
+          )}
           {!window.hrs && (
             <Alert color="red" variant="light" radius="md">
               App bridge failed to load. Please restart the app.
@@ -15944,23 +16558,40 @@ export default function App() {
                 </Alert>
               )}
               {sessionError && (
-                <Alert color="red" variant="light" radius="md">
+                <Alert
+                  color={isTemporaryHrsSessionError(sessionError) ? 'yellow' : 'red'}
+                  variant="light"
+                  radius="md"
+                >
                   {sessionError}
                 </Alert>
               )}
-              <Text size="xs" c="dimmed">
-                Reset saved credentials and enter them again from the main login page.
-              </Text>
-              <Button
-                size="xs"
-                variant="light"
-                color="red"
-                onClick={() => {
-                  void resetHrsCredentialsAndOpenLogin()
-                }}
-              >
-                Reset credentials
-              </Button>
+              {isTemporaryHrsSessionError(sessionError) ? (
+                <Button size="xs" variant="light" onClick={() => void retryTrayLogin()}>
+                  Retry connection
+                </Button>
+              ) : (
+                <>
+                  <Text size="xs" c="dimmed">
+                    Reset saved credentials only if your HRS username or password changed.
+                  </Text>
+                  <Group grow gap="xs">
+                    <Button size="xs" onClick={() => void retryTrayLogin()}>
+                      Login to HRS
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      color="red"
+                      onClick={() => {
+                        void resetHrsCredentialsAndOpenLogin()
+                      }}
+                    >
+                      Reset credentials
+                    </Button>
+                  </Group>
+                </>
+              )}
             </Stack>
           )}
 
@@ -16567,7 +17198,7 @@ export default function App() {
                       <Group justify="space-between" align="center" wrap="nowrap">
                         <Stack gap={2}>
                           <Text size="xs" fw={600}>
-                            Meeting sync uses Chrome headless mode.
+                            Meeting sync runs fully in the background. DUO choices appear here in HRS Desktop.
                           </Text>
                           <Text size="xs" c="dimmed">
                             Credentials are in Settings → Access.
@@ -19199,12 +19830,13 @@ export default function App() {
         <Modal
           opened={credentialsModalOpen}
           onClose={() => setCredentialsModalOpen(false)}
-          title="Auto-login credentials"
+          title="HRS credentials"
           centered
         >
           <Stack gap="sm">
             <Text size="sm" c="dimmed">
-              Stored in your Keychain and used only to auto-login when a session expires.
+              Stored securely in your OS credential store. They are used for automatic login only
+              when Auto-login is enabled.
             </Text>
             <TextInput
               label="Username"

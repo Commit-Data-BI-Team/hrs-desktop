@@ -7,7 +7,7 @@ import {
   getAgendaAiConfig,
   setAgendaAiConfig
 } from '../ai/config'
-import { ensurePythonEnv, resolvePackagedScriptPath, resolvePythonBin } from './pythonRuntime'
+import { resolvePythonRunner } from './pythonRuntime'
 
 type AgendaOptions = {
   token?: string | null
@@ -96,7 +96,12 @@ type AgendaResult = {
   missions: AgendaItem[]
 }
 
-const REQUIRED_PACKAGES = ['selenium<4.27', 'requests', 'pytz', 'urllib3<2']
+const REQUIRED_PACKAGES = [
+  'selenium==4.26.1',
+  'requests==2.32.5',
+  'pytz==2026.2',
+  'urllib3==1.26.20'
+]
 const FALLBACK_FACTS = [
   'Octopuses have blue blood because they use copper-rich hemocyanin to move oxygen.',
   'The oldest known writing systems appeared in Mesopotamia and Egypt more than 5,000 years ago.',
@@ -226,17 +231,16 @@ export function registerAgendaIpc() {
       ? validateArray(tuning.importantTerms, value => validateOptionalString(value, { min: 0, max: 240 }) || '')
       : []
     const aiConfig = await getAgendaAiConfig()
-    const scriptPath = resolvePackagedScriptPath('agenda_fetch.py')
-    const py = ensurePythonEnv(resolvePythonBin(), REQUIRED_PACKAGES)
+    const pythonRunner = resolvePythonRunner('agenda_fetch.py', REQUIRED_PACKAGES)
     return new Promise<AgendaResult>((resolve, reject) => {
-      const child = spawn(py, [scriptPath], {
+      const child = spawn(pythonRunner.bin, pythonRunner.args, {
+        windowsHide: true,
         env: {
           ...process.env,
           PYTHONDONTWRITEBYTECODE: '1',
           AGENDA_BROWSER: process.env.AGENDA_BROWSER || 'chrome',
           AGENDA_HEADLESS: process.env.AGENDA_HEADLESS || '1',
           AGENDA_CHROME_PROFILE: path.join(app.getPath('userData'), 'agenda-chrome-profile'),
-          MEETINGS_CHROME_PROFILE: path.join(app.getPath('userData'), 'agenda-chrome-profile'),
           MS_USERNAME: username || process.env.MS_USERNAME || '',
           MS_PASSWORD: password || process.env.MS_PASSWORD || '',
           AGENDA_PERSON_NAMES: personNames.filter(Boolean).join(','),

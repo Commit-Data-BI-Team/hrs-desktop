@@ -9,7 +9,7 @@ import {
   validateOptionalString,
   validateStringLength
 } from '../utils/validation'
-import { ensurePythonEnv, resolvePackagedScriptPath, resolvePythonBin } from './pythonRuntime'
+import { resolvePythonRunner } from './pythonRuntime'
 
 type MeetingsResult = {
   month: string
@@ -33,7 +33,12 @@ type MeetingsOptions = {
   password?: string | null
 }
 
-const REQUIRED_PACKAGES = ['selenium<4.27', 'requests', 'pytz', 'urllib3<2']
+const REQUIRED_PACKAGES = [
+  'selenium==4.26.1',
+  'requests==2.32.5',
+  'pytz==2026.2',
+  'urllib3==1.26.20'
+]
 const DUO_ACTION_REQUIRED_SIGNAL = '__HRS_DUO_ACTION_REQUIRED__'
 
 type ActiveMeetingsRun = {
@@ -145,7 +150,20 @@ function sanitizeScriptError(stderr: string) {
     .split(/\r?\n/)
     .map(sanitizeProgressLine)
     .filter(line => line && !shouldIgnoreProgressLine(line))
-  return lines.join(' ').trim().slice(0, 1200)
+  const explicitError = [...lines]
+    .reverse()
+    .find(line => /^(?:RuntimeError|ValueError|PermissionError|TimeoutError|OSError):/i.test(line))
+  if (explicitError) {
+    const message = explicitError.replace(/^[A-Za-z]+Error:\s*/i, '').trim()
+    if (message.toLowerCase().includes('failed to obtain graph access token')) {
+      return (
+        'Microsoft calendar authentication could not be completed in the background. Verify the ' +
+        'Microsoft credentials, then try again and approve the DUO choice shown in HRS Desktop.'
+      )
+    }
+    return message.slice(0, 1200)
+  }
+  return lines.slice(-4).join(' ').trim().slice(0, 1200)
 }
 
 export function registerMeetingsIpc() {
@@ -176,8 +194,7 @@ export function registerMeetingsIpc() {
       password?: unknown
     }>(options ?? {}, ['browser', 'headless', 'month', 'username', 'password'], 'meetings options')
     const browser = validateEnum(safe.browser, ['safari', 'chrome'] as const)
-    const requestedHeadless = typeof safe.headless === 'boolean' ? safe.headless : false
-    const headless = process.platform === 'win32' ? true : requestedHeadless
+    const headless = true
     const month =
       validateOptionalString(safe.month, { min: 7, max: 7, allowNull: true }) ?? null
     if (month && !/^\d{4}-\d{2}$/.test(month)) {
@@ -194,10 +211,8 @@ export function registerMeetingsIpc() {
       allowNull: true
     })
 
-    const scriptPath = resolvePackagedScriptPath('meetings_fetch.py')
-    const pythonBin = resolvePythonBin()
-    const venvPython = ensurePythonEnv(pythonBin, REQUIRED_PACKAGES)
-    const args = [scriptPath, '--browser', browser]
+    const pythonRunner = resolvePythonRunner('meetings_fetch.py', REQUIRED_PACKAGES)
+    const args = [...pythonRunner.args, '--browser', browser]
     if (headless) {
       args.push('--headless')
     }
@@ -209,13 +224,12 @@ export function registerMeetingsIpc() {
       PYTHONDONTWRITEBYTECODE: '1',
       AGENDA_BROWSER: process.env.AGENDA_BROWSER || browser,
       AGENDA_HEADLESS: process.env.AGENDA_HEADLESS || (headless ? '1' : '0'),
-      AGENDA_CHROME_PROFILE: path.join(app.getPath('userData'), 'agenda-chrome-profile'),
       MS_USERNAME: username || process.env.MS_USERNAME || '',
       MS_PASSWORD: password || process.env.MS_PASSWORD || '',
-      MEETINGS_CHROME_PROFILE: path.join(app.getPath('userData'), 'agenda-chrome-profile')
+      MEETINGS_CHROME_PROFILE: path.join(app.getPath('userData'), 'meetings-chrome-profile')
     }
     return new Promise<MeetingsResult>((resolve, reject) => {
-      const child = spawn(venvPython, args, { env })
+      const child = spawn(pythonRunner.bin, args, { env, windowsHide: true })
       const senderId = event.sender.id
       activeMeetingsRuns.set(senderId, { child, awaitingDuoAction: false })
       let stdout = ''

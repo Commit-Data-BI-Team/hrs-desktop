@@ -19,8 +19,18 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
       - name: Install dependencies
         run: npm ci
+
+      - name: Test meeting automation helpers
+        run: |
+          python -m pip install -r scripts/requirements-runtime.txt
+          python -m unittest discover -s tests/python -p "test_*.py"
 
       - name: Install Playwright browsers
         run: npx playwright install --with-deps

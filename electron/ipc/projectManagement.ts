@@ -104,6 +104,7 @@ function validateMissionPayload(payload: unknown) {
   const safe = validateExactObject<{
     id?: unknown
     customerName?: unknown
+    projectName?: unknown
     name?: unknown
     jiraIssueKey?: unknown
     hrsTaskIds?: unknown
@@ -112,6 +113,7 @@ function validateMissionPayload(payload: unknown) {
     assignedEmployees?: unknown
     plannedHours?: unknown
     cappedHours?: unknown
+    projectCappedHours?: unknown
     status?: unknown
     startDate?: unknown
     dueDate?: unknown
@@ -122,6 +124,7 @@ function validateMissionPayload(payload: unknown) {
     [
       'id',
       'customerName',
+      'projectName',
       'name',
       'jiraIssueKey',
       'hrsTaskIds',
@@ -130,6 +133,7 @@ function validateMissionPayload(payload: unknown) {
       'assignedEmployees',
       'plannedHours',
       'cappedHours',
+      'projectCappedHours',
       'status',
       'startDate',
       'dueDate',
@@ -141,6 +145,8 @@ function validateMissionPayload(payload: unknown) {
   return {
     id: validateOptionalString(safe.id, { min: 1, max: 120 }) ?? undefined,
     customerName: validateStringLength(safe.customerName, 1, 200),
+    projectName:
+      validateOptionalString(safe.projectName, { min: 0, max: 200 }) ?? null,
     name: validateStringLength(safe.name, 1, 240),
     jiraIssueKey: validateJiraIssueKey(safe.jiraIssueKey),
     hrsTaskIds: validateStringList(safe.hrsTaskIds ?? [], 'hrsTaskIds', 100),
@@ -150,6 +156,10 @@ function validateMissionPayload(payload: unknown) {
     assignedEmployees: validateStringList(safe.assignedEmployees ?? [], 'assignedEmployees', 100),
     plannedHours: validateNullableHours(safe.plannedHours, 'plannedHours'),
     cappedHours: validateNullableHours(safe.cappedHours, 'cappedHours'),
+    projectCappedHours: validateNullableHours(
+      safe.projectCappedHours,
+      'projectCappedHours'
+    ),
     status: validateEnum(
       safe.status ?? 'todo',
       ['todo', 'in_progress', 'blocked', 'done', 'archived'] as const

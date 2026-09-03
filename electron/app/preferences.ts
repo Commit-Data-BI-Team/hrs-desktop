@@ -16,6 +16,7 @@ type AppPreferences = {
   filtersOpen: boolean
   reportsOpen: boolean
   logWorkOpen: boolean
+  trayPinned: boolean
   autoLoginEnabled: boolean
   autoSuggestEnabled: boolean
   heatmapEnabled: boolean
@@ -95,11 +96,14 @@ type Schema = {
   preferences?: AppPreferences
   jiraLoggedEntries?: JiraLoggedEntries
   pendingReportSyncMonths?: string[]
+  hrsCredentialFlowMigrationVersion?: number
 }
 
 const store = new Store<Schema>({
   name: 'hrs-preferences'
 })
+
+const HRS_CREDENTIAL_FLOW_MIGRATION_VERSION = 1
 
 const defaultPreferences: AppPreferences = {
   jiraActiveOnly: true,
@@ -117,6 +121,7 @@ const defaultPreferences: AppPreferences = {
   filtersOpen: true,
   reportsOpen: true,
   logWorkOpen: true,
+  trayPinned: false,
   autoLoginEnabled: false,
   autoSuggestEnabled: true,
   heatmapEnabled: true,
@@ -165,6 +170,7 @@ export function getPreferences(): AppPreferences {
     filtersOpen: stored?.filtersOpen ?? defaultPreferences.filtersOpen,
     reportsOpen: stored?.reportsOpen ?? defaultPreferences.reportsOpen,
     logWorkOpen: stored?.logWorkOpen ?? defaultPreferences.logWorkOpen,
+    trayPinned: stored?.trayPinned ?? defaultPreferences.trayPinned,
     autoLoginEnabled: stored?.autoLoginEnabled ?? defaultPreferences.autoLoginEnabled,
     autoSuggestEnabled: stored?.autoSuggestEnabled ?? defaultPreferences.autoSuggestEnabled,
     heatmapEnabled: stored?.heatmapEnabled ?? defaultPreferences.heatmapEnabled,
@@ -206,6 +212,18 @@ export function setPreferences(next: Partial<AppPreferences>): AppPreferences {
   const updated = { ...current, ...next }
   store.set('preferences', updated)
   return updated
+}
+
+export function migrateHrsCredentialFlowPreferences(): boolean {
+  const migrationVersion = store.get('hrsCredentialFlowMigrationVersion') ?? 0
+  if (migrationVersion >= HRS_CREDENTIAL_FLOW_MIGRATION_VERSION) return false
+
+  const stored = store.get('preferences')
+  if (stored?.autoLoginEnabled) {
+    store.set('preferences', { ...stored, autoLoginEnabled: false })
+  }
+  store.set('hrsCredentialFlowMigrationVersion', HRS_CREDENTIAL_FLOW_MIGRATION_VERSION)
+  return true
 }
 
 export function getJiraLoggedEntries(): JiraLoggedEntries {

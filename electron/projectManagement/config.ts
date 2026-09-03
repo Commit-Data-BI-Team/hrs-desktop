@@ -19,6 +19,7 @@ export type CustomerProjectMapping = {
 export type ProjectMission = {
   id: string
   customerName: string
+  projectName?: string | null
   name: string
   jiraIssueKey: string
   hrsTaskIds: string[]
@@ -27,6 +28,7 @@ export type ProjectMission = {
   assignedEmployees: string[]
   plannedHours: number | null
   cappedHours: number | null
+  projectCappedHours?: number | null
   status: MissionStatus
   startDate?: string
   dueDate?: string
@@ -175,6 +177,7 @@ export function upsertMission(
   const updated: ProjectMission = {
     id,
     customerName: mission.customerName,
+    projectName: mission.projectName ?? existing?.projectName ?? null,
     name: mission.name,
     jiraIssueKey: mission.jiraIssueKey,
     hrsTaskIds: mission.hrsTaskIds ?? [],
@@ -183,6 +186,7 @@ export function upsertMission(
     assignedEmployees: mission.assignedEmployees,
     plannedHours: mission.plannedHours,
     cappedHours: mission.cappedHours,
+    projectCappedHours: mission.projectCappedHours ?? existing?.projectCappedHours ?? null,
     status: mission.status,
     startDate: mission.startDate,
     dueDate: mission.dueDate,

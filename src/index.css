@@ -2907,6 +2907,15 @@ body.floating-mode {
   color: var(--accent);
 }
 
+.quick-fictive-usage-stack {
+  display: grid;
+  gap: 9px;
+}
+
+.quick-fictive-usage-stack.is-compact {
+  gap: 6px;
+}
+
 .quick-fictive-usage {
   display: grid;
   gap: 7px;
@@ -2915,6 +2924,21 @@ body.floating-mode {
   border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
   border-radius: 12px;
   background: color-mix(in srgb, var(--panel) 68%, transparent);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--accent) 68%, transparent);
+}
+
+.quick-fictive-usage.is-project {
+  background:
+    linear-gradient(135deg, rgba(34, 139, 230, 0.13), transparent 58%),
+    color-mix(in srgb, var(--panel) 72%, transparent);
+  box-shadow: inset 3px 0 0 rgba(77, 171, 247, 0.78);
+}
+
+.quick-fictive-usage.is-task {
+  background:
+    linear-gradient(135deg, rgba(132, 94, 247, 0.13), transparent 58%),
+    color-mix(in srgb, var(--panel) 72%, transparent);
+  box-shadow: inset 3px 0 0 rgba(151, 117, 250, 0.78);
 }
 
 .quick-fictive-usage.is-compact {
@@ -2925,6 +2949,25 @@ body.floating-mode {
 
 .quick-fictive-usage-hours {
   white-space: nowrap;
+}
+
+.quick-fictive-usage-title {
+  min-width: 0;
+}
+
+.quick-fictive-usage-kind {
+  display: block;
+  margin-bottom: 1px;
+  color: color-mix(in srgb, var(--accent) 78%, white);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1.1;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.quick-fictive-usage.is-task .quick-fictive-usage-kind {
+  color: #b197fc;
 }
 
 .quick-fictive-usage-track {
@@ -2959,6 +3002,65 @@ body.floating-mode {
 .quick-fictive-usage-fill.is-green {
   color: #51cf66;
   background: linear-gradient(90deg, #2f9e44 0%, #51cf66 100%);
+}
+
+.quick-fictive-usage-employees {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.quick-fictive-usage-employee {
+  display: inline-grid;
+  grid-template-columns: 17px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 3px 6px 3px 3px;
+  border: 1px solid color-mix(in srgb, var(--stroke) 62%, transparent);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.035);
+  color: color-mix(in srgb, var(--text) 90%, transparent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.quick-fictive-usage-avatar {
+  display: grid;
+  width: 17px;
+  height: 17px;
+  place-items: center;
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--accent) 32%, transparent);
+  color: #fff;
+  font-size: 9px;
+  font-weight: 800;
+}
+
+.quick-fictive-usage.is-task .quick-fictive-usage-avatar {
+  background: rgba(151, 117, 250, 0.34);
+}
+
+.quick-fictive-usage-employee-name {
+  overflow: hidden;
+  max-width: 105px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quick-fictive-usage-employee-value {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.quick-fictive-usage.is-compact .quick-fictive-usage-employees {
+  gap: 4px;
+}
+
+.quick-fictive-usage.is-compact .quick-fictive-usage-employee {
+  padding-top: 2px;
+  padding-bottom: 2px;
 }
 
 .quick-fictive-usage-fill.is-yellow {
@@ -3026,6 +3128,12 @@ body.floating-mode {
 
 body.tray-mode {
   background: transparent;
+  min-height: 0;
+  overflow: hidden;
+}
+
+body.tray-mode #root {
+  min-height: 0;
 }
 
 html[data-platform='windows'] body.tray-mode {
@@ -3088,11 +3196,42 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-content {
-  height: 100%;
+  height: auto;
+  max-height: calc(100vh - 6px);
   overflow-y: auto;
   overscroll-behavior: contain;
   padding-right: 2px;
   padding-bottom: 0;
+}
+
+.tray-window-controls {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  min-height: 30px;
+  padding: 2px 0;
+  background: linear-gradient(180deg, var(--tray-bg) 68%, transparent);
+}
+
+.tray-window-control-btn {
+  color: rgba(190, 220, 240, 0.78);
+  transition: color 120ms ease, background-color 120ms ease, box-shadow 120ms ease,
+    transform 120ms ease;
+}
+
+.tray-window-control-btn:hover {
+  transform: translateY(-1px);
+}
+
+.tray-window-control-btn.is-active {
+  color: #7ddfff;
+  background: rgba(47, 145, 190, 0.22);
+  box-shadow: inset 0 0 0 1px rgba(105, 210, 255, 0.42), 0 0 12px rgba(70, 190, 235, 0.12);
+}
+
+.tray-window-control-btn.is-close:hover {
+  color: #ff8c8c;
+  background: rgba(160, 45, 45, 0.2);
 }
 
 .tray-panel-body {

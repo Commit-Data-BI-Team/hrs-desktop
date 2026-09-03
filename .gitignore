@@ -65,6 +65,7 @@ coverage/
 # Ignore invalid Windows icon (use proper converter to create)
 build/icon.ico
 build/python-runtime/
+build/release-notes.md
 work/python-runtime-builder/
 scripts/__pycache__/
 __pycache__/

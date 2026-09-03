@@ -4,38 +4,18 @@
 
 ## 1.0.16
 
-### Windows meeting sync and test-data isolation
+### Highlights
 
-- Bundles a verified Python 3 runtime and pinned calendar dependencies inside the Windows full installer, so employees no longer need a working local Python or first-run pip installation.
-- Starts Microsoft Graph authorization directly in the hidden Chrome session and preserves the complete OAuth redirect token before Graph Explorer can replace it with a shortened display value.
-- Uses separate persistent Chrome profiles for Meeting Sync and Agenda to prevent profile-lock and session collisions on Windows and macOS.
-- Detects broken or unsupported fallback Python installations, repairs stale virtual environments, verifies imports, and reports actionable setup errors.
-- Prevents automated E2E fixtures from inheriting the real Supabase session, eliminating accidental test-report uploads.
-- Removed the synthetic Acme Labs, Northwind, and Globex E2E reports that had reached the shared Supabase project.
+- Added reliable, fully headless Microsoft meeting sync on Windows and macOS, with a bundled Python runtime and pinned dependencies in the Windows full installer.
+- Added separate shared gauges for overall project hours and selected fictive-task hours, including each employee's hours and percentage contribution.
+- Combined coworkers in Cross projects whenever they report to the same customer and project, even when they use different tasks.
+- Made personal HRS reports and team Supabase hours load automatically and stay visible through temporary sync or network failures.
+- Refreshes project and task gauges after reporting, meeting logging, synchronization, editing, and deletion, while enforcing both caps independently.
+- Preserves saved HRS credentials during temporary outages, provides a normal Login to HRS recovery action, and prevents competing sign-in attempts.
+- Prevents every tray and application window from opening fullscreen or maximized and safely fits windows to the usable monitor area.
+- Isolates automated test sessions from production Supabase and removes the synthetic Acme Labs, Northwind, and Globex report data.
 
-### Global project hours
-
-- Added one shared global-hours budget per customer/project, independent from every fictive task's own cap.
-- Added two polished Quick Log gauges: overall project usage and selected shared-task usage.
-- Shows every contributing employee's hours and percentage share in both gauges.
-- Enforces the global project cap and task cap separately for regular work reports and meeting logs.
-- Refreshes both gauges from Supabase after reporting, synchronizing, editing, or deleting hours.
-- Added Supabase migration `003_global_project_hours.sql` for shared project budgets and task-level employee breakdowns.
-
-### Reports and synchronization reliability
-
-- Always shows the signed-in employee's own Live HRS rows in Employee projects, even before that employee's first Supabase synchronization.
-- Automatically synchronizes the selected HRS month after sign-in so shared and cross-project views populate without a manual Sync action.
-- Changed Supabase reconciliation to upsert current rows before removing stale rows, preventing a failed sync from temporarily erasing a whole month.
-- Reuses one refreshing Supabase session and preserves the last good shared report view during temporary network failures.
-
-### Sign-in and window reliability
-
-- Separates an expired HRS login from a temporary HRS/network outage, keeps saved credentials intact, and retries temporary failures automatically.
-- Adds a normal **Login to HRS** action after session expiry; resetting credentials is now only an optional recovery action.
-- Coalesces simultaneous login attempts and prevents multiple app instances from competing for cookies, credentials, or report synchronization.
-- Prohibits fullscreen and maximize mode for tray, report, meeting, settings, timer, and HRS login windows on Windows and macOS.
-- Fits large windows inside the current monitor's usable area while preserving the responsive tray behavior.
+> **Administrator note:** Apply `supabase/migrations/003_global_project_hours.sql` to the connected Supabase project before using global project budgets.
 
 ## 1.0.15
 

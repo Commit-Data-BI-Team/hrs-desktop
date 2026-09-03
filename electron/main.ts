@@ -202,10 +202,39 @@ function fitWindowSizeToDisplay(width: number, height: number, margin = 32) {
 function normalizeChangelog(raw: unknown): string[] {
   if (!raw) return []
   if (typeof raw === 'string') {
-    return raw
+    const decodeHtmlEntities = (value: string) =>
+      value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos|nbsp);/gi, (match, entity: string) => {
+        const normalized = entity.toLowerCase()
+        if (normalized === 'amp') return '&'
+        if (normalized === 'lt') return '<'
+        if (normalized === 'gt') return '>'
+        if (normalized === 'quot') return '"'
+        if (normalized === 'apos') return "'"
+        if (normalized === 'nbsp') return ' '
+        const radix = normalized.startsWith('#x') ? 16 : 10
+        const numericValue = Number.parseInt(normalized.replace(/^#x?/, ''), radix)
+        return Number.isFinite(numericValue) ? String.fromCodePoint(numericValue) : match
+      })
+
+    const plainText = decodeHtmlEntities(raw)
+      .replace(/<\s*h[1-6]\b[^>]*>/gi, '\n# ')
+      .replace(/<\s*li\b[^>]*>/gi, '\n- ')
+      .replace(/<\s*(?:br|\/p|\/div|\/li|\/h[1-6])\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+
+    return decodeHtmlEntities(plainText)
       .split(/\r?\n/)
-      .map(line => line.trim().replace(/^[-*]\s+/, ''))
-      .filter(Boolean)
+      .map(line =>
+        line
+          .trim()
+          .replace(/^[-*+]\s+/, '')
+          .replace(/\[([^\]]+)]\([^\s)]+\)/g, '$1')
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/`([^`]+)`/g, '$1')
+          .replace(/\s+/g, ' ')
+      )
+      .filter(line => Boolean(line) && !/^#{1,6}\s+/.test(line))
+      .filter((line, index, lines) => lines.indexOf(line) === index)
       .slice(0, 12)
   }
   if (Array.isArray(raw)) {

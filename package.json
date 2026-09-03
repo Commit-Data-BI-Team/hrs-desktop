@@ -15,15 +15,16 @@
     "test:e2e:report": "playwright show-report",
     "icon:tray": "node scripts/generate-win-icon.mjs",
     "icon:mac": "node scripts/generate-icon.mjs",
+    "release:notes": "node scripts/prepare-release-notes.mjs",
     "python:bundle": "node scripts/build-python-runtime.mjs",
-    "dist:mac": "npm run icon:tray && npm run build && electron-builder --mac",
-    "dist:mac:arm64": "npm run icon:tray && npm run build && electron-builder --mac --arm64",
-    "dist:mac:x64": "npm run icon:tray && npm run build && electron-builder --mac --x64",
-    "dist:mac:universal": "npm run icon:tray && npm run build && electron-builder --mac --universal",
+    "dist:mac": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac",
+    "dist:mac:arm64": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --x64",
+    "dist:mac:universal": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --universal",
     "install:mac:dmg": "bash scripts/install-mac-app-from-dmg.sh",
     "dist:mac:install": "npm run dist:mac && npm run install:mac:dmg",
-    "dist:win": "npm run python:bundle && npm run icon:tray && npm run build && electron-builder --win",
-    "dist:win:x64": "npm run python:bundle && npm run icon:tray && npm run build && electron-builder --win --x64"
+    "dist:win": "npm run release:notes && npm run python:bundle && npm run icon:tray && npm run build && electron-builder --win",
+    "dist:win:x64": "npm run release:notes && npm run python:bundle && npm run icon:tray && npm run build && electron-builder --win --x64"
   },
   "dependencies": {
     "@mantine/core": "^8.3.11",
@@ -98,6 +99,9 @@
         "repo": "hrs-desktop"
       }
     ],
+    "releaseInfo": {
+      "releaseNotesFile": "release-notes.md"
+    },
     "mac": {
       "target": [
         {

@@ -449,17 +449,24 @@ async function setupAutoUpdater() {
     const percent = typed.percent ?? 0
     emitUpdateState({
       state: 'downloading',
+      version: latestUpdateState.version,
+      releaseDate: latestUpdateState.releaseDate,
+      changelog: latestUpdateState.changelog,
       percent,
       message: `${Math.round(percent)}% downloaded`
     })
   })
   appUpdater.on('update-downloaded', (info: unknown) => {
     const typed = info as { version?: string; releaseDate?: string | Date; releaseNotes?: unknown }
+    const downloadedChangelog = normalizeChangelog(typed.releaseNotes)
     emitUpdateState({
       state: 'ready',
-      version: typed.version,
-      releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined,
-      changelog: normalizeChangelog(typed.releaseNotes),
+      version: typed.version ?? latestUpdateState.version,
+      releaseDate: typed.releaseDate
+        ? String(typed.releaseDate)
+        : latestUpdateState.releaseDate,
+      changelog:
+        downloadedChangelog.length > 0 ? downloadedChangelog : latestUpdateState.changelog,
       message: 'Update ready. Restart to install.'
     })
   })

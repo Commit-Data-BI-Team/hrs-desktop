@@ -24,6 +24,11 @@ import { registerAgendaIpc } from './ipc/agenda'
 import { registerProjectManagementIpc } from './ipc/projectManagement'
 import { registerSupabaseIpc } from './ipc/supabase'
 import { registerSlackIpc } from './ipc/slack'
+import {
+  getPreferences,
+  migrateHrsCredentialFlowPreferences,
+  setPreferences
+} from './app/preferences'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const nodeRequire = createRequire(import.meta.url)
@@ -57,10 +62,12 @@ let reportsWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let meetingsWindow: BrowserWindow | null = null
 let activeLoginWindow: BrowserWindow | null = null
+let activeLoginPromise: Promise<boolean> | null = null
 let tray: Tray | null = null
 let trayOpenOnReady = false
 let traySuppressBlurUntil = 0
 let trayHideTimer: NodeJS.Timeout | null = null
+let trayPinned = false
 let isQuitting = false
 let openMainRequested = false
 const processBootAt = Date.now()
@@ -90,6 +97,8 @@ const floatingSizes = {
   expanded: { width: 360, height: 320 }
 } as const
 const trayWindowSize = { width: 430, height: 660 }
+const TRAY_WINDOW_MIN_HEIGHT = 180
+const TRAY_WINDOW_SCREEN_MARGIN = 8
 const reportsWindowSize = { width: 1220, height: 860 }
 const settingsWindowSize = { width: 700, height: 780 }
 const meetingsWindowSize = { width: 1220, height: 860 }
@@ -98,6 +107,21 @@ const MAIN_LOG_ROTATIONS = 4
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
 const DEFAULT_GITHUB_UPDATE_OWNER = 'Commit-Data-BI-Team'
 const DEFAULT_GITHUB_UPDATE_REPO = 'hrs-desktop'
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
+  isQuitting = true
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (trayWindow && !trayWindow.isDestroyed()) {
+      showTrayWindow()
+      return
+    }
+    trayOpenOnReady = true
+    createTrayWindow()
+  })
+}
 
 type AppUpdateState = {
   state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
@@ -120,6 +144,7 @@ type UpdaterLike = {
 }
 
 type ThemeMode = 'dark' | 'oled' | 'liquid' | 'h4c37'
+type TrayCloseReason = 'blur' | 'toggle' | 'open-main' | 'dismiss'
 
 let updateCheckTimer: NodeJS.Timeout | null = null
 let updaterConfigured = false
@@ -146,13 +171,70 @@ function configureMacNativeGlassWindow(window: BrowserWindow, options: { windowB
   }
 }
 
+function enforceWindowedMode(window: BrowserWindow) {
+  const leaveProhibitedMode = () => {
+    setImmediate(() => {
+      if (window.isDestroyed()) return
+      if (window.isFullScreen()) window.setFullScreen(false)
+      if (window.isMaximized()) window.unmaximize()
+    })
+  }
+  try {
+    window.setFullScreenable(false)
+    window.setMaximizable(false)
+  } catch (error) {
+    logWarn('[window] could not disable fullscreen/maximize', error)
+  }
+  window.on('enter-full-screen', leaveProhibitedMode)
+  window.on('maximize', leaveProhibitedMode)
+}
+
+function fitWindowSizeToDisplay(width: number, height: number, margin = 32) {
+  const display = screen.getDisplayNearestPoint(screen.getCursorScreenPoint())
+  const maxWidth = Math.max(480, display.workArea.width - margin * 2)
+  const maxHeight = Math.max(420, display.workArea.height - margin * 2)
+  return {
+    width: Math.min(width, maxWidth),
+    height: Math.min(height, maxHeight)
+  }
+}
+
 function normalizeChangelog(raw: unknown): string[] {
   if (!raw) return []
   if (typeof raw === 'string') {
-    return raw
+    const decodeHtmlEntities = (value: string) =>
+      value.replace(/&(#x?[0-9a-f]+|amp|lt|gt|quot|apos|nbsp);/gi, (match, entity: string) => {
+        const normalized = entity.toLowerCase()
+        if (normalized === 'amp') return '&'
+        if (normalized === 'lt') return '<'
+        if (normalized === 'gt') return '>'
+        if (normalized === 'quot') return '"'
+        if (normalized === 'apos') return "'"
+        if (normalized === 'nbsp') return ' '
+        const radix = normalized.startsWith('#x') ? 16 : 10
+        const numericValue = Number.parseInt(normalized.replace(/^#x?/, ''), radix)
+        return Number.isFinite(numericValue) ? String.fromCodePoint(numericValue) : match
+      })
+
+    const plainText = decodeHtmlEntities(raw)
+      .replace(/<\s*h[1-6]\b[^>]*>/gi, '\n# ')
+      .replace(/<\s*li\b[^>]*>/gi, '\n- ')
+      .replace(/<\s*(?:br|\/p|\/div|\/li|\/h[1-6])\s*\/?>/gi, '\n')
+      .replace(/<[^>]+>/g, ' ')
+
+    return decodeHtmlEntities(plainText)
       .split(/\r?\n/)
-      .map(line => line.trim().replace(/^[-*]\s+/, ''))
-      .filter(Boolean)
+      .map(line =>
+        line
+          .trim()
+          .replace(/^[-*+]\s+/, '')
+          .replace(/\[([^\]]+)]\([^\s)]+\)/g, '$1')
+          .replace(/\*\*([^*]+)\*\*/g, '$1')
+          .replace(/`([^`]+)`/g, '$1')
+          .replace(/\s+/g, ' ')
+      )
+      .filter(line => Boolean(line) && !/^#{1,6}\s+/.test(line))
+      .filter((line, index, lines) => lines.indexOf(line) === index)
       .slice(0, 12)
   }
   if (Array.isArray(raw)) {
@@ -367,17 +449,24 @@ async function setupAutoUpdater() {
     const percent = typed.percent ?? 0
     emitUpdateState({
       state: 'downloading',
+      version: latestUpdateState.version,
+      releaseDate: latestUpdateState.releaseDate,
+      changelog: latestUpdateState.changelog,
       percent,
       message: `${Math.round(percent)}% downloaded`
     })
   })
   appUpdater.on('update-downloaded', (info: unknown) => {
     const typed = info as { version?: string; releaseDate?: string | Date; releaseNotes?: unknown }
+    const downloadedChangelog = normalizeChangelog(typed.releaseNotes)
     emitUpdateState({
       state: 'ready',
-      version: typed.version,
-      releaseDate: typed.releaseDate ? String(typed.releaseDate) : undefined,
-      changelog: normalizeChangelog(typed.releaseNotes),
+      version: typed.version ?? latestUpdateState.version,
+      releaseDate: typed.releaseDate
+        ? String(typed.releaseDate)
+        : latestUpdateState.releaseDate,
+      changelog:
+        downloadedChangelog.length > 0 ? downloadedChangelog : latestUpdateState.changelog,
       message: 'Update ready. Restart to install.'
     })
   })
@@ -708,6 +797,8 @@ function showMainWindow() {
     return
   }
   openMainRequested = true
+  if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
+  if (mainWindow.isMaximized()) mainWindow.unmaximize()
   mainWindow.setSkipTaskbar(true)
   mainWindow.show()
   if (mainWindow.isMinimized()) {
@@ -783,9 +874,14 @@ function loadRendererWindow(
 }
 
 function createMainWindow(startHidden = false) {
+  const fittedSize = fitWindowSizeToDisplay(1200, 800)
   mainWindow = new BrowserWindow({
-    width: 1200,
-    height: 800,
+    width: fittedSize.width,
+    height: fittedSize.height,
+    center: true,
+    fullscreen: false,
+    fullscreenable: false,
+    maximizable: false,
     show: !startHidden,
     skipTaskbar: true,
     ...macNativeGlassWindowOptions,
@@ -807,6 +903,7 @@ function createMainWindow(startHidden = false) {
       disableBlinkFeatures: 'Auxclick'      // Prevent auxiliary click attacks
     }
   })
+  enforceWindowedMode(mainWindow)
   configureMacNativeGlassWindow(mainWindow, { windowButtons: true })
   
   attachRendererLogging(mainWindow, 'main')
@@ -869,6 +966,7 @@ function createFloatingWindow() {
   }
   hideMainWindowForFloating()
   floatingWindow = new BrowserWindow(getFloatingOptions())
+  enforceWindowedMode(floatingWindow)
   configureMacNativeGlassWindow(floatingWindow)
   attachRendererLogging(floatingWindow, 'floating')
   floatingWindow.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true })
@@ -920,7 +1018,9 @@ function createTrayWindow() {
       navigateOnDragDrop: false
     }
   })
+  enforceWindowedMode(trayWindow)
   configureMacNativeGlassWindow(trayWindow)
+  applyTrayPinnedWindowBehavior()
   attachRendererLogging(trayWindow, 'tray')
   trayWindow.once('ready-to-show', () => {
     if (!trayOpenOnReady) return
@@ -958,14 +1058,19 @@ function createDetachedWindow(
   height: number,
   title: string
 ) {
+  const fittedSize = fitWindowSizeToDisplay(width, height)
   const window = new BrowserWindow({
-    width,
-    height,
-    minWidth: Math.min(width, 640),
-    minHeight: Math.min(height, 520),
+    width: fittedSize.width,
+    height: fittedSize.height,
+    minWidth: Math.min(fittedSize.width, 640),
+    minHeight: Math.min(fittedSize.height, 520),
+    center: true,
     show: false,
     skipTaskbar: true,
     autoHideMenuBar: process.platform === 'win32',
+    fullscreen: false,
+    fullscreenable: false,
+    maximizable: false,
     title,
     ...macNativeGlassWindowOptions,
     icon: fs.existsSync(iconPath) ? iconPath : undefined,
@@ -982,6 +1087,7 @@ function createDetachedWindow(
       navigateOnDragDrop: false
     }
   })
+  enforceWindowedMode(window)
   configureMacNativeGlassWindow(window, { windowButtons: true })
   attachRendererLogging(window, mode)
   window.once('ready-to-show', () => {
@@ -1064,6 +1170,38 @@ function getTrayWindowPosition() {
   return { x, y }
 }
 
+function resizeTrayWindowToContent(requestedHeight: number) {
+  if (!trayWindow || trayWindow.isDestroyed()) {
+    return { height: 0, maxHeight: 0, constrained: false }
+  }
+
+  const trayBounds = tray?.getBounds()
+  const display = trayBounds
+    ? screen.getDisplayNearestPoint({ x: trayBounds.x, y: trayBounds.y })
+    : screen.getDisplayMatching(trayWindow.getBounds())
+  const maxHeight = Math.max(
+    TRAY_WINDOW_MIN_HEIGHT,
+    display.workArea.height - TRAY_WINDOW_SCREEN_MARGIN * 2
+  )
+  const normalizedHeight = Math.max(TRAY_WINDOW_MIN_HEIGHT, Math.ceil(requestedHeight))
+  const height = Math.min(normalizedHeight, maxHeight)
+  const currentBounds = trayWindow.getBounds()
+
+  if (currentBounds.height !== height) {
+    trayWindow.setSize(trayWindowSize.width, height, false)
+    if (trayWindow.isVisible()) {
+      const position = getTrayWindowPosition()
+      if (position) trayWindow.setPosition(position.x, position.y, false)
+    }
+  }
+
+  return {
+    height,
+    maxHeight,
+    constrained: normalizedHeight > maxHeight
+  }
+}
+
 function showTrayWindow() {
   if (!trayWindow) return
   if (trayHideTimer) {
@@ -1080,15 +1218,48 @@ function showTrayWindow() {
   trayWindow.webContents.send('app:trayOpened')
 }
 
-function beginHideTrayWindow(reason: 'blur' | 'toggle' | 'open-main' = 'blur') {
+function applyTrayPinnedWindowBehavior() {
+  if (!trayWindow || trayWindow.isDestroyed()) return
+  trayWindow.setAlwaysOnTop(true)
+  if (process.platform === 'darwin') {
+    trayWindow.setVisibleOnAllWorkspaces(trayPinned, { visibleOnFullScreen: trayPinned })
+  }
+}
+
+function setTrayPinnedPreference(next: boolean) {
+  trayPinned = next
+  setPreferences({ trayPinned })
+  applyTrayPinnedWindowBehavior()
+  if (trayPinned) {
+    if (trayHideTimer) {
+      clearTimeout(trayHideTimer)
+      trayHideTimer = null
+    }
+    trayWindow?.webContents.send('app:trayOpened')
+  } else if (trayWindow?.isVisible() && !trayWindow.isFocused()) {
+    beginHideTrayWindow('blur')
+  }
+  return trayPinned
+}
+
+function beginHideTrayWindow(reason: TrayCloseReason = 'blur') {
   if (!trayWindow || !trayWindow.isVisible()) return
+  if (reason === 'blur' && trayPinned) {
+    trayWindow.webContents.send('app:trayOpened')
+    return
+  }
   if (trayHideTimer) {
     clearTimeout(trayHideTimer)
     trayHideTimer = null
   }
   trayWindow.webContents.send('app:trayClosing', reason)
   trayHideTimer = setTimeout(() => {
+    trayHideTimer = null
     if (!trayWindow || !trayWindow.isVisible()) return
+    if (reason === 'blur' && trayPinned) {
+      trayWindow.webContents.send('app:trayOpened')
+      return
+    }
     if (reason === 'blur' && trayWindow.isFocused()) {
       trayWindow.webContents.send('app:trayOpened')
       return
@@ -1114,6 +1285,15 @@ function toggleTrayWindow() {
 function buildTrayMenu() {
   return Menu.buildFromTemplate([
     {
+      label: 'Keep tray open',
+      type: 'checkbox',
+      checked: trayPinned,
+      click: menuItem => {
+        setTrayPinnedPreference(menuItem.checked)
+      }
+    },
+    { type: 'separator' },
+    {
       label: 'Quit',
       click: () => {
         isQuitting = true
@@ -1136,7 +1316,13 @@ function createTray(): boolean {
     tray.on('destroyed', () => {
       tray = null
       if (!isQuitting) {
-        showMainWindow()
+        setTimeout(() => {
+          if (isQuitting || tray) return
+          if (createTray()) {
+            createTrayWindow()
+            logInfo('[main] restored tray icon after it was destroyed')
+          }
+        }, 500)
       }
     })
     // Keep context menu on explicit right-click only.
@@ -1149,8 +1335,22 @@ function createTray(): boolean {
 }
 
 app.whenReady().then(() => {
+  if (!hasSingleInstanceLock) return
   logInfo('[main] app ready', `boot=${Date.now() - processBootAt}ms`)
   logInfo('[main] logging to', getMainLogPaths())
+  try {
+    if (migrateHrsCredentialFlowPreferences()) {
+      logInfo('[auth] preserved HRS credentials and reset Auto-login for the corrected login flow')
+    }
+  } catch (error) {
+    logWarn('[auth] could not apply the HRS credential-flow preference migration', error)
+  }
+  try {
+    trayPinned = getPreferences().trayPinned
+  } catch (error) {
+    trayPinned = false
+    logWarn('[main] could not load the tray pinned preference', error)
+  }
   app.on('before-quit', () => {
     isQuitting = true
     logInfo('[main] before-quit')
@@ -1173,6 +1373,28 @@ app.whenReady().then(() => {
   registerSupabaseIpc()
   registerSlackIpc()
   void setupAutoUpdater()
+  ipcMain.handle('app:getTrayPinned', () => trayPinned)
+  ipcMain.handle('app:setTrayPinned', (_event, pinned: unknown) => {
+    if (typeof pinned !== 'boolean') {
+      throw new Error('Invalid app:setTrayPinned payload')
+    }
+    return setTrayPinnedPreference(pinned)
+  })
+  ipcMain.handle('app:dismissTray', () => {
+    beginHideTrayWindow('dismiss')
+    return true
+  })
+  ipcMain.handle('app:resizeTrayToContent', (_event, requestedHeight: unknown) => {
+    if (
+      typeof requestedHeight !== 'number' ||
+      !Number.isFinite(requestedHeight) ||
+      requestedHeight <= 0 ||
+      requestedHeight > 20_000
+    ) {
+      throw new Error('Invalid app:resizeTrayToContent payload')
+    }
+    return resizeTrayWindowToContent(requestedHeight)
+  })
   ipcMain.handle('app:openMainWindow', () => {
     showMainWindow()
     if (trayWindow?.isVisible()) {
@@ -1304,14 +1526,27 @@ function closeActiveLoginWindow() {
 }
 
 async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
-  return new Promise((resolve, reject) => {
+  if (activeLoginPromise) {
+    if (!options.autoSubmit && activeLoginWindow && !activeLoginWindow.isDestroyed()) {
+      activeLoginWindow.show()
+      activeLoginWindow.focus()
+    }
+    return activeLoginPromise
+  }
+
+  const loginPromise = new Promise<boolean>((resolve, reject) => {
     const loginSession = session.fromPartition('persist:hrs')
 
     const { username, password, autoSubmit } = options
     const shouldAutoLogin = Boolean(autoSubmit && username && password)
+    const fittedSize = fitWindowSizeToDisplay(900, 700)
     const loginWindow = new BrowserWindow({
-      width: 900,
-      height: 700,
+      width: fittedSize.width,
+      height: fittedSize.height,
+      center: true,
+      fullscreen: false,
+      fullscreenable: false,
+      maximizable: false,
       show: !shouldAutoLogin,
       modal: !shouldAutoLogin,
       parent: mainWindow ?? undefined,
@@ -1328,6 +1563,7 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
         allowRunningInsecureContent: false
       }
     })
+    enforceWindowedMode(loginWindow)
     activeLoginWindow = loginWindow
 
     logInfo('[auth] opening login window')
@@ -1335,11 +1571,61 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
     let resolved = false
     let autoShowTimer: NodeJS.Timeout | null = null
     let autoLoginTimeout: NodeJS.Timeout | null = null
+    let autoSubmitAttempted = false
+    let sessionCookieCheckInFlight = false
+
+    const showInteractiveLogin = () => {
+      if (autoShowTimer) {
+        clearTimeout(autoShowTimer)
+        autoShowTimer = null
+      }
+      if (autoLoginTimeout) {
+        clearTimeout(autoLoginTimeout)
+        autoLoginTimeout = null
+      }
+      if (!loginWindow.isDestroyed()) {
+        loginWindow.show()
+        loginWindow.focus()
+      }
+    }
+
+    const resolveWhenSessionCookieIsReady = async () => {
+      if (resolved || sessionCookieCheckInFlight) return
+      sessionCookieCheckInFlight = true
+      try {
+        for (let attempt = 0; attempt < 20; attempt += 1) {
+          if (loginWindow.isDestroyed()) return
+          const cookies = await loginSession.cookies.get({
+            domain: 'hrs.comm-it.co.il'
+          })
+          if (cookies.some(cookie => cookie.name === 'sessionid')) {
+            resolved = true
+            if (autoShowTimer) clearTimeout(autoShowTimer)
+            if (autoLoginTimeout) clearTimeout(autoLoginTimeout)
+            loginWindow.close()
+            resolve(true)
+            return
+          }
+          await new Promise<void>(cookieWaitResolve => setTimeout(cookieWaitResolve, 250))
+        }
+        logInfo('[auth] reached admin without session cookie yet; waiting for another navigation')
+      } catch (error) {
+        logWarn('[auth] failed while checking for the HRS session cookie', error)
+      } finally {
+        sessionCookieCheckInFlight = false
+      }
+    }
 
     const tryAutoLogin = async () => {
       if (!shouldAutoLogin) return
+      if (autoSubmitAttempted) {
+        logWarn('[auth] automatic HRS login returned to the login page; switching to manual entry')
+        showInteractiveLogin()
+        return
+      }
+      autoSubmitAttempted = true
       try {
-        await loginWindow.webContents.executeJavaScript(
+        const submitted = await loginWindow.webContents.executeJavaScript(
           `(() => {
             const userInput = document.querySelector('input[name="username"], #id_username');
             const passInput = document.querySelector('input[name="password"], #id_password');
@@ -1355,33 +1641,32 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
           })()`,
           true
         )
-      } catch {}
+        if (!submitted) {
+          logWarn('[auth] HRS login form was not found; switching to manual entry')
+          showInteractiveLogin()
+        }
+      } catch (error) {
+        logWarn('[auth] automatic HRS form submission failed; switching to manual entry', error)
+        showInteractiveLogin()
+      }
     }
 
-    loginWindow.webContents.on('did-navigate', async (_e, url) => {
+    loginWindow.webContents.on('did-navigate', (_e, url) => {
       logInfo('[auth] navigated', url)
 
-      if (url.startsWith('https://hrs.comm-it.co.il/admin/')) {
-        const cookies = await loginSession.cookies.get({
-          domain: 'hrs.comm-it.co.il'
-        })
+      let isAuthenticatedAdminPage = false
+      try {
+        const parsedUrl = new URL(url)
+        isAuthenticatedAdminPage =
+          parsedUrl.origin === 'https://hrs.comm-it.co.il' &&
+          parsedUrl.pathname.startsWith('/admin/') &&
+          !parsedUrl.pathname.startsWith('/admin/login/')
+      } catch {
+        isAuthenticatedAdminPage = false
+      }
 
-        if (!cookies.find(c => c.name === 'sessionid')) {
-          if (shouldAutoLogin) {
-            logInfo('[auth] auto-login reached admin without session cookie yet; waiting')
-            return
-          }
-          if (autoShowTimer) clearTimeout(autoShowTimer)
-          if (autoLoginTimeout) clearTimeout(autoLoginTimeout)
-          reject(new Error('Session cookie not found'))
-          return
-        }
-
-        resolved = true
-        if (autoShowTimer) clearTimeout(autoShowTimer)
-        if (autoLoginTimeout) clearTimeout(autoLoginTimeout)
-        loginWindow.close()
-        resolve(true)
+      if (isAuthenticatedAdminPage) {
+        void resolveWhenSessionCookieIsReady()
       }
     })
 
@@ -1423,4 +1708,11 @@ async function openLoginWindow(options: LoginOptions = {}): Promise<boolean> {
       }
     })
   })
+  activeLoginPromise = loginPromise
+  void loginPromise
+    .finally(() => {
+      if (activeLoginPromise === loginPromise) activeLoginPromise = null
+    })
+    .catch(() => {})
+  return loginPromise
 }

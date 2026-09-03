@@ -41,17 +41,16 @@ export async function getHrsCredentials(): Promise<{
 
 export async function setHrsCredentials(username: string, password: string): Promise<void> {
   const trimmedUser = username.trim()
-  const trimmedPass = password.trim()
   store.set('username', trimmedUser)
   const keytar = await getKeytar()
   if (keytar) {
     try {
-      await keytar.setPassword(KEYTAR_SERVICE, trimmedUser, trimmedPass)
+      await keytar.setPassword(KEYTAR_SERVICE, trimmedUser, password)
       store.delete('password')
       return
     } catch {}
   }
-  store.set('password', trimmedPass)
+  store.set('password', password)
 }
 
 export async function clearHrsCredentials(): Promise<void> {

@@ -73,6 +73,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('supabase:updateProfile', payload),
   getSupabaseWorkReports: (startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getWorkReports', startDate, endDate),
+  getSupabaseProjectUsage: (customer: string, project: string) =>
+    ipcRenderer.invoke('supabase:getProjectUsage', { customer, project }),
   getSharedFictiveTasks: () => ipcRenderer.invoke('supabase:getSharedFictiveTasks'),
   upsertSharedFictiveTask: (payload: unknown) =>
     ipcRenderer.invoke('supabase:upsertSharedFictiveTask', payload),
@@ -126,6 +128,11 @@ contextBridge.exposeInMainWorld('hrs', {
     } | null
   }) => ipcRenderer.invoke('slack:postCustomerUpdate', payload),
   getPreferences: () => ipcRenderer.invoke('app:getPreferences'),
+  getTrayPinned: () => ipcRenderer.invoke('app:getTrayPinned'),
+  setTrayPinned: (pinned: boolean) => ipcRenderer.invoke('app:setTrayPinned', pinned),
+  dismissTray: () => ipcRenderer.invoke('app:dismissTray'),
+  resizeTrayToContent: (height: number) =>
+    ipcRenderer.invoke('app:resizeTrayToContent', height),
   setPreferences: (next: {
     jiraActiveOnly?: boolean
     jiraReportedOnly?: boolean
@@ -142,6 +149,7 @@ contextBridge.exposeInMainWorld('hrs', {
     filtersOpen?: boolean
     reportsOpen?: boolean
     logWorkOpen?: boolean
+    trayPinned?: boolean
     autoSuggestEnabled?: boolean
     heatmapEnabled?: boolean
     exportFiltered?: boolean
@@ -331,10 +339,12 @@ contextBridge.exposeInMainWorld('hrs', {
       ipcRenderer.removeListener('app:trayOpened', listener)
     }
   },
-  onTrayClosing: (handler: (reason: 'blur' | 'toggle' | 'open-main') => void) => {
+  onTrayClosing: (
+    handler: (reason: 'blur' | 'toggle' | 'open-main' | 'dismiss') => void
+  ) => {
     const listener = (
       _event: Electron.IpcRendererEvent,
-      reason: 'blur' | 'toggle' | 'open-main'
+      reason: 'blur' | 'toggle' | 'open-main' | 'dismiss'
     ) => handler(reason)
     ipcRenderer.on('app:trayClosing', listener)
     return () => {

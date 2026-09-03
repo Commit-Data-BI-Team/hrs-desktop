@@ -38,6 +38,7 @@ GRAPH_EXPLORER_SCOPES = (
     "openid profile"
 )
 DUO_ACTION_REQUIRED_SIGNAL = "__HRS_DUO_ACTION_REQUIRED__"
+OAUTH_CAPTURE_PREFIX = "__HRS_GRAPH_OAUTH_FRAGMENT__"
 WINDOWS_TZ_MAP = {
     "Israel Standard Time": "Asia/Jerusalem",
     "UTC": "UTC",
@@ -71,7 +72,7 @@ def request_duo_action() -> str:
     return selected
 
 
-def find_duo_action_button(driver, action: str):
+def find_duo_action_button_in_current_context(driver, action: str, depth: int = 0):
     expected_terms = (
         ("send me a push", "send a push", "duo push", "push")
         if action == "push"
@@ -106,7 +107,44 @@ def find_duo_action_button(driver, action: str):
                 return fallback
         except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
             pass
+
+    if depth >= 4:
+        return None
+
+    try:
+        frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+    except WebDriverException:
+        frames = []
+    for frame_index in range(len(frames)):
+        switched = False
+        try:
+            current_frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+            if frame_index >= len(current_frames):
+                break
+            driver.switch_to.frame(current_frames[frame_index])
+            switched = True
+            button = find_duo_action_button_in_current_context(driver, action, depth + 1)
+            if button:
+                return button
+        except (NoSuchElementException, StaleElementReferenceException, WebDriverException):
+            pass
+        if switched:
+            try:
+                driver.switch_to.parent_frame()
+            except WebDriverException:
+                try:
+                    driver.switch_to.default_content()
+                except WebDriverException:
+                    return None
     return None
+
+
+def find_duo_action_button(driver, action: str):
+    try:
+        driver.switch_to.default_content()
+    except WebDriverException:
+        return None
+    return find_duo_action_button_in_current_context(driver, action)
 
 
 def parse_args() -> argparse.Namespace:
@@ -359,8 +397,8 @@ def build_driver(browser: str, headless: bool):
         if chromedriver:
             log(f"Using ChromeDriver: {chromedriver}")
         profile_dir = (
-            os.getenv("AGENDA_CHROME_PROFILE", "").strip()
-            or os.getenv("MEETINGS_CHROME_PROFILE", "").strip()
+            os.getenv("MEETINGS_CHROME_PROFILE", "").strip()
+            or os.getenv("AGENDA_CHROME_PROFILE", "").strip()
         )
         if profile_dir:
             options.add_argument(f"--user-data-dir={profile_dir}")
@@ -369,6 +407,11 @@ def build_driver(browser: str, headless: bool):
         options.add_argument("--log-level=3")
         options.add_argument("--silent")
         options.add_experimental_option("excludeSwitches", ["enable-logging"])
+        options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
+        options.add_experimental_option(
+            "perfLoggingPrefs",
+            {"enableNetwork": True, "enablePage": False},
+        )
         if not (os.name == "nt" and headless):
             options.add_argument("--start-maximized")
         if headless:
@@ -383,8 +426,15 @@ def build_driver(browser: str, headless: bool):
                 options.add_argument("--remote-debugging-pipe")
         if chromedriver:
             service = ChromeService(executable_path=chromedriver, log_output=subprocess.DEVNULL)
-            return webdriver.Chrome(service=service, options=options)
-        return webdriver.Chrome(options=options)
+            driver = webdriver.Chrome(service=service, options=options)
+        else:
+            driver = webdriver.Chrome(options=options)
+        try:
+            driver.execute_cdp_cmd("Network.enable", {})
+        except Exception:
+            pass
+        install_oauth_fragment_capture(driver)
+        return driver
     return webdriver.Safari()
 
 
@@ -620,11 +670,76 @@ def extract_access_token_from_url(url: str | None) -> str | None:
     return None
 
 
+def install_oauth_fragment_capture(driver) -> None:
+    """Preserve the OAuth fragment before the Graph Explorer SPA removes it."""
+    source = f"""
+      (() => {{
+        const prefix = {json.dumps(OAUTH_CAPTURE_PREFIX)};
+        const capture = () => {{
+          try {{
+            const fragment = window.location.hash || '';
+            if (fragment.includes('access_token=')) {{
+              window.name = prefix + fragment;
+              window.sessionStorage.setItem(prefix, fragment);
+            }}
+          }} catch (_error) {{}}
+        }};
+        capture();
+        window.addEventListener('hashchange', capture, true);
+      }})();
+    """
+    try:
+        driver.execute_cdp_cmd(
+            "Page.addScriptToEvaluateOnNewDocument",
+            {"source": source},
+        )
+    except Exception:
+        # Safari has no Chrome DevTools API. The regular URL/storage checks remain active.
+        pass
+
+
+def extract_access_token_from_oauth_capture(driver) -> str | None:
+    try:
+        current_url = driver.current_url
+    except Exception:
+        current_url = None
+    token = extract_access_token_from_url(current_url)
+    if token:
+        return token
+
+    try:
+        values = driver.execute_script(
+            """
+            const prefix = arguments[0];
+            const values = [window.name || ''];
+            try { values.push(window.sessionStorage.getItem(prefix) || ''); } catch (_error) {}
+            try { values.push(window.localStorage.getItem(prefix) || ''); } catch (_error) {}
+            return values;
+            """,
+            OAUTH_CAPTURE_PREFIX,
+        )
+    except Exception:
+        return None
+
+    for value in values if isinstance(values, list) else []:
+        if not isinstance(value, str) or "access_token=" not in value:
+            continue
+        fragment = value
+        if fragment.startswith(OAUTH_CAPTURE_PREFIX):
+            fragment = fragment[len(OAUTH_CAPTURE_PREFIX) :]
+        fragment = fragment.lstrip("#")
+        token = extract_access_token_from_url(f"https://hrs.invalid/#{fragment}")
+        if token:
+            log("Microsoft Graph token captured from the OAuth redirect.")
+            return token
+    return None
+
+
 def wait_for_access_token_in_current_url(driver, timeout_seconds: int = 12) -> str | None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
         try:
-            token = extract_access_token_from_url(driver.current_url)
+            token = extract_access_token_from_oauth_capture(driver)
             if token:
                 log("Microsoft Graph token acquired from Microsoft redirect URL.")
                 return token
@@ -659,7 +774,7 @@ def click_stay_signed_in_confirmation(driver) -> bool:
     return False
 
 
-def wait_for_microsoft_redirect_after_duo(driver, timeout_seconds: int = 90) -> str | None:
+def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 90) -> str | None:
     deadline = time.time() + timeout_seconds
     last_log = 0.0
     while time.time() < deadline:
@@ -675,11 +790,11 @@ def wait_for_microsoft_redirect_after_duo(driver, timeout_seconds: int = 90) -> 
                 raise
         token = extract_access_token(driver)
         if token:
-            log("Microsoft Graph token acquired after DUO redirect.")
+            log("Microsoft Graph token acquired after Microsoft authentication.")
             return token
         now = time.time()
         if now - last_log > 10:
-            log("Waiting for Microsoft redirect after DUO approval.")
+            log("Waiting for Microsoft authentication to return to Graph Explorer.")
             last_log = now
         time.sleep(1.0)
     return None
@@ -725,6 +840,62 @@ def select_calendar_token(candidates: list[dict], context: str) -> str | None:
             log(f"Microsoft Graph token acquired from {context}.")
             return token
     return None
+
+
+def extract_bearer_token_from_headers(headers: object) -> str | None:
+    if not isinstance(headers, dict):
+        return None
+    for key, value in headers.items():
+        if str(key).lower() not in {"authorization", "proxy-authorization"}:
+            continue
+        token = normalize_token_value(value if isinstance(value, str) else None)
+        if looks_like_graph_access_token(token):
+            return token
+    return None
+
+
+def extract_access_token_from_performance_entries(entries: object) -> str | None:
+    if not isinstance(entries, list):
+        return None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        raw_message = entry.get("message")
+        try:
+            message = json.loads(raw_message) if isinstance(raw_message, str) else raw_message
+        except Exception:
+            continue
+        if not isinstance(message, dict):
+            continue
+        payload = message.get("message") if isinstance(message.get("message"), dict) else message
+        if not isinstance(payload, dict):
+            continue
+        method = str(payload.get("method") or "")
+        if method not in {"Network.requestWillBeSent", "Network.requestWillBeSentExtraInfo"}:
+            continue
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        token = extract_bearer_token_from_headers(params.get("headers"))
+        if token:
+            return token
+        request = params.get("request") if isinstance(params.get("request"), dict) else {}
+        token = extract_bearer_token_from_headers(request.get("headers"))
+        if token:
+            return token
+        token = extract_access_token_from_url(request.get("url"))
+        if token:
+            return token
+    return None
+
+
+def extract_access_token_from_performance_log(driver) -> str | None:
+    try:
+        entries = driver.get_log("performance")
+    except Exception:
+        return None
+    token = extract_access_token_from_performance_entries(entries)
+    if token:
+        log("Microsoft Graph token acquired from authenticated Graph request.")
+    return token
 
 
 def extract_access_token_from_indexeddb(driver) -> str | None:
@@ -908,6 +1079,12 @@ def extract_access_token(driver) -> str | None:
 def wait_for_access_token(driver, timeout_seconds: int = 20, include_indexeddb: bool = True) -> str | None:
     deadline = time.time() + timeout_seconds
     while time.time() < deadline:
+        token = extract_access_token_from_oauth_capture(driver)
+        if token:
+            return token
+        token = extract_access_token_from_performance_log(driver)
+        if token:
+            return token
         token = extract_access_token(driver)
         if token:
             return token
@@ -949,7 +1126,21 @@ def open_access_token_panel(driver) -> bool:
 
 
 def trigger_token_request(driver) -> None:
+    trigger_graph_query(driver)
     open_access_token_panel(driver)
+
+
+def trigger_graph_query(driver) -> bool:
+    selectors = [
+        (By.XPATH, "//button[contains(., 'Run query') or contains(., 'Run Query')]"),
+        (By.CSS_SELECTOR, "button[aria-label*='Run query' i]"),
+        (By.CSS_SELECTOR, "button[data-testid*='run' i]"),
+    ]
+    if click_first_available(driver, selectors, 4):
+        log("Triggered an authenticated Graph Explorer request.")
+        return True
+    log("Graph Explorer run-query control not found. Continuing token recovery.")
+    return False
 
 
 def extract_token_from_dom(driver) -> str | None:
@@ -1170,16 +1361,31 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
             log("Using existing Microsoft session.")
             return access_token
 
-        sign_in_clicked = click_graph_sign_in(driver)
-        if sign_in_clicked:
-            log("Clicked Graph Explorer sign-in.")
-        else:
-            log("Sign-in button not found. Checking existing session.")
+        # Use OAuth in this window first. This makes the complete token available in the
+        # redirect fragment on every OS; Graph Explorer's access-token panel intentionally
+        # renders a shortened value and is not a reliable token source on Windows.
+        log("Starting direct Microsoft Graph authorization in the background.")
+        driver.get(build_direct_graph_authorize_url())
+        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+        access_token = wait_for_access_token_in_current_url(driver, 4)
+        if access_token:
+            return access_token
+        login_window_found = find_login_window(driver)
+        sign_in_clicked = login_window_found
 
-        time.sleep(2)
+        if not login_window_found:
+            log("Direct authorization did not expose Microsoft login. Falling back to Graph Explorer sign-in.")
+            driver.get(GRAPH_EXPLORER_URL)
+            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
+            sign_in_clicked = click_graph_sign_in(driver)
+            if sign_in_clicked:
+                log("Clicked Graph Explorer sign-in.")
+                time.sleep(2)
+                login_window_found = wait_for_login_window(driver, 20)
+            else:
+                log("Sign-in button not found. Checking existing session.")
 
         if sign_in_clicked:
-            login_window_found = wait_for_login_window(driver, 20)
             if not login_window_found:
                 log("Graph Explorer sign-in did not expose Microsoft login. Opening direct Microsoft Graph authorization.")
                 driver.get(build_direct_graph_authorize_url())
@@ -1306,10 +1512,10 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                             raise
 
                 if duo_clicked:
-                    access_token = wait_for_microsoft_redirect_after_duo(driver, 90)
+                    access_token = wait_for_microsoft_oauth_redirect(driver, 90)
                 elif not auth_window_closed:
                     click_stay_signed_in_confirmation(driver)
-                    access_token = wait_for_access_token_in_current_url(driver, 20)
+                    access_token = wait_for_microsoft_oauth_redirect(driver, 90)
                 else:
                     access_token = None
                 if access_token:
@@ -1331,6 +1537,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
         try:
             if duo_clicked:
                 wait_for_graph_explorer_after_duo(driver, 60)
+            trigger_graph_query(driver)
             access_token = wait_for_access_token(driver, 30, include_indexeddb=True)
             if not access_token:
                 log("Triggering token request from Graph Explorer UI.")
@@ -1344,6 +1551,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
             driver = restart_graph_driver(driver, browser, headless, str(exc))
             if duo_clicked:
                 wait_for_graph_explorer_after_duo(driver, 60)
+            trigger_graph_query(driver)
             access_token = wait_for_access_token(driver, 30, include_indexeddb=True)
             if not access_token:
                 trigger_token_request(driver)

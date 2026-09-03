@@ -8,6 +8,32 @@ type PythonCommand = {
   args: string[]
 }
 
+export type PythonRunner = PythonCommand
+
+type PythonInfo = {
+  executable: string
+  version: string
+  major: number
+  minor: number
+  architecture: string
+}
+
+const MINIMUM_PYTHON = { major: 3, minor: 9 }
+const PYTHON_PROBE = [
+  'import json,platform,sys',
+  'print(json.dumps({',
+  '"executable": sys.executable,',
+  '"version": platform.python_version(),',
+  '"major": sys.version_info.major,',
+  '"minor": sys.version_info.minor,',
+  '"architecture": platform.machine()',
+  '}))'
+].join(';')
+
+function commandOutput(result: ReturnType<typeof spawnSync>) {
+  return `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim()
+}
+
 function copyDirectory(sourceDir: string, targetDir: string) {
   fs.mkdirSync(targetDir, { recursive: true })
   for (const entry of fs.readdirSync(sourceDir, { withFileTypes: true })) {
@@ -70,25 +96,44 @@ export function resolvePackagedScriptPath(scriptName: string) {
   throw new Error(`${scriptName} not found. Tried: ${candidates.join(', ')}`)
 }
 
-function canRunPython(command: PythonCommand) {
-  const result = spawnSync(command.bin, [...command.args, '-V'], { encoding: 'utf8' })
-  if (result.error) {
-    return false
+function inspectPython(command: PythonCommand): PythonInfo | null {
+  const result = spawnSync(command.bin, [...command.args, '-c', PYTHON_PROBE], {
+    encoding: 'utf8',
+    timeout: 10000,
+    windowsHide: true
+  })
+  if (result.error || result.status !== 0) return null
+  try {
+    const info = JSON.parse(String(result.stdout).trim()) as PythonInfo
+    if (
+      info.major !== MINIMUM_PYTHON.major ||
+      info.minor < MINIMUM_PYTHON.minor ||
+      !info.executable
+    ) {
+      return null
+    }
+    return info
+  } catch {
+    return null
   }
-  return result.status === 0
 }
 
 export function resolvePythonBin() {
   const envBin = process.env.PYTHON_BIN
   if (envBin) {
     const command = { bin: envBin, args: [] }
-    if (canRunPython(command)) {
+    if (inspectPython(command)) {
       return command
     }
   }
   const candidates: PythonCommand[] =
     process.platform === 'win32'
       ? [
+          { bin: 'py', args: ['-3.13'] },
+          { bin: 'py', args: ['-3.12'] },
+          { bin: 'py', args: ['-3.11'] },
+          { bin: 'py', args: ['-3.10'] },
+          { bin: 'py', args: ['-3.9'] },
           { bin: 'py', args: ['-3'] },
           { bin: 'python', args: [] },
           { bin: 'python3', args: [] }
@@ -97,11 +142,13 @@ export function resolvePythonBin() {
           { bin: 'python3', args: [] },
           { bin: 'python', args: [] }
         ]
-  const found = candidates.find(canRunPython)
+  const found = candidates.find(candidate => Boolean(inspectPython(candidate)))
   if (found) {
     return found
   }
-  throw new Error('Python 3 not found. Install it or set PYTHON_BIN to your Python 3 path.')
+  throw new Error(
+    'A compatible Python runtime was not found. Install Python 3.9 or newer, disable the Windows Store python.exe alias if it is broken, or set PYTHON_BIN to the full Python path.'
+  )
 }
 
 function getVenvPython(venvPath: string) {
@@ -114,47 +161,148 @@ function getVenvPython(venvPath: string) {
 export function ensurePythonEnv(pythonBin: PythonCommand, requiredPackages: string[]) {
   const venvPath = path.join(app.getPath('userData'), 'meetings-venv')
   const markerPath = path.join(venvPath, '.requirements')
-  const expected = requiredPackages.join('\n')
+  const pythonInfo = inspectPython(pythonBin)
+  if (!pythonInfo) {
+    throw new Error('Python 3.9 or newer is required to prepare the calendar runtime.')
+  }
+  const expected = JSON.stringify(
+    {
+      runtime: 2,
+      python: `${pythonInfo.major}.${pythonInfo.minor}`,
+      architecture: pythonInfo.architecture,
+      packages: requiredPackages
+    },
+    null,
+    2
+  )
   const venvPython = getVenvPython(venvPath)
 
   const hasValidVenv =
     fs.existsSync(venvPath) &&
     fs.existsSync(venvPython) &&
-    canRunPython({ bin: venvPython, args: [] })
+    Boolean(inspectPython({ bin: venvPython, args: [] }))
   const hasMarker = fs.existsSync(markerPath)
   const marker = hasMarker ? fs.readFileSync(markerPath, 'utf8') : ''
-  const needsInstall = !hasValidVenv || marker.trim() !== expected.trim()
+  const importsResult = hasValidVenv
+    ? spawnSync(
+        venvPython,
+        ['-c', 'import pytz, requests, selenium, urllib3; print("ok")'],
+        { encoding: 'utf8', timeout: 10000, windowsHide: true }
+      )
+    : null
+  const dependenciesLoad = importsResult?.status === 0
+  const needsInstall = !hasValidVenv || !dependenciesLoad || marker.trim() !== expected.trim()
 
   if (!needsInstall) {
     return venvPython
   }
 
-  if (fs.existsSync(venvPath) && !hasValidVenv) {
+  if (fs.existsSync(venvPath) && (!hasValidVenv || marker.trim() !== expected.trim())) {
     fs.rmSync(venvPath, { recursive: true, force: true })
   }
 
-  const venvResult = spawnSync(pythonBin.bin, [...pythonBin.args, '-m', 'venv', venvPath], {
-    encoding: 'utf8'
-  })
-  if (venvResult.status !== 0) {
-    throw new Error(
-      venvResult.stderr?.trim() ||
-        'Python is missing or venv creation failed. Install python3 and try again.'
-    )
+  if (!fs.existsSync(venvPython)) {
+    const venvResult = spawnSync(pythonBin.bin, [...pythonBin.args, '-m', 'venv', venvPath], {
+      encoding: 'utf8',
+      timeout: 120000,
+      windowsHide: true
+    })
+    if (venvResult.status !== 0) {
+      throw new Error(
+        commandOutput(venvResult) ||
+          'Python virtual-environment creation failed. Repair the Python installation and try again.'
+      )
+    }
   }
 
   const installedVenvPython = getVenvPython(venvPath)
-  spawnSync(installedVenvPython, ['-m', 'pip', 'install', '--upgrade', 'pip'], {
-    encoding: 'utf8'
+  let pipResult = spawnSync(installedVenvPython, ['-m', 'pip', '--version'], {
+    encoding: 'utf8',
+    timeout: 30000,
+    windowsHide: true
   })
+  if (pipResult.status !== 0) {
+    pipResult = spawnSync(installedVenvPython, ['-m', 'ensurepip', '--upgrade'], {
+      encoding: 'utf8',
+      timeout: 120000,
+      windowsHide: true
+    })
+    if (pipResult.status !== 0) {
+      throw new Error(commandOutput(pipResult) || 'Python pip could not be initialized.')
+    }
+  }
   const installResult = spawnSync(
     installedVenvPython,
-    ['-m', 'pip', 'install', ...requiredPackages],
-    { encoding: 'utf8' }
+    [
+      '-m',
+      'pip',
+      'install',
+      '--disable-pip-version-check',
+      '--no-input',
+      '--retries',
+      '3',
+      '--timeout',
+      '60',
+      ...requiredPackages
+    ],
+    { encoding: 'utf8', timeout: 10 * 60 * 1000, windowsHide: true }
   )
   if (installResult.status !== 0) {
-    throw new Error(installResult.stderr?.trim() || 'Failed to install Python packages.')
+    throw new Error(
+      commandOutput(installResult) ||
+        'Failed to install the calendar Python packages. Check the network or proxy and try again.'
+    )
+  }
+  const verifyResult = spawnSync(
+    installedVenvPython,
+    ['-c', 'import pytz, requests, selenium, urllib3; print("ok")'],
+    { encoding: 'utf8', timeout: 30000, windowsHide: true }
+  )
+  if (verifyResult.status !== 0) {
+    throw new Error(commandOutput(verifyResult) || 'The Python calendar runtime failed verification.')
   }
   fs.writeFileSync(markerPath, expected)
   return installedVenvPython
+}
+
+function bundledRuntimeCandidates() {
+  const executable = process.platform === 'win32' ? 'hrs-python-runtime.exe' : 'hrs-python-runtime'
+  return [
+    path.join(
+      process.resourcesPath,
+      'app.asar.unpacked',
+      'build',
+      'python-runtime',
+      'hrs-python-runtime',
+      executable
+    ),
+    path.join(process.resourcesPath, 'build', 'python-runtime', 'hrs-python-runtime', executable),
+    path.join(app.getAppPath(), 'build', 'python-runtime', 'hrs-python-runtime', executable)
+  ]
+}
+
+function canRunBundledRuntime(runtimePath: string) {
+  const result = spawnSync(runtimePath, ['--runtime-version'], {
+    encoding: 'utf8',
+    timeout: 30000,
+    windowsHide: true
+  })
+  return result.status === 0 && String(result.stdout).includes('hrs-python-runtime-v1')
+}
+
+export function resolvePythonRunner(
+  scriptName: 'meetings_fetch.py' | 'agenda_fetch.py',
+  requiredPackages: string[]
+): PythonRunner {
+  const bundledRuntime = bundledRuntimeCandidates().find(
+    candidate => fs.existsSync(candidate) && canRunBundledRuntime(candidate)
+  )
+  const entrypoint = scriptName.replace(/\.py$/i, '')
+  if (bundledRuntime) {
+    return { bin: bundledRuntime, args: [entrypoint] }
+  }
+
+  const scriptPath = resolvePackagedScriptPath(scriptName)
+  const venvPython = ensurePythonEnv(resolvePythonBin(), requiredPackages)
+  return { bin: venvPython, args: [scriptPath] }
 }

@@ -2,7 +2,7 @@
   "name": "hrs-desktop",
   "description": "HRS Desktop time logging app",
   "private": true,
-  "version": "1.0.11",
+  "version": "1.0.16",
   "author": "b4db1r3",
   "type": "module",
   "scripts": {
@@ -10,20 +10,21 @@
     "build": "vite build",
     "preview": "vite preview",
     "test:e2e": "npm run build && playwright test",
+    "test:python": "node scripts/run-python-tests.mjs",
     "test:e2e:ui": "playwright test --ui",
     "test:e2e:report": "playwright show-report",
     "icon:tray": "node scripts/generate-win-icon.mjs",
     "icon:mac": "node scripts/generate-icon.mjs",
-    "dist:mac": "npm run icon:tray && npm run build && electron-builder --mac",
-    "dist:mac:arm64": "npm run icon:tray && npm run build && electron-builder --mac --arm64",
-    "dist:mac:x64": "npm run icon:tray && npm run build && electron-builder --mac --x64",
-    "dist:mac:universal": "npm run icon:tray && npm run build && electron-builder --mac --universal",
+    "release:notes": "node scripts/prepare-release-notes.mjs",
+    "python:bundle": "node scripts/build-python-runtime.mjs",
+    "dist:mac": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac",
+    "dist:mac:arm64": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --x64",
+    "dist:mac:universal": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --universal",
     "install:mac:dmg": "bash scripts/install-mac-app-from-dmg.sh",
     "dist:mac:install": "npm run dist:mac && npm run install:mac:dmg",
-    "dist:win": "npm run icon:tray && npm run build && electron-builder --win",
-    "dist:win:x64": "npm run icon:tray && npm run build && electron-builder --win --x64",
-    "dist:win:ia32": "npm run icon:tray && npm run build && electron-builder --win --ia32",
-    "dist:all": "npm run icon:tray && npm run build && electron-builder --mac --win"
+    "dist:win": "npm run release:notes && npm run python:bundle && npm run icon:tray && npm run build && electron-builder --win",
+    "dist:win:x64": "npm run release:notes && npm run python:bundle && npm run icon:tray && npm run build && electron-builder --win --x64"
   },
   "dependencies": {
     "@mantine/core": "^8.3.11",
@@ -87,6 +88,7 @@
     ],
     "asarUnpack": [
       "scripts/**",
+      "build/python-runtime/**",
       "node_modules/electron-liquid-glass/prebuilds/**",
       "node_modules/**/*.node"
     ],
@@ -97,6 +99,9 @@
         "repo": "hrs-desktop"
       }
     ],
+    "releaseInfo": {
+      "releaseNotesFile": "release-notes.md"
+    },
     "mac": {
       "target": [
         {
@@ -151,8 +156,7 @@
         {
           "target": "nsis",
           "arch": [
-            "x64",
-            "ia32"
+            "x64"
           ]
         },
         {
@@ -168,8 +172,12 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "selectPerMachineByDefault": false,
+      "allowToChangeInstallationDirectory": false,
       "allowElevation": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "HRS Desktop Setup ${version}.${ext}",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "HRS Desktop"

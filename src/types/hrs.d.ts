@@ -201,11 +201,28 @@ type SupabaseWorkReportRow = {
   synced_at?: string
 }
 
+type SupabaseProjectUsage = {
+  customer: string
+  project: string
+  usedSeconds: number
+  contributorCount: number
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+  }>
+}
+
 type SharedFictiveTaskUsage = {
   taskId: string
   usedSeconds: number
   contributorCount: number
   lastReportedAt: string | null
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+  }>
 }
 
 type MeetingItem = {
@@ -327,6 +344,7 @@ type ProjectMission = {
   assignedEmployees: string[]
   plannedHours: number | null
   cappedHours: number | null
+  projectCappedHours?: number | null
   status: MissionStatus
   startDate?: string
   dueDate?: string
@@ -453,6 +471,7 @@ type AppPreferences = {
   filtersOpen: boolean
   reportsOpen: boolean
   logWorkOpen: boolean
+  trayPinned: boolean
   autoSuggestEnabled: boolean
   heatmapEnabled: boolean
   exportFiltered: boolean
@@ -583,8 +602,13 @@ type HrsApi = {
     startDate: string,
     endDate: string
   ) => Promise<SupabaseWorkReportRow[]>
+  getSupabaseProjectUsage: (
+    customer: string,
+    project: string
+  ) => Promise<SupabaseProjectUsage>
   getSharedFictiveTasks: () => Promise<{
     available: boolean
+    globalHoursAvailable: boolean
     tasks: ProjectMission[]
   }>
   upsertSharedFictiveTask: (payload: {
@@ -597,6 +621,7 @@ type HrsApi = {
     name: string
     plannedHours?: number | null
     cappedHours?: number | null
+    projectCappedHours?: number | null
     status?: MissionStatus
     notes?: string
     assignedEmployeeIds?: Array<string | number>
@@ -625,6 +650,7 @@ type HrsApi = {
   upsertProjectMission: (payload: {
     id?: string
     customerName: string
+    projectName?: string | null
     name: string
     jiraIssueKey: string
     hrsTaskIds?: string[]
@@ -633,6 +659,7 @@ type HrsApi = {
     assignedEmployees?: string[]
     plannedHours?: number | null
     cappedHours?: number | null
+    projectCappedHours?: number | null
     status?: MissionStatus
     startDate?: string
     dueDate?: string
@@ -679,7 +706,15 @@ type HrsApi = {
     metrics?: SlackUpdateMetrics | null
   }) => Promise<SlackPostResult>
   getPreferences: () => Promise<AppPreferences>
-	  setPreferences: (next: {
+  getTrayPinned: () => Promise<boolean>
+  setTrayPinned: (pinned: boolean) => Promise<boolean>
+  dismissTray: () => Promise<boolean>
+  resizeTrayToContent: (height: number) => Promise<{
+    height: number
+    maxHeight: number
+    constrained: boolean
+  }>
+  setPreferences: (next: {
     jiraActiveOnly?: boolean
     jiraReportedOnly?: boolean
     jiraSectionOpen?: boolean
@@ -695,6 +730,7 @@ type HrsApi = {
     filtersOpen?: boolean
     reportsOpen?: boolean
     logWorkOpen?: boolean
+    trayPinned?: boolean
     autoSuggestEnabled?: boolean
     heatmapEnabled?: boolean
     exportFiltered?: boolean
@@ -794,7 +830,9 @@ type HrsApi = {
   installUpdate: () => Promise<boolean>
   onUpdateState: (handler: (state: AppUpdateState) => void) => () => void
   onTrayOpened: (handler: () => void) => () => void
-  onTrayClosing: (handler: (reason: 'blur' | 'toggle' | 'open-main') => void) => () => void
+  onTrayClosing: (
+    handler: (reason: 'blur' | 'toggle' | 'open-main' | 'dismiss') => void
+  ) => () => void
 }
 
 declare global {

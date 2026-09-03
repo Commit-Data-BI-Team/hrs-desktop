@@ -1,5 +1,88 @@
 # HRS Desktop Changelog
 
+## Unreleased
+
+## 1.0.16
+
+### Highlights
+
+- Added reliable, fully headless Microsoft meeting sync on Windows and macOS, with a bundled Python runtime and pinned dependencies in the Windows full installer.
+- Added separate shared gauges for overall project hours and selected fictive-task hours, including each employee's hours and percentage contribution.
+- Combined coworkers in Cross projects whenever they report to the same customer and project, even when they use different tasks.
+- Made personal HRS reports and team Supabase hours load automatically and stay visible through temporary sync or network failures.
+- Refreshes project and task gauges after reporting, meeting logging, synchronization, editing, and deletion, while enforcing both caps independently.
+- Preserves saved HRS credentials during temporary outages, provides a normal Login to HRS recovery action, and prevents competing sign-in attempts.
+- Prevents every tray and application window from opening fullscreen or maximized and safely fits windows to the usable monitor area.
+- Isolates automated test sessions from production Supabase and removes the synthetic Acme Labs, Northwind, and Globex report data.
+
+> **Administrator note:** Apply `supabase/migrations/003_global_project_hours.sql` to the connected Supabase project before using global project budgets.
+
+## 1.0.15
+
+### Reliable Microsoft meeting sync
+
+- Captures the complete Microsoft Graph access token from the authenticated calendar request instead of relying on the shortened token shown by Graph Explorer.
+- Keeps Microsoft meeting sync fully headless on Windows and macOS without opening a visible Chrome window.
+- Searches nested Microsoft/DUO authentication frames and shows the in-app choice between **Send DUO push** and **Make a call**.
+- Improved meeting authentication errors so employees receive a short, actionable message instead of a Python traceback.
+- Applied the same meeting authentication flow on Windows and macOS.
+
+### Supabase email confirmation
+
+- Added a safe local confirmation page for the `localhost:3000` link already used by the Supabase project.
+- Keeps the app ready to receive the email redirect on both Windows and macOS while HRS Desktop is open.
+- Added an explicit **Sign in** action after confirmation so a user is never trapped on the confirmation state.
+- Applied the correct confirmation redirect to both new sign-ups and resent confirmation emails.
+
+## 1.0.14
+
+### Automatic shared project reporting
+
+- Kept personal Hours, Logged days, and Missing KPIs sourced from Live HRS while loading team cross-project data automatically from Supabase.
+- Removed the need for employees to choose an HRS/Supabase source in the tray Reports page.
+- Combined coworkers when both reported to the same **customer and project**, even when they selected different tasks.
+- Added the project name and each employee's task breakdown to Cross projects so combined totals remain easy to audit.
+- Continued to hide the employee-count badge when only one employee is visible.
+
+### Shared project gauges and caps
+
+- Updated the Quick Log gauge to use the combined Supabase total for the selected customer and project across all visible contributors and tasks.
+- Refreshes project usage after Supabase sync and whenever the Quick Log tray is reopened or refocused.
+- Enforces and displays one combined project cap when multiple capped fictive tasks belong to the same customer and project.
+- Keeps the existing local or shared-task calculation as a safe fallback when Supabase is unavailable.
+
+## 1.0.13
+
+### Sticky and responsive tray
+
+- Added a persistent **Pin tray** toggle that keeps the tray open when notifications or other applications take focus on Windows and macOS.
+- Added an explicit **Close tray** button while preserving tray-icon and main-window dismissal behavior.
+- Added a matching **Keep tray open** option to the tray context menu.
+- Protected pinned windows from delayed blur events that could otherwise close the tray unexpectedly.
+- Made the tray grow and shrink automatically with the visible content on Windows and macOS.
+- Removed unnecessary outer scrolling whenever the content fits within the current monitor's usable area.
+- Kept a safe scrolling fallback for content that is taller than the available screen.
+
+### Employee project view
+
+- Hid the employee-count badge when the filtered project view contains only one employee.
+- Kept cross-project results limited to projects with two or more visible reporting employees.
+
+## 1.0.12
+
+### Reliable first login and upgrades
+
+- Fixed the first-login credentials flow on Windows and macOS so entering or saving a password no longer enables **Auto-login** by itself.
+- Prevented failed automatic login attempts from repeatedly refreshing and resubmitting the HRS login page; the app now falls back to a visible manual login.
+- Improved session detection after a successful HRS login so startup waits briefly for the authenticated cookie before continuing.
+- Added a one-time upgrade migration that preserves the saved HRS username and password while resetting **Auto-login** to off for users upgrading from the affected version.
+
+### Windows installer safety
+
+- The standard **HRS Desktop Setup 1.0.12.exe** installer now upgrades the existing installation in place using the same application identity and previous install location.
+- Existing application data and saved credentials are retained during an upgrade; the old application files are replaced by the new version.
+- Removed the alternate installation-directory choice to avoid accidental side-by-side installations.
+
 ## 1.0.11
 
 ### Shared team tasks and gauges

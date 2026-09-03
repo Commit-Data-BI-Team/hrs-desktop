@@ -982,7 +982,11 @@ export function registerHrsIpc(
 
   ipcMain.handle('hrs:setCredentials', async (_event, username: string, password: string) => {
     const safeUsername = validateStringLength(username, 1, 200)
-    const safePassword = validateStringLength(password, 1, 300)
+    if (typeof password !== 'string' || password.length < 1 || password.length > 300) {
+      throw new Error('HRS password must contain between 1 and 300 characters')
+    }
+    const safePassword = password.replace(/\0/g, '')
+    if (!safePassword.length) throw new Error('HRS password cannot be empty')
     await setHrsCredentials(safeUsername, safePassword)
     return true
   })
@@ -1020,15 +1024,23 @@ export function registerHrsIpc(
           headers: {
             Cookie: cookieHeader,
             Accept: 'application/json'
-          }
+          },
+          signal: AbortSignal.timeout(15_000)
         }
       )
+      const responseUrl = res.url.toLowerCase()
+      if (responseUrl.includes('/admin/login/')) {
+        clearCustomAuth()
+        return false
+      }
       if (!res.ok) {
         if (res.status === 401 || res.status === 403) {
           clearCustomAuth()
           return false
         }
-        return false
+        throw new Error(
+          `HRS_TEMPORARY_UNAVAILABLE: HRS returned ${res.status} while checking the session.`
+        )
       }
       void ensureCustomAuth(loginSession).catch(() => {})
       return true
@@ -1036,7 +1048,14 @@ export function registerHrsIpc(
       if (err instanceof Error && err.message === 'AUTH_REQUIRED') {
         return false
       }
-      return false
+      if (err instanceof Error && err.message.startsWith('HRS_TEMPORARY_UNAVAILABLE:')) {
+        throw err
+      }
+      throw new Error(
+        `HRS_TEMPORARY_UNAVAILABLE: Could not reach HRS while checking the session. ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      )
     }
   })
 

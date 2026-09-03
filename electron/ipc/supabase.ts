@@ -1,5 +1,5 @@
 import { ipcMain } from 'electron'
-import { createClient, type SupabaseClient } from '@supabase/supabase-js'
+import { createClient, type SupabaseClient, type User } from '@supabase/supabase-js'
 import WebSocket from 'ws'
 import {
   getSupabaseConfig,
@@ -7,6 +7,10 @@ import {
   setSupabaseConfig,
   setSupabaseSession
 } from '../supabase/config'
+import {
+  ensureSupabaseConfirmationServer,
+  SUPABASE_CONFIRMATION_REDIRECT_URL
+} from '../supabase/confirmationServer'
 
 type SupabaseProfile = {
   id: string
@@ -39,6 +43,11 @@ type WorkReportInput = Omit<WorkReportRow, 'source' | 'synced_at'> & {
   source?: string
 }
 
+type ProjectUsageReportRow = Pick<
+  WorkReportRow,
+  'employee_id' | 'employee_name' | 'seconds'
+>
+
 type MissionStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived'
 
 type SharedFictiveTaskRow = {
@@ -65,6 +74,18 @@ type SharedFictiveTaskUsageRow = {
   used_seconds: number
   contributor_count: number
   last_reported_at: string | null
+  employees?: unknown
+}
+
+type SharedProjectHourBudgetRow = {
+  scope_key: string
+  customer: string
+  project: string
+  capped_seconds: number
+  created_by: string
+  updated_by: string
+  created_at: string
+  updated_at: string
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
@@ -75,6 +96,7 @@ const MISSION_STATUSES = new Set<MissionStatus>([
   'done',
   'archived'
 ])
+let cachedSupabaseClient: { configKey: string; promise: Promise<SupabaseClient> } | null = null
 
 function cleanString(value: unknown, max = 500) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -114,7 +136,23 @@ function cleanNullableHours(value: unknown) {
   return hours
 }
 
-function normalizeSharedFictiveTask(row: SharedFictiveTaskRow) {
+function normalizeSharedProjectKeyPart(value: string) {
+  return value.normalize('NFKC').trim().replace(/\s+/g, ' ').toLowerCase()
+}
+
+function getSharedProjectScopeKey(customer: string, project?: string | null) {
+  const normalizedCustomer = customer.trim() || 'No customer'
+  const normalizedProject = project?.trim() || normalizedCustomer
+  return JSON.stringify([
+    normalizeSharedProjectKeyPart(normalizedCustomer),
+    normalizeSharedProjectKeyPart(normalizedProject)
+  ])
+}
+
+function normalizeSharedFictiveTask(
+  row: SharedFictiveTaskRow,
+  projectCappedSeconds: number | null = null
+) {
   return {
     id: row.id,
     customerName: row.customer,
@@ -129,6 +167,8 @@ function normalizeSharedFictiveTask(row: SharedFictiveTaskRow) {
       typeof row.planned_seconds === 'number' ? row.planned_seconds / 3600 : null,
     cappedHours:
       typeof row.capped_seconds === 'number' ? row.capped_seconds / 3600 : null,
+    projectCappedHours:
+      typeof projectCappedSeconds === 'number' ? projectCappedSeconds / 3600 : null,
     status: row.status,
     dependencies: [],
     notes: row.notes ?? undefined,
@@ -138,6 +178,37 @@ function normalizeSharedFictiveTask(row: SharedFictiveTaskRow) {
     createdBy: row.created_by,
     archivedAt: row.archived_at
   }
+}
+
+function isSharedProjectBudgetSchemaMissing(
+  error: { code?: string; message?: string } | null | undefined
+) {
+  const message = error?.message?.toLowerCase() ?? ''
+  return error?.code === '42P01' || message.includes('shared_project_hour_budgets')
+}
+
+function normalizeUsageEmployees(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(item => {
+      const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+      const employeeId = cleanNumber(record.employeeId)
+      const employeeName = cleanString(record.employeeName, 250)
+      const seconds = cleanNumber(record.seconds)
+      if (employeeId === null || !employeeName || seconds === null) return null
+      return {
+        employeeId,
+        employeeName,
+        seconds: Math.max(0, seconds)
+      }
+    })
+    .filter(
+      (
+        employee
+      ): employee is { employeeId: number; employeeName: string; seconds: number } =>
+        Boolean(employee)
+    )
+    .sort((a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName))
 }
 
 function isSharedSchemaMissing(error: { code?: string; message?: string } | null | undefined) {
@@ -151,41 +222,106 @@ function isSharedSchemaMissing(error: { code?: string; message?: string } | null
   )
 }
 
+async function persistSupabaseAuthSession(
+  session: { access_token: string; refresh_token: string; expires_at?: number } | null
+) {
+  await setSupabaseSession(
+    session
+      ? {
+          access_token: session.access_token,
+          refresh_token: session.refresh_token,
+          expires_at: session.expires_at
+        }
+      : null
+  )
+}
+
 async function createSupabaseClient() {
   const { url, publishableKey } = getSupabaseConfig()
-  const client = createClient(url, publishableKey, {
-    auth: {
-      persistSession: false,
-      autoRefreshToken: false
-    },
-    realtime: {
-      transport: WebSocket
-    }
-  })
-  const session = await getSupabaseSession()
-  if (session?.access_token && session.refresh_token) {
-    const { data, error } = await client.auth.setSession({
-      access_token: session.access_token,
-      refresh_token: session.refresh_token
-    })
-    if (!error && data.session) {
-      await setSupabaseSession({
-        access_token: data.session.access_token,
-        refresh_token: data.session.refresh_token,
-        expires_at: data.session.expires_at
-      })
-    }
+  const configKey = `${url}\u0000${publishableKey}`
+  if (cachedSupabaseClient?.configKey === configKey) {
+    return cachedSupabaseClient.promise
   }
-  return client
+
+  const promise = (async () => {
+    const client = createClient(url, publishableKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: true
+      },
+      realtime: {
+        transport: WebSocket
+      }
+    })
+
+    const storedSession = await getSupabaseSession()
+    if (storedSession?.access_token && storedSession.refresh_token) {
+      let { data, error } = await client.auth.setSession({
+        access_token: storedSession.access_token,
+        refresh_token: storedSession.refresh_token
+      })
+      if (error || !data.session) {
+        const refreshed = await client.auth.refreshSession({
+          refresh_token: storedSession.refresh_token
+        })
+        data = refreshed.data
+        error = refreshed.error
+      }
+      if (!error && data.session) await persistSupabaseAuthSession(data.session)
+    }
+
+    client.auth.onAuthStateChange((event, session) => {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        if (session) void persistSupabaseAuthSession(session)
+      } else if (event === 'SIGNED_OUT') {
+        void persistSupabaseAuthSession(null)
+      }
+    })
+    return client
+  })()
+
+  cachedSupabaseClient = { configKey, promise }
+  try {
+    return await promise
+  } catch (error) {
+    if (cachedSupabaseClient?.promise === promise) cachedSupabaseClient = null
+    throw error
+  }
+}
+
+function isRefreshableSupabaseAuthError(error: { message?: string } | null | undefined) {
+  const message = error?.message?.toLowerCase() ?? ''
+  return (
+    message.includes('jwt') ||
+    message.includes('token') ||
+    message.includes('auth session') ||
+    message.includes('not authenticated')
+  )
+}
+
+async function refreshSupabaseSession(client: SupabaseClient) {
+  const { data, error } = await client.auth.refreshSession()
+  if (error || !data.session) return false
+  await persistSupabaseAuthSession(data.session)
+  return true
+}
+
+async function getAuthenticatedSupabaseUser(client: SupabaseClient): Promise<User | null> {
+  let result = await client.auth.getUser()
+  if (result.error && isRefreshableSupabaseAuthError(result.error)) {
+    if (await refreshSupabaseSession(client)) result = await client.auth.getUser()
+  }
+  if (result.error) throw new Error(result.error.message)
+  return result.data.user ?? null
 }
 
 async function getProfile(client: SupabaseClient): Promise<SupabaseProfile | null> {
-  const { data: userData, error: userError } = await client.auth.getUser()
-  if (userError || !userData.user) return null
+  const user = await getAuthenticatedSupabaseUser(client)
+  if (!user) return null
   const { data, error } = await client
     .from('profiles')
     .select('id,email,employee_id,display_name,role')
-    .eq('id', userData.user.id)
+    .eq('id', user.id)
     .maybeSingle()
   if (error) throw new Error(error.message)
   return (data as SupabaseProfile | null) ?? null
@@ -223,29 +359,36 @@ function normalizeReportRows(rows: unknown): WorkReportInput[] {
 }
 
 export function registerSupabaseIpc() {
+  void ensureSupabaseConfirmationServer()
+
   ipcMain.handle('supabase:getStatus', async () => {
     const config = getSupabaseConfig()
     const client = await createSupabaseClient()
-    const { data } = await client.auth.getUser()
-    const profile = data.user ? await getProfile(client) : null
+    const user = await getAuthenticatedSupabaseUser(client)
+    const profile = user ? await getProfile(client) : null
     return {
       configured: Boolean(config.url && config.publishableKey),
       url: config.url,
       hasPublishableKey: Boolean(config.publishableKey),
-      email: data.user?.email ?? null,
+      email: user?.email ?? null,
       profile
     }
   })
 
   ipcMain.handle('supabase:setConfig', async (_event, url: string, publishableKey: string) => {
-    return setSupabaseConfig(url, publishableKey)
+    const config = setSupabaseConfig(url, publishableKey)
+    cachedSupabaseClient = null
+    return config
   })
 
   ipcMain.handle('supabase:signUp', async (_event, email: string, password: string) => {
     const client = await createSupabaseClient()
     const { data, error } = await client.auth.signUp({
       email: cleanString(email, 250),
-      password: String(password || '')
+      password: String(password || ''),
+      options: {
+        emailRedirectTo: SUPABASE_CONFIRMATION_REDIRECT_URL
+      }
     })
     if (error) throw new Error(error.message)
     if (data.session) {
@@ -281,7 +424,10 @@ export function registerSupabaseIpc() {
     const client = await createSupabaseClient()
     const { error } = await client.auth.resend({
       type: 'signup',
-      email: cleanString(email, 250)
+      email: cleanString(email, 250),
+      options: {
+        emailRedirectTo: SUPABASE_CONFIRMATION_REDIRECT_URL
+      }
     })
     if (error) throw new Error(error.message)
     return true
@@ -318,22 +464,67 @@ export function registerSupabaseIpc() {
 
   ipcMain.handle('supabase:getWorkReports', async (_event, startDate: string, endDate: string) => {
     const client = await createSupabaseClient()
-    const { data, error } = await client
-      .from('work_reports')
-      .select('*')
-      .gte('report_date', validateDate(startDate))
-      .lte('report_date', validateDate(endDate))
-      .order('report_date', { ascending: true })
-      .order('employee_name', { ascending: true })
+    const fromDate = validateDate(startDate)
+    const toDate = validateDate(endDate)
+    const runQuery = () =>
+      client
+        .from('work_reports')
+        .select('*')
+        .gte('report_date', fromDate)
+        .lte('report_date', toDate)
+        .order('report_date', { ascending: true })
+        .order('employee_name', { ascending: true })
+    let { data, error } = await runQuery()
+    if (error && isRefreshableSupabaseAuthError(error) && (await refreshSupabaseSession(client))) {
+      const retried = await runQuery()
+      data = retried.data
+      error = retried.error
+    }
     if (error) throw new Error(error.message)
     return (data ?? []) as WorkReportRow[]
   })
 
+  ipcMain.handle('supabase:getProjectUsage', async (_event, payload: unknown) => {
+    const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    const customer = cleanString(record.customer, 250)
+    const project = cleanString(record.project, 250)
+    if (!customer || !project) throw new Error('Customer and project are required')
+
+    const client = await createSupabaseClient()
+    const { data, error } = await client
+      .from('work_reports')
+      .select('employee_id,employee_name,seconds')
+      .eq('customer', customer)
+      .eq('project', project)
+    if (error) throw new Error(error.message)
+
+    const employees = new Map<number, { employeeId: number; employeeName: string; seconds: number }>()
+    for (const row of (data ?? []) as ProjectUsageReportRow[]) {
+      const current = employees.get(row.employee_id) ?? {
+        employeeId: row.employee_id,
+        employeeName: row.employee_name,
+        seconds: 0
+      }
+      current.seconds += Math.max(0, Number(row.seconds) || 0)
+      employees.set(row.employee_id, current)
+    }
+
+    return {
+      customer,
+      project,
+      usedSeconds: Array.from(employees.values()).reduce((sum, employee) => sum + employee.seconds, 0),
+      contributorCount: employees.size,
+      employees: Array.from(employees.values()).sort(
+        (a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName)
+      )
+    }
+  })
+
   ipcMain.handle('supabase:getSharedFictiveTasks', async () => {
     const client = await createSupabaseClient()
-    const { data: userData, error: userError } = await client.auth.getUser()
-    if (userError || !userData.user) {
-      return { available: false, tasks: [] }
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) {
+      return { available: false, globalHoursAvailable: false, tasks: [] }
     }
     const { data, error } = await client
       .from('shared_fictive_tasks')
@@ -342,20 +533,42 @@ export function registerSupabaseIpc() {
       .order('customer', { ascending: true })
       .order('name', { ascending: true })
     if (error) {
-      if (isSharedSchemaMissing(error)) return { available: false, tasks: [] }
+      if (isSharedSchemaMissing(error)) {
+        return { available: false, globalHoursAvailable: false, tasks: [] }
+      }
       throw new Error(error.message)
     }
+
+    const { data: budgetData, error: budgetError } = await client
+      .from('shared_project_hour_budgets')
+      .select('*')
+    const globalHoursAvailable = !budgetError
+    if (budgetError && !isSharedProjectBudgetSchemaMissing(budgetError)) {
+      throw new Error(budgetError.message)
+    }
+    const budgetsByScope = new Map(
+      ((budgetData ?? []) as SharedProjectHourBudgetRow[]).map(budget => [
+        budget.scope_key,
+        budget.capped_seconds
+      ])
+    )
     return {
       available: true,
-      tasks: ((data ?? []) as SharedFictiveTaskRow[]).map(normalizeSharedFictiveTask)
+      globalHoursAvailable,
+      tasks: ((data ?? []) as SharedFictiveTaskRow[]).map(task =>
+        normalizeSharedFictiveTask(
+          task,
+          budgetsByScope.get(getSharedProjectScopeKey(task.customer, task.project)) ?? null
+        )
+      )
     }
   })
 
   ipcMain.handle('supabase:upsertSharedFictiveTask', async (_event, payload: unknown) => {
     const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
     const client = await createSupabaseClient()
-    const { data: userData, error: userError } = await client.auth.getUser()
-    if (userError || !userData.user) throw new Error('Supabase auth required to share a task')
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) throw new Error('Supabase auth required to share a task')
     const profile = await getProfile(client)
     const requestedId = cleanUuid(record.id)
     const originalTaskId = cleanNumber(record.originalHrsTaskId ?? record.hrsTaskId)
@@ -371,6 +584,9 @@ export function registerSupabaseIpc() {
     }
     const plannedHours = cleanNullableHours(record.plannedHours)
     const cappedHours = cleanNullableHours(record.cappedHours)
+    const projectCappedHours = cleanNullableHours(record.projectCappedHours)
+    const project = cleanNullableString(record.projectName, 250) ?? customer
+    const projectScopeKey = getSharedProjectScopeKey(customer, project)
     const assignedEmployeeIds = Array.isArray(record.assignedEmployeeIds)
       ? record.assignedEmployeeIds
           .map(cleanNumber)
@@ -390,19 +606,65 @@ export function registerSupabaseIpc() {
       throw new Error(existingError.message)
     }
 
+    const { data: existingBudgetData, error: existingBudgetError } = await client
+      .from('shared_project_hour_budgets')
+      .select('*')
+      .eq('scope_key', projectScopeKey)
+      .maybeSingle()
+    if (existingBudgetError && !isSharedProjectBudgetSchemaMissing(existingBudgetError)) {
+      throw new Error(existingBudgetError.message)
+    }
+    if (existingBudgetError && projectCappedHours !== null) {
+      throw new Error(
+        'Global project hours are not installed. Apply Supabase migration 003_global_project_hours.sql.'
+      )
+    }
+
+    let projectBudget = (existingBudgetData as SharedProjectHourBudgetRow | null) ?? null
+    if (projectCappedHours !== null && !existingBudgetError) {
+      const projectCappedSeconds = Math.round(projectCappedHours * 3600)
+      if (
+        projectBudget &&
+        projectBudget.created_by !== user.id &&
+        profile?.role !== 'manager' &&
+        projectBudget.capped_seconds !== projectCappedSeconds
+      ) {
+        throw new Error(
+          'Only the employee who created the project budget or a manager can change global project hours.'
+        )
+      }
+      if (!projectBudget || projectBudget.capped_seconds !== projectCappedSeconds) {
+        const budgetRow = {
+          scope_key: projectScopeKey,
+          customer,
+          project,
+          capped_seconds: projectCappedSeconds,
+          created_by: projectBudget?.created_by ?? user.id,
+          updated_by: user.id
+        }
+        const { data: savedBudget, error: saveBudgetError } = await client
+          .from('shared_project_hour_budgets')
+          .upsert(budgetRow, { onConflict: 'scope_key' })
+          .select('*')
+          .single()
+        if (saveBudgetError) throw new Error(saveBudgetError.message)
+        projectBudget = savedBudget as SharedProjectHourBudgetRow
+      }
+    }
+
     const existingRow = existing as SharedFictiveTaskRow | null
     if (
       existingRow &&
-      existingRow.created_by !== userData.user.id &&
+      existingRow.created_by !== user.id &&
       profile?.role !== 'manager'
     ) {
-      return normalizeSharedFictiveTask(existingRow)
+      return normalizeSharedFictiveTask(existingRow, projectBudget?.capped_seconds ?? null)
     }
 
     const row = {
       id: existingRow?.id ?? requestedId ?? undefined,
       customer,
-      project: cleanNullableString(record.projectName, 250),
+      project,
       original_hrs_task_id: originalTaskId,
       original_hrs_task_name: cleanNullableString(record.originalHrsTaskName, 500),
       jira_issue_key: jiraIssueKey,
@@ -412,7 +674,7 @@ export function registerSupabaseIpc() {
       status: statusValue,
       notes: cleanNullableString(record.notes, 4000),
       assigned_employee_ids: assignedEmployeeIds,
-      created_by: existingRow?.created_by ?? userData.user.id,
+      created_by: existingRow?.created_by ?? user.id,
       archived_at: null
     }
     const { data, error } = await client
@@ -428,7 +690,10 @@ export function registerSupabaseIpc() {
           .eq('jira_issue_key', jiraIssueKey)
           .single()
         if (!concurrentError && concurrent) {
-          return normalizeSharedFictiveTask(concurrent as SharedFictiveTaskRow)
+          return normalizeSharedFictiveTask(
+            concurrent as SharedFictiveTaskRow,
+            projectBudget?.capped_seconds ?? null
+          )
         }
       }
       if (isSharedSchemaMissing(error)) {
@@ -436,14 +701,17 @@ export function registerSupabaseIpc() {
       }
       throw new Error(error.message)
     }
-    return normalizeSharedFictiveTask(data as SharedFictiveTaskRow)
+    return normalizeSharedFictiveTask(
+      data as SharedFictiveTaskRow,
+      projectBudget?.capped_seconds ?? null
+    )
   })
 
   ipcMain.handle('supabase:archiveSharedFictiveTask', async (_event, taskId: unknown) => {
     const id = cleanUuid(taskId, true) as string
     const client = await createSupabaseClient()
-    const { data: userData, error: userError } = await client.auth.getUser()
-    if (userError || !userData.user) throw new Error('Supabase auth required to archive a task')
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) throw new Error('Supabase auth required to archive a task')
     const { data, error } = await client
       .from('shared_fictive_tasks')
       .update({ archived_at: new Date().toISOString(), status: 'archived' })
@@ -465,8 +733,8 @@ export function registerSupabaseIpc() {
       ? taskIds.slice(0, 500).map(value => cleanUuid(value, true) as string)
       : []
     const client = await createSupabaseClient()
-    const { data: userData, error: userError } = await client.auth.getUser()
-    if (userError || !userData.user) return []
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) return []
     const { data, error } = await client.rpc('get_shared_fictive_task_usage', {
       task_ids: ids.length ? ids : null
     })
@@ -478,7 +746,8 @@ export function registerSupabaseIpc() {
       taskId: row.task_id,
       usedSeconds: Number(row.used_seconds) || 0,
       contributorCount: Number(row.contributor_count) || 0,
-      lastReportedAt: row.last_reported_at ?? null
+      lastReportedAt: row.last_reported_at ?? null,
+      employees: normalizeUsageEmployees(row.employees)
     }))
   })
 
@@ -489,9 +758,19 @@ export function registerSupabaseIpc() {
     const rows = normalizeReportRows(record.rows)
     const requestedEmployeeId = cleanNumber(record.employeeId)
     const client = await createSupabaseClient()
-    const { data: userData, error: userError } = await client.auth.getUser()
-    if (userError || !userData.user) throw new Error('Supabase auth required')
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) throw new Error('Supabase auth required')
     const profile = await getProfile(client)
+    if (!profile?.employee_id) {
+      throw new Error('Supabase profile is missing an HRS employee identity')
+    }
+    if (
+      profile.role !== 'manager' &&
+      (requestedEmployeeId !== profile.employee_id ||
+        rows.some(row => row.employee_id !== profile.employee_id))
+    ) {
+      throw new Error('Employees may only synchronize their own HRS reports')
+    }
     const employeeIds = Array.from(
       new Set(
         [
@@ -509,14 +788,14 @@ export function registerSupabaseIpc() {
         from_date: startDate,
         to_date: endDate,
         rows_count: rows.length,
-        synced_by: userData.user.id,
+        synced_by: user.id,
         status: 'running'
       })
       .select('id')
       .single()
     if (syncRunError) throw new Error(syncRunError.message)
 
-    const { data: existingRows, error: existingRowsError } = employeeIds.length
+    const { data: existingRowsWithSharedTask, error: existingRowsError } = employeeIds.length
       ? await client
           .from('work_reports')
           .select('id,shared_fictive_task_id')
@@ -529,8 +808,24 @@ export function registerSupabaseIpc() {
     if (existingRowsError && !isSharedSchemaMissing(existingRowsError)) {
       throw new Error(existingRowsError.message)
     }
+    let existingRows = existingRowsWithSharedTask as
+      | Array<{ id: string; shared_fictive_task_id?: string | null }>
+      | null
+    if (existingRowsError && isSharedSchemaMissing(existingRowsError)) {
+      const legacyResult = employeeIds.length
+        ? await client
+            .from('work_reports')
+            .select('id')
+            .eq('source', 'hrs')
+            .gte('report_date', startDate)
+            .lte('report_date', endDate)
+            .in('employee_id', employeeIds)
+        : { data: [], error: null }
+      if (legacyResult.error) throw new Error(legacyResult.error.message)
+      existingRows = legacyResult.data as Array<{ id: string }>
+    }
     const existingSharedTaskById = new Map(
-      ((existingRows ?? []) as Array<{ id: string; shared_fictive_task_id: string | null }>)
+      (existingRows ?? [])
         .filter(row => row.shared_fictive_task_id)
         .map(row => [row.id, row.shared_fictive_task_id as string])
     )
@@ -538,7 +833,7 @@ export function registerSupabaseIpc() {
       const { shared_fictive_task_id: requestedSharedTaskId, ...legacyRow } = row
       const auditFields = {
         source: row.source ?? 'hrs',
-        synced_by: userData.user.id,
+        synced_by: user.id,
         synced_at: new Date().toISOString()
       }
       if (!sharedColumnAvailable) return { ...legacyRow, ...auditFields }
@@ -549,24 +844,30 @@ export function registerSupabaseIpc() {
         ...auditFields
       }
     })
-    const deleteResult = employeeIds.length
-      ? await client
+    let error: { message: string } | null = null
+
+    if (rowsWithAudit.length) {
+      const upsertResult = await client.from('work_reports').upsert(rowsWithAudit, {
+        onConflict: 'id'
+      })
+      error = upsertResult.error
+    }
+
+    if (!error) {
+      const incomingIds = new Set(rowsWithAudit.map(row => row.id))
+      const staleIds = (existingRows ?? [])
+        .map(row => row.id)
+        .filter(id => !incomingIds.has(id))
+
+      for (let index = 0; index < staleIds.length && !error; index += 100) {
+        const staleBatch = staleIds.slice(index, index + 100)
+        const deleteResult = await client
           .from('work_reports')
           .delete()
-          .eq('source', 'hrs')
-          .gte('report_date', startDate)
-          .lte('report_date', endDate)
-          .in('employee_id', employeeIds)
-      : { error: null }
-    const error =
-      deleteResult.error ??
-      (rowsWithAudit.length
-        ? (
-            await client.from('work_reports').upsert(rowsWithAudit, {
-              onConflict: 'id'
-            })
-          ).error
-        : null)
+          .in('id', staleBatch)
+        error = deleteResult.error
+      }
+    }
 
     await client
       .from('sync_runs')

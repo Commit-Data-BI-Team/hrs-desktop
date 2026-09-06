@@ -48,6 +48,32 @@ test('builds a detailed monthly workbook with times, comments, and totals', () =
   const workbook = XLSX.read(content, { type: 'base64' })
 
   expect(workbook.SheetNames).toEqual(['Summary', 'Detailed hours'])
+  const summary = XLSX.utils.sheet_to_json<Array<string | number>>(workbook.Sheets.Summary, {
+    header: 1,
+    raw: true
+  })
+  const dailyLabelIndex = summary.findIndex(row => row[0] === 'Daily row data')
+  expect(dailyLabelIndex).toBeGreaterThan(-1)
+  expect(summary[dailyLabelIndex + 1]).toEqual([
+    'Date',
+    'Day',
+    'Employee',
+    'Customer',
+    'Project',
+    'Task',
+    'From',
+    'To',
+    'Duration',
+    'Decimal hours',
+    'Comment',
+    'Reporting from',
+    'Source'
+  ])
+  expect(summary[dailyLabelIndex + 2]).toContain('2026-09-03')
+  expect(summary[dailyLabelIndex + 2]).toContain('Prepared the customer report')
+  expect(summary[dailyLabelIndex + 3]).toContain('2026-09-04')
+  expect(summary[dailyLabelIndex + 3]).toContain('בדיקות ותיקונים')
+
   const details = XLSX.utils.sheet_to_json<Array<string | number>>(
     workbook.Sheets['Detailed hours'],
     { header: 1, raw: true }

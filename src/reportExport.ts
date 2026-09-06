@@ -90,44 +90,6 @@ export function buildDetailedReportWorkbookBase64(
       a.project.localeCompare(b.project) ||
       a.employee.localeCompare(b.employee)
   )
-  const summaryHeaderRow = 11
-  const summaryData = [
-    ['HRS Desktop detailed report'],
-    ['Month', options.monthLabel],
-    ['Scope', options.customer ? 'Customer' : 'All customers'],
-    ['Customer', options.customer ?? 'All customers'],
-    ['Employees', new Set(rows.map(row => row.employee)).size],
-    ['Entries', rows.length],
-    ['Total duration', minutesToHHMM(totalMinutes)],
-    ['Total decimal hours', Number((totalMinutes / 60).toFixed(2))],
-    ['Generated', generatedAt.toISOString()],
-    ['Sources', sources.join(', ')],
-    [],
-    ['Customer', 'Project', 'Employee', 'Entries', 'Duration', 'Decimal hours'],
-    ...groupedRows.map(row => [
-      row.customer,
-      row.project,
-      row.employee,
-      row.entries,
-      minutesToHHMM(row.minutes),
-      Number((row.minutes / 60).toFixed(2))
-    ]),
-    ['TOTAL', '', '', rows.length, minutesToHHMM(totalMinutes), Number((totalMinutes / 60).toFixed(2))]
-  ]
-  const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
-  summarySheet['!cols'] = [
-    { wch: 28 },
-    { wch: 30 },
-    { wch: 24 },
-    { wch: 12 },
-    { wch: 14 },
-    { wch: 16 }
-  ]
-  if (groupedRows.length) {
-    summarySheet['!autofilter'] = {
-      ref: `A${summaryHeaderRow + 1}:F${summaryHeaderRow + groupedRows.length + 1}`
-    }
-  }
 
   const detailHeaders = [
     'Date',
@@ -144,7 +106,7 @@ export function buildDetailedReportWorkbookBase64(
     'Reporting from',
     'Source'
   ]
-  const detailData = rows.map(row => {
+  const detailRows = rows.map(row => {
     const parsedDate = new Date(`${row.date}T12:00:00`)
     const day = Number.isNaN(parsedDate.valueOf())
       ? ''
@@ -165,7 +127,7 @@ export function buildDetailedReportWorkbookBase64(
       row.source
     ]
   })
-  detailData.push([
+  const detailTotalRow = [
     'TOTAL',
     '',
     '',
@@ -179,8 +141,58 @@ export function buildDetailedReportWorkbookBase64(
     '',
     '',
     ''
-  ])
-  const detailsSheet = XLSX.utils.aoa_to_sheet([detailHeaders, ...detailData])
+  ]
+
+  const summaryData: Array<Array<string | number>> = [
+    ['HRS Desktop detailed report'],
+    ['Month', options.monthLabel],
+    ['Scope', options.customer ? 'Customer' : 'All customers'],
+    ['Customer', options.customer ?? 'All customers'],
+    ['Employees', new Set(rows.map(row => row.employee)).size],
+    ['Entries', rows.length],
+    ['Total duration', minutesToHHMM(totalMinutes)],
+    ['Total decimal hours', Number((totalMinutes / 60).toFixed(2))],
+    ['Generated', generatedAt.toISOString()],
+    ['Sources', sources.join(', ')],
+    [],
+    ['Aggregated totals'],
+    ['Customer', 'Project', 'Employee', 'Entries', 'Duration', 'Decimal hours'],
+    ...groupedRows.map(row => [
+      row.customer,
+      row.project,
+      row.employee,
+      row.entries,
+      minutesToHHMM(row.minutes),
+      Number((row.minutes / 60).toFixed(2))
+    ]),
+    ['TOTAL', '', '', rows.length, minutesToHHMM(totalMinutes), Number((totalMinutes / 60).toFixed(2))],
+    [],
+    ['Daily row data']
+  ]
+  const summaryDailyHeaderRow = summaryData.length + 1
+  summaryData.push(detailHeaders, ...detailRows, detailTotalRow)
+  const summarySheet = XLSX.utils.aoa_to_sheet(summaryData)
+  summarySheet['!cols'] = [
+    { wch: 12 },
+    { wch: 12 },
+    { wch: 24 },
+    { wch: 26 },
+    { wch: 28 },
+    { wch: 30 },
+    { wch: 9 },
+    { wch: 9 },
+    { wch: 11 },
+    { wch: 14 },
+    { wch: 55 },
+    { wch: 18 },
+    { wch: 18 }
+  ]
+  if (rows.length) {
+    summarySheet['!autofilter'] = {
+      ref: `A${summaryDailyHeaderRow}:M${summaryDailyHeaderRow + rows.length}`
+    }
+  }
+  const detailsSheet = XLSX.utils.aoa_to_sheet([detailHeaders, ...detailRows, detailTotalRow])
   detailsSheet['!cols'] = [
     { wch: 12 },
     { wch: 12 },

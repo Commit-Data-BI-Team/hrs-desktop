@@ -1,5 +1,14 @@
 import Store from 'electron-store'
 
+type IntegrationFavoritePerson = {
+  key: string
+  label: string
+  email: string | null
+  avatarUrl: string | null
+  jiraAccountId?: string
+  slackUserId?: string
+}
+
 type AppPreferences = {
   jiraActiveOnly: boolean
   jiraReportedOnly: boolean
@@ -69,6 +78,10 @@ type AppPreferences = {
   >
   meetingClientMappings: Record<string, string>
   meetingExcludedSubjects: Record<string, string[]>
+  integrationFavoritePeople: IntegrationFavoritePerson[]
+  integrationTextDirection: 'auto' | 'ltr' | 'rtl'
+  favoriteProjects: string[]
+  hiddenProjects: string[]
   reportWorkLogsCache: Record<
     string,
     Array<{
@@ -145,6 +158,10 @@ const defaultPreferences: AppPreferences = {
   meetingsCache: {},
   meetingClientMappings: {},
   meetingExcludedSubjects: {},
+  integrationFavoritePeople: [],
+  integrationTextDirection: 'auto',
+  favoriteProjects: [],
+  hiddenProjects: [],
   reportWorkLogsCache: {},
   smartDefaults: {
     lastTaskByWeekday: {},
@@ -202,6 +219,12 @@ export function getPreferences(): AppPreferences {
       stored?.meetingClientMappings ?? defaultPreferences.meetingClientMappings,
     meetingExcludedSubjects:
       stored?.meetingExcludedSubjects ?? defaultPreferences.meetingExcludedSubjects,
+    integrationFavoritePeople:
+      stored?.integrationFavoritePeople ?? defaultPreferences.integrationFavoritePeople,
+    integrationTextDirection:
+      stored?.integrationTextDirection ?? defaultPreferences.integrationTextDirection,
+    favoriteProjects: stored?.favoriteProjects ?? defaultPreferences.favoriteProjects,
+    hiddenProjects: stored?.hiddenProjects ?? defaultPreferences.hiddenProjects,
     reportWorkLogsCache: stored?.reportWorkLogsCache ?? defaultPreferences.reportWorkLogsCache,
     smartDefaults: stored?.smartDefaults ?? defaultPreferences.smartDefaults
   }

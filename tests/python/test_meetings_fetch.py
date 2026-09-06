@@ -4,6 +4,7 @@ import os
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
@@ -18,6 +19,8 @@ from meetings_fetch import (
     extract_access_token_from_performance_entries,
     extract_access_token_from_oauth_capture,
     find_duo_action_button,
+    chrome_binary_version,
+    looks_like_graph_access_token,
 )
 
 
@@ -107,6 +110,17 @@ class FakeOAuthDriver:
 
 
 class MeetingsTokenCaptureTests(unittest.TestCase):
+    def test_accepts_long_opaque_graph_access_tokens_but_not_abbreviated_values(self):
+        self.assertTrue(looks_like_graph_access_token("opaque_" + "x" * 220))
+        self.assertFalse(looks_like_graph_access_token("eyJ.short.parts"))
+
+    @patch("meetings_fetch.subprocess.check_output", return_value="Google Chrome 128.0.0.0")
+    @patch("meetings_fetch.os.name", "nt")
+    def test_windows_chrome_version_probe_is_headless(self, check_output):
+        self.assertEqual(chrome_binary_version(r"C:\portable\chrome.exe"), "128.0.0.0")
+        command = check_output.call_args.args[0]
+        self.assertIn("--headless=new", command)
+
     def test_reads_graph_bearer_token_from_chrome_performance_log(self):
         token = graph_token()
         entries = [
@@ -151,6 +165,29 @@ class MeetingsTokenCaptureTests(unittest.TestCase):
         )
 
         self.assertEqual(extract_access_token_from_oauth_capture(driver), token)
+
+    def test_reads_oauth_fragment_from_chrome_frame_navigation_log(self):
+        token = graph_token()
+        entries = [
+            {
+                "message": json.dumps(
+                    {
+                        "message": {
+                            "method": "Page.frameNavigated",
+                            "params": {
+                                "frame": {
+                                    "url": "https://developer.microsoft.com/en-us/graph/graph-explorer#access_token="
+                                    + token
+                                    + "&token_type=Bearer"
+                                }
+                            },
+                        }
+                    }
+                )
+            }
+        ]
+
+        self.assertEqual(extract_access_token_from_performance_entries(entries), token)
 
     def test_finds_duo_action_inside_nested_authentication_frames(self):
         push_button = FakeButton("Send me a push")

@@ -25,6 +25,23 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:setCredentials', email, token),
   clearJiraCredentials: () => ipcRenderer.invoke('jira:clearCredentials'),
   getJiraEpics: () => ipcRenderer.invoke('jira:getEpics'),
+  searchJiraUsers: (query: string) => ipcRenderer.invoke('jira:searchUsers', query),
+  getJiraTransitions: (issueKey: string) =>
+    ipcRenderer.invoke('jira:getTransitions', issueKey),
+  getJiraRecentComments: (issueKey: string) =>
+    ipcRenderer.invoke('jira:getRecentComments', issueKey),
+  openJiraAttachment: (payload: { id: string; filename: string }) =>
+    ipcRenderer.invoke('jira:openAttachment', payload),
+  addJiraComment: (payload: {
+    issueKey: string
+    text: string
+    mentions?: Array<{ accountId: string; label: string }>
+    attachments?: Array<{ id: string; filename: string }>
+  }) => ipcRenderer.invoke('jira:addComment', payload),
+  uploadJiraAttachments: (payload: { issueKey: string; attachmentIds: string[] }) =>
+    ipcRenderer.invoke('jira:uploadAttachments', payload),
+  transitionJiraIssue: (payload: { issueKey: string; transitionId: string }) =>
+    ipcRenderer.invoke('jira:transitionIssue', payload),
   getJiraMappings: () => ipcRenderer.invoke('jira:getMappings'),
   setJiraMapping: (customer: string, epicKey: string | null) =>
     ipcRenderer.invoke('jira:setMapping', customer, epicKey),
@@ -73,15 +90,16 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('supabase:updateProfile', payload),
   getSupabaseWorkReports: (startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getWorkReports', startDate, endDate),
-  getSupabaseProjectUsage: (customer: string, project: string) =>
-    ipcRenderer.invoke('supabase:getProjectUsage', { customer, project }),
+  getIsraeliHolidays: (month: string) => ipcRenderer.invoke('holidays:getIsraeli', month),
+  getSupabaseProjectUsage: (customer: string, project: string, startDate: string, endDate: string) =>
+    ipcRenderer.invoke('supabase:getProjectUsage', { customer, project, startDate, endDate }),
   getSharedFictiveTasks: () => ipcRenderer.invoke('supabase:getSharedFictiveTasks'),
   upsertSharedFictiveTask: (payload: unknown) =>
     ipcRenderer.invoke('supabase:upsertSharedFictiveTask', payload),
   archiveSharedFictiveTask: (taskId: string) =>
     ipcRenderer.invoke('supabase:archiveSharedFictiveTask', taskId),
-  getSharedFictiveTaskUsage: (taskIds: string[]) =>
-    ipcRenderer.invoke('supabase:getSharedFictiveTaskUsage', taskIds),
+  getSharedFictiveTaskUsage: (taskIds: string[], startDate: string, endDate: string) =>
+    ipcRenderer.invoke('supabase:getSharedFictiveTaskUsage', { taskIds, startDate, endDate }),
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string
@@ -108,6 +126,18 @@ contextBridge.exposeInMainWorld('hrs', {
   setSlackToken: (token: string) => ipcRenderer.invoke('slack:setToken', token),
   clearSlack: () => ipcRenderer.invoke('slack:clear'),
   getSlackChannels: () => ipcRenderer.invoke('slack:getChannels'),
+  searchSlackUsers: (query: string) => ipcRenderer.invoke('slack:searchUsers', query),
+  getSlackRecentMessages: (channelId: string) =>
+    ipcRenderer.invoke('slack:getRecentMessages', channelId),
+  postSlackMessage: (payload: {
+    channelId: string
+    text: string
+    mentions?: Array<{ slackUserId: string; label: string }>
+    attachmentIds?: string[]
+    threadTs?: string | null
+  }) => ipcRenderer.invoke('slack:postMessage', payload),
+  selectIntegrationAttachments: (options?: { imagesOnly?: boolean }) =>
+    ipcRenderer.invoke('integration:selectAttachments', options),
   setSlackCustomerMapping: (payload: {
     customerName: string
     channelId: string
@@ -200,6 +230,17 @@ contextBridge.exposeInMainWorld('hrs', {
     >
     meetingClientMappings?: Record<string, string>
     meetingExcludedSubjects?: Record<string, string[]>
+    integrationFavoritePeople?: Array<{
+      key: string
+      label: string
+      email: string | null
+      avatarUrl: string | null
+      jiraAccountId?: string
+      slackUserId?: string
+    }>
+    integrationTextDirection?: 'auto' | 'ltr' | 'rtl'
+    favoriteProjects?: string[]
+    hiddenProjects?: string[]
     reportWorkLogsCache?: Record<
       string,
       Array<{

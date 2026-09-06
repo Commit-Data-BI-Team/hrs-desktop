@@ -1,4 +1,4 @@
-import { BrowserWindow, ipcMain, session, Session } from 'electron'
+import { app, BrowserWindow, ipcMain, session, Session } from 'electron'
 import dayjs from 'dayjs'
 import { clearCustomAuth, getCustomAuth, setCustomAuth } from '../hrs/config'
 import { clearHrsCredentials, getHrsCredentials, setHrsCredentials } from '../hrs/credentials'
@@ -13,7 +13,7 @@ const HRS_ORIGIN = 'https://hrs.comm-it.co.il'
 const ADMIN_KEY_URL = `${HRS_ORIGIN}/admin/reactuserreporting/`
 const EMPLOYEE_ADMIN_URL = `${HRS_ORIGIN}/admin/sysmanage/employee/`
 const HRS_CACHE_TTL_MS = 5 * 60 * 1000
-const HRS_E2E = process.env.HRS_E2E === '1'
+const HRS_E2E = !app.isPackaged && process.env.HRS_E2E === '1'
 const TIME_HHMM_REGEX = /^(?:[01]?\d|2[0-3]):[0-5]\d$/
 const HOURS_HHMM_REGEX = /^\d{1,2}:[0-5]\d$/
 const MAX_SAFE_ENTITY_ID = 1_000_000_000

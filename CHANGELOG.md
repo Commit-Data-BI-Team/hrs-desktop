@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+## 1.0.17
+
+### Jira and Slack workspace
+
+- Added a compact **Update Jira & Slack** workspace directly inside Quick Log, with independent collapsible Jira and Slack sections.
+- Added recent Jira comments and Slack messages with inline replies, refresh controls, correct service names and icons, and downloadable Jira attachments.
+- Added Jira status changes, automatic Jira issue selection from the selected shared task with customer-parent fallback, and Jira file or image uploads linked to comments.
+- Added Jira and Slack `@` people search with profile details, shared favorites that appear first, and fast favorite toggles.
+- Added message formatting controls, automatic and manual RTL/LTR support, inline images, and adjacent image/file attachment actions.
+
+### Project and calendar usability
+
+- Added project favorites that remain at the top of every project list on Windows and macOS.
+- Added per-project hiding directly from the project picker and an **Unhide hidden projects** recovery screen in Settings.
+- Kept favorite and visibility buttons inside the visible project dropdown without horizontal scrolling, and placed Project, Customer, and Task on separate rows for readability.
+- Added Israeli holiday names to calendar cells, dimmed report colors for visible days from the previous month, and greyed visible days from the next month.
+- Added a centered **Update Available** bubble above Settings whenever a new release is ready.
+
+### Reporting and reliability
+
+- Prevented historical work reports from counting toward a shared task or global project budget created later in the month.
+- Improved shared report identity handling so real employee names are displayed instead of automated-test labels.
+- Hardened headless Chrome startup and Microsoft Graph token capture for Windows meeting synchronization without opening an unnecessary browser window.
+- Removed the experimental missing-customer email request while a fast, administrator-free delivery method is evaluated.
+
+> **Administrator note:** Apply `supabase/migrations/004_usage_date_boundaries.sql` to the connected Supabase project so task and global-project gauges respect their creation dates.
+
 ## 1.0.16
 
 ### Highlights

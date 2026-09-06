@@ -1,4 +1,5 @@
 import Store from 'electron-store'
+import { app } from 'electron'
 
 type KeytarModule = typeof import('keytar')
 
@@ -18,7 +19,7 @@ const DEFAULT_URL = 'https://qyafofkruvflczsxhqbt.supabase.co'
 const DEFAULT_PUBLISHABLE_KEY = 'sb_publishable_kK0PgoUdPPovoKWd6S3MWw_2ZeKNajY'
 const KEYTAR_SERVICE = 'hrs-desktop-supabase'
 const KEYTAR_ACCOUNT = 'session'
-const IS_E2E = process.env.HRS_E2E === '1'
+const IS_E2E = !app.isPackaged && process.env.HRS_E2E === '1'
 
 const store = new Store<Schema>({
   name: 'supabase-config'

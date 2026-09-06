@@ -24,6 +24,8 @@ import { registerAgendaIpc } from './ipc/agenda'
 import { registerProjectManagementIpc } from './ipc/projectManagement'
 import { registerSupabaseIpc } from './ipc/supabase'
 import { registerSlackIpc } from './ipc/slack'
+import { registerIsraeliHolidaysIpc } from './ipc/holidays'
+import { registerIntegrationAttachmentsIpc } from './integration/attachments'
 import {
   getPreferences,
   migrateHrsCredentialFlowPreferences,
@@ -1372,6 +1374,8 @@ app.whenReady().then(() => {
   registerProjectManagementIpc()
   registerSupabaseIpc()
   registerSlackIpc()
+  registerIsraeliHolidaysIpc()
+  registerIntegrationAttachmentsIpc()
   void setupAutoUpdater()
   ipcMain.handle('app:getTrayPinned', () => trayPinned)
   ipcMain.handle('app:setTrayPinned', (_event, pinned: unknown) => {

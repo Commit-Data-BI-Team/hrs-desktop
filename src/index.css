@@ -1150,7 +1150,7 @@ html[data-theme-mode='h4c37'] body::after {
 
 .calendar-day {
   display: grid;
-  grid-template-rows: 1fr auto;
+  grid-template-rows: auto minmax(0, 1fr) auto;
   align-items: center;
   justify-items: center;
   gap: 2px;
@@ -1164,6 +1164,28 @@ html[data-theme-mode='h4c37'] body::after {
   font-variant-numeric: tabular-nums;
   transition: background 160ms ease, color 160ms ease;
   text-align: center;
+}
+
+.calendar-day.has-israeli-holiday {
+  box-shadow: inset 0 0 0 1px rgba(244, 191, 104, 0.42);
+}
+
+.calendar-holiday-name {
+  width: 100%;
+  align-self: center;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  font-size: 0.45rem;
+  line-height: 1.08;
+  font-weight: 750;
+  color: rgba(242, 174, 91, 0.96);
+  white-space: normal;
+}
+
+.mantine-DatePicker-day[data-selected] .calendar-holiday-name {
+  color: rgba(38, 29, 11, 0.9);
 }
 
 .calendar-date {
@@ -1437,6 +1459,29 @@ html[data-theme-mode='h4c37'] body::after {
 [data-mantine-color-scheme='dark'] .calendar-day.has-reports {
   background: linear-gradient(140deg, rgba(73, 194, 208, 0.2), rgba(73, 194, 208, 0.06));
   box-shadow: inset 0 0 0 1px rgba(73, 194, 208, 0.2);
+}
+
+.calendar-day.is-outside-previous {
+  opacity: 0.46;
+  filter: saturate(0.72);
+}
+
+.calendar-day.is-outside-next {
+  color: color-mix(in srgb, var(--calendar-ink), transparent 68%) !important;
+  background: transparent !important;
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.035) !important;
+  opacity: 0.58;
+  filter: none;
+}
+
+.calendar-day.is-outside-next::after {
+  display: none;
+}
+
+.calendar-day.is-outside-next .calendar-holiday-name,
+.calendar-day.is-outside-next .calendar-hours {
+  color: inherit;
+  background: transparent;
 }
 
 .report-item {
@@ -1959,6 +2004,25 @@ html[data-theme-mode='h4c37'] body::after {
 
 .calendar-day-hover-hours {
   min-width: 0;
+}
+
+.calendar-day-hover-holidays {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 7px 9px;
+  border-radius: 9px;
+  color: rgba(255, 221, 164, 0.98);
+  background: rgba(113, 70, 18, 0.24);
+  border: 1px solid rgba(244, 191, 104, 0.28);
+}
+
+.calendar-holiday-source {
+  direction: ltr;
+  font-size: 0.58rem;
+  color: var(--muted);
+  white-space: nowrap;
 }
 
 .calendar-day-hover-meetings {
@@ -2907,6 +2971,67 @@ body.floating-mode {
   color: var(--accent);
 }
 
+.project-select-option {
+  display: grid !important;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 22px;
+  overflow: hidden;
+}
+
+.project-select-option-text {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-select-option-actions,
+.project-option-check {
+  flex: 0 0 auto;
+}
+
+.project-select-mantine-option {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-height: 34px !important;
+  padding: 6px 8px 6px 10px !important;
+  overflow: hidden;
+}
+
+.project-select-dropdown {
+  max-width: 100%;
+  overflow-x: hidden !important;
+}
+
+.project-select-option-actions {
+  opacity: 0.58;
+  transition: opacity 140ms ease;
+}
+
+.project-select-option-actions:has(.is-favorite) {
+  opacity: 1;
+}
+
+.project-select-mantine-option:hover .project-select-option-actions,
+.project-select-mantine-option:focus-visible .project-select-option-actions {
+  opacity: 1;
+}
+
+.hidden-projects-list {
+  max-height: min(360px, 52vh);
+  overflow-y: auto;
+  padding: 3px;
+}
+
 .quick-fictive-usage-stack {
   display: grid;
   gap: 9px;
@@ -3499,6 +3624,51 @@ html[data-platform='windows'] .tray-shell-enter {
   box-shadow: 0 0 0 1px rgba(100, 190, 255, 0.35) inset;
 }
 
+.tray-settings-update-anchor {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.tray-update-available-bubble {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 7px);
+  transform: translateX(-50%);
+  z-index: 30;
+  padding: 4px 8px;
+  border-radius: 999px;
+  color: #07161a;
+  background: linear-gradient(135deg, #91f1dc, #6bc8ff);
+  border: 1px solid rgba(229, 255, 248, 0.9);
+  box-shadow: 0 7px 18px rgba(0, 0, 0, 0.36), 0 0 16px rgba(107, 200, 255, 0.28);
+  font-size: 0.56rem;
+  line-height: 1.1;
+  font-weight: 850;
+  letter-spacing: 0.015em;
+  white-space: nowrap;
+  pointer-events: none;
+  animation: trayUpdateBubblePulse 2.2s ease-in-out infinite;
+}
+
+.tray-update-available-bubble::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 100%;
+  width: 7px;
+  height: 7px;
+  transform: translate(-50%, -50%) rotate(45deg);
+  background: #79d9ef;
+  border-right: 1px solid rgba(229, 255, 248, 0.8);
+  border-bottom: 1px solid rgba(229, 255, 248, 0.8);
+}
+
+@keyframes trayUpdateBubblePulse {
+  0%, 100% { transform: translateX(-50%) translateY(0); }
+  50% { transform: translateX(-50%) translateY(-2px); }
+}
+
 .tray-meetings-controls {
   background: rgba(10, 16, 22, 0.72);
   border-color: rgba(255, 255, 255, 0.08);
@@ -3791,6 +3961,498 @@ html[data-platform='windows'] .tray-shell-enter {
   backdrop-filter: blur(var(--glass-blur));
 }
 
+.tray-communicate-panel {
+  min-width: 0;
+}
+
+.tray-integration-launch {
+  min-height: 38px;
+  border-color: rgba(96, 190, 242, 0.3) !important;
+  background:
+    linear-gradient(105deg, rgba(37, 124, 199, 0.2), rgba(111, 75, 190, 0.14)) !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+
+.tray-integration-launch:hover {
+  transform: translateY(-1px);
+  border-color: rgba(104, 203, 255, 0.52) !important;
+  box-shadow: 0 8px 20px rgba(11, 76, 126, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+}
+
+.tray-integration-launch.is-open {
+  border-color: rgba(127, 203, 255, 0.58) !important;
+  box-shadow: 0 0 0 1px rgba(76, 167, 224, 0.18), 0 10px 26px rgba(6, 40, 73, 0.22);
+}
+
+.tray-integration-inline-shell {
+  padding-top: 8px;
+  transform-origin: top center;
+}
+
+.tray-integration-composer-card {
+  position: relative;
+  overflow: visible;
+  padding: 10px;
+  background:
+    radial-gradient(circle at 12% 0%, rgba(54, 158, 222, 0.13), transparent 38%),
+    linear-gradient(160deg, color-mix(in srgb, var(--panel-bg) 96%, transparent), rgba(14, 20, 31, 0.94));
+  border-color: rgba(99, 188, 239, 0.3);
+  box-shadow: 0 16px 38px rgba(2, 10, 20, 0.28), inset 0 1px 0 rgba(255, 255, 255, 0.05);
+  animation: tray-integration-card-enter 320ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+.tray-integration-composer-card::before {
+  content: '';
+  position: absolute;
+  top: -1px;
+  left: 16px;
+  right: 16px;
+  height: 2px;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, rgba(80, 192, 245, 0.9), rgba(155, 103, 230, 0.78), transparent);
+  pointer-events: none;
+}
+
+@keyframes tray-integration-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.985);
+    filter: blur(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+    filter: blur(0);
+  }
+}
+
+.integration-destination-card {
+  padding: 9px;
+  background: color-mix(in srgb, var(--panel-bg) 88%, transparent);
+  border-color: var(--stroke);
+}
+
+.integration-both-banner {
+  padding: 8px 10px;
+  background: linear-gradient(135deg, rgba(35, 130, 210, 0.12), rgba(133, 79, 190, 0.12));
+  border-color: rgba(111, 175, 235, 0.28);
+}
+
+.integration-recent-card {
+  padding: 9px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(127, 81, 188, 0.1), transparent 42%),
+    color-mix(in srgb, var(--panel-bg) 90%, transparent);
+  border-color: rgba(105, 168, 213, 0.23);
+}
+
+.integration-recent-list {
+  min-width: 0;
+}
+
+.integration-recent-source-toggles {
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.integration-recent-source-toggles::-webkit-scrollbar {
+  display: none;
+}
+
+.integration-recent-message {
+  padding: 7px;
+  background: rgba(63, 114, 145, 0.055);
+  border-color: rgba(106, 166, 202, 0.16);
+  transition: border-color 150ms ease, background 150ms ease, transform 150ms ease;
+}
+
+.integration-recent-message.is-jira {
+  border-left: 2px solid rgba(70, 164, 230, 0.62);
+}
+
+.integration-recent-message.is-slack {
+  border-left: 2px solid rgba(165, 106, 216, 0.64);
+}
+
+.integration-recent-message.is-replying {
+  background: linear-gradient(100deg, rgba(55, 151, 210, 0.13), rgba(142, 84, 196, 0.1));
+  border-color: rgba(103, 192, 238, 0.48);
+  transform: translateX(2px);
+}
+
+.integration-inline-reply {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  margin: 8px 0 1px 35px;
+  padding: 9px;
+  border: 1px solid rgba(105, 190, 235, 0.29);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 100% 0%, rgba(144, 87, 205, 0.12), transparent 42%),
+    rgba(9, 20, 29, 0.62);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.035);
+  animation: integration-inline-reply-enter 180ms ease-out;
+}
+
+@keyframes integration-inline-reply-enter {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.integration-inline-reply-toolbar {
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(105, 169, 208, 0.14);
+}
+
+.integration-inline-reply-mentions {
+  overflow: hidden;
+  border: 1px solid rgba(100, 178, 222, 0.25);
+  border-radius: 8px;
+  background: rgba(12, 25, 35, 0.96);
+  box-shadow: 0 10px 24px rgba(0, 0, 0, 0.22);
+}
+
+.integration-inline-reply-mention {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 6px 8px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.integration-inline-reply-mention:hover,
+.integration-inline-reply-mention:focus-visible {
+  background: rgba(61, 158, 214, 0.14);
+  outline: none;
+}
+
+.integration-inline-reply-mention small {
+  color: var(--muted);
+}
+
+.integration-main-composer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--mantine-spacing-xs);
+}
+
+.integration-main-composer.is-hidden-for-reply {
+  display: none;
+}
+
+.integration-recent-avatar {
+  width: 27px;
+  height: 27px;
+  flex: 0 0 27px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  color: #dff7ff;
+  font-size: 0.68rem;
+  font-weight: 800;
+  background: linear-gradient(145deg, rgba(51, 148, 207, 0.35), rgba(135, 82, 190, 0.3));
+  border: 1px solid rgba(113, 195, 238, 0.27);
+}
+
+.integration-recent-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.integration-recent-copy,
+.integration-recent-author {
+  min-width: 0;
+}
+
+.integration-recent-copy {
+  flex: 1;
+}
+
+.integration-recent-time {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.integration-recent-text {
+  margin-top: 4px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  unicode-bidi: plaintext;
+}
+
+.integration-recent-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  margin-top: 7px;
+}
+
+.integration-recent-attachment {
+  min-width: 0;
+  max-width: 100%;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 7px;
+  color: #ccecff;
+  background: rgba(47, 135, 190, 0.12);
+  border: 1px solid rgba(88, 178, 228, 0.3);
+  border-radius: 7px;
+  cursor: pointer;
+  font: inherit;
+  font-size: 0.68rem;
+}
+
+.integration-recent-attachment:hover,
+.integration-recent-attachment:focus-visible {
+  background: rgba(47, 135, 190, 0.22);
+  border-color: rgba(104, 198, 244, 0.58);
+  outline: none;
+}
+
+.integration-recent-attachment > span:first-of-type {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.integration-recent-attachment-action {
+  flex: 0 0 auto;
+  color: #78caff;
+  font-weight: 700;
+}
+
+.integration-recent-attachment.has-preview {
+  padding: 3px 7px 3px 3px;
+}
+
+.integration-recent-attachment-preview {
+  width: 38px;
+  height: 30px;
+  flex: 0 0 38px;
+  object-fit: cover;
+  border-radius: 5px;
+  border: 1px solid rgba(139, 211, 247, 0.25);
+  background: rgba(4, 12, 18, 0.6);
+}
+
+.integration-recent-empty {
+  min-height: 36px;
+  padding: 8px;
+  border-radius: 8px;
+  background: rgba(73, 126, 158, 0.06);
+}
+
+.integration-attachments {
+  padding: 9px;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--panel-bg) 82%, transparent);
+}
+
+.integration-editor-toolbar {
+  padding: 6px;
+  border: 1px solid var(--stroke);
+  border-radius: 10px;
+  background: linear-gradient(135deg, rgba(47, 139, 196, 0.08), rgba(116, 78, 181, 0.07));
+}
+
+.integration-editor-toolbar .mantine-SegmentedControl-root {
+  min-height: 26px;
+}
+
+.integration-inline-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(126px, 1fr));
+  gap: 7px;
+}
+
+.integration-inline-image {
+  position: relative;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  border: 1px solid rgba(101, 187, 232, 0.26);
+  border-radius: 10px;
+  background: rgba(24, 57, 77, 0.2);
+}
+
+.integration-inline-image img,
+.integration-inline-image-placeholder {
+  width: 100%;
+  height: 96px;
+  display: grid;
+  place-items: center;
+  object-fit: cover;
+  color: var(--muted);
+  background: rgba(55, 118, 153, 0.12);
+}
+
+.integration-inline-image figcaption {
+  overflow: hidden;
+  padding: 5px 7px;
+  color: var(--muted);
+  font-size: 0.66rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.integration-inline-image-remove {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  opacity: 0.88;
+}
+
+textarea[data-text-direction='rtl'] {
+  unicode-bidi: plaintext;
+}
+
+.integration-attachment-row {
+  min-width: 0;
+  padding: 6px 7px;
+  border-radius: 8px;
+  background: rgba(82, 145, 185, 0.08);
+  border: 1px solid rgba(105, 180, 225, 0.16);
+}
+
+.integration-mention-dropdown {
+  padding: 5px;
+  max-height: 230px;
+  overflow-y: auto;
+}
+
+.integration-directory-status {
+  margin-bottom: 3px;
+  padding-bottom: 7px !important;
+  border-bottom: 1px solid var(--stroke);
+}
+
+.slack-scope-guide {
+  padding: 9px;
+  background: linear-gradient(135deg, rgba(98, 67, 170, 0.1), rgba(42, 133, 190, 0.08));
+  border-color: rgba(130, 106, 205, 0.24);
+}
+
+.slack-scope-list .mantine-Badge-label,
+.slack-apps-url {
+  text-transform: none !important;
+  letter-spacing: 0 !important;
+}
+
+.slack-apps-url {
+  overflow-wrap: anywhere;
+  color: var(--accent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tray-integration-launch,
+  .tray-integration-composer-card,
+  .integration-inline-reply {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+.integration-mention-option {
+  appearance: none;
+  width: 100%;
+  display: grid;
+  grid-template-columns: 32px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  padding: 7px;
+  color: inherit;
+  text-align: left;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  cursor: pointer;
+}
+
+.integration-mention-option:hover,
+.integration-mention-option:focus-visible {
+  background: rgba(68, 165, 220, 0.13);
+  border-color: rgba(92, 191, 242, 0.32);
+  outline: none;
+}
+
+.integration-mention-option.is-favorite {
+  background: linear-gradient(90deg, rgba(242, 192, 74, 0.12), rgba(68, 165, 220, 0.06));
+  border-color: rgba(242, 192, 74, 0.28);
+}
+
+.integration-mention-option.is-favorite:hover,
+.integration-mention-option.is-favorite:focus-visible {
+  background: linear-gradient(90deg, rgba(242, 192, 74, 0.18), rgba(68, 165, 220, 0.1));
+  border-color: rgba(242, 192, 74, 0.42);
+}
+
+.integration-mention-avatar {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+  border-radius: 50%;
+  font-size: 0.72rem;
+  font-weight: 800;
+  color: #d9f5ff;
+  background: rgba(54, 150, 205, 0.2);
+  border: 1px solid rgba(111, 205, 255, 0.3);
+}
+
+.integration-mention-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.integration-mention-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.integration-mention-copy strong,
+.integration-mention-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.integration-mention-copy strong {
+  font-size: 0.75rem;
+}
+
+.integration-mention-copy small {
+  color: var(--muted);
+  font-size: 0.66rem;
+}
+
+.integration-mention-services {
+  display: flex;
+  gap: 4px;
+  align-items: center;
+}
+
 .update-changelog-list {
   max-height: 132px;
   overflow-y: auto;
@@ -3990,13 +4652,36 @@ html[data-platform='windows'] .tray-calendar {
   padding: 0;
   cursor: pointer;
   display: flex;
+  flex-direction: column;
   align-items: center;
   justify-content: center;
+  gap: 3px;
   transition:
     background 140ms ease,
     border-color 140ms ease,
     color 140ms ease,
     transform 140ms ease;
+}
+
+.tray-day-button.has-israeli-holiday {
+  border-color: rgba(244, 191, 104, 0.52);
+}
+
+.tray-day-holiday-name {
+  width: calc(100% - 4px);
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  white-space: normal;
+  font-size: 0.4rem;
+  line-height: 0.98;
+  font-weight: 750;
+  color: rgba(255, 209, 130, 0.96);
+}
+
+.tray-day-button.is-selected .tray-day-holiday-name {
+  color: rgba(25, 27, 15, 0.88);
 }
 
 .tray-day-button:hover:not(:disabled) {
@@ -4116,6 +4801,29 @@ html[data-platform='windows'] .tray-calendar {
   box-shadow: inset 0 0 0 1px rgba(115, 216, 226, 0.65);
 }
 
+.tray-day-button.is-outside-previous {
+  opacity: 0.48;
+  filter: saturate(0.72);
+}
+
+.tray-day-button.is-outside-next {
+  color: rgba(235, 244, 248, 0.3) !important;
+  background: rgba(11, 18, 22, 0.2) !important;
+  border-color: rgba(255, 255, 255, 0.03) !important;
+  box-shadow: none !important;
+  opacity: 1;
+  filter: none;
+}
+
+.tray-day-button.is-outside-next::before,
+.tray-day-button.is-outside-next::after {
+  display: none;
+}
+
+.tray-day-button.is-outside-next .tray-day-holiday-name {
+  color: rgba(235, 244, 248, 0.24);
+}
+
 .tray-day-number {
   font-size: 1rem;
   line-height: 1;
@@ -4199,7 +4907,7 @@ html[data-platform='windows'] .tray-calendar {
 }
 
 .tray-filters .mantine-Select-label {
-  font-size: 0.65rem;
+  font-size: 0.7rem;
 }
 
 .tray-filters .mantine-Select-input {

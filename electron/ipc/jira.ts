@@ -1,4 +1,4 @@
-import { ipcMain } from 'electron'
+import { app, ipcMain, shell } from 'electron'
 import Store from 'electron-store'
 import {
   clearJiraCredentials,
@@ -17,13 +17,14 @@ import {
   validateOptionalString,
   validateStringLength
 } from '../utils/validation'
+import { resolveIntegrationAttachments } from '../integration/attachments'
 
 const PROJECT_KEY = 'VDA'
 const PROJECT_NAME = 'Data Analytics Tasks'
 const JIRA_CACHE_TTL_MS = 5 * 60 * 1000
 const JIRA_PERSIST_TTL_MS = 6 * 60 * 60 * 1000
 const JIRA_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
-const JIRA_E2E = process.env.HRS_E2E === '1' || process.env.JIRA_E2E === '1'
+const JIRA_E2E = !app.isPackaged && (process.env.HRS_E2E === '1' || process.env.JIRA_E2E === '1')
 
 function redactSensitiveText(input: string): string {
   let text = input
@@ -274,6 +275,61 @@ type JiraCreatedIssue = {
   estimateSeconds: number
 }
 
+type JiraDirectoryUser = {
+  accountId: string
+  displayName: string
+  emailAddress?: string | null
+  active?: boolean
+  avatarUrls?: Record<string, string>
+}
+
+type JiraMentionInput = {
+  accountId: string
+  label: string
+}
+
+type JiraCommentAttachmentInput = {
+  id: string
+  filename: string
+}
+
+type JiraTransition = {
+  id: string
+  name: string
+  to?: {
+    name?: string | null
+  } | null
+}
+
+type JiraCommentAuthor = {
+  accountId?: string | null
+  displayName?: string | null
+  avatarUrls?: Record<string, string>
+}
+
+type JiraComment = {
+  id?: string
+  body?: unknown
+  created?: string | null
+  updated?: string | null
+  author?: JiraCommentAuthor | null
+}
+
+type JiraIssueAttachment = {
+  id?: string | number
+  filename?: string | null
+  mimeType?: string | null
+  created?: string | null
+  author?: {
+    accountId?: string | null
+  } | null
+}
+
+type JiraCommentAttachmentCandidate = {
+  id?: string
+  name?: string
+}
+
 const E2E_EPICS: JiraEpic[] = [
   { key: 'VDA-98', summary: 'Weizmann Institute of Science' },
   { key: 'VDA-147', summary: 'Microsoft' }
@@ -376,6 +432,307 @@ function adfTextDocument(text: string) {
           ]
         : []
     }))
+  }
+}
+
+function validateJiraMentions(value: unknown): JiraMentionInput[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value) || value.length > 50) {
+    throw new Error('Invalid Jira mentions.')
+  }
+  return value.map(entry => {
+    const safe = validateExactObject<{ accountId?: unknown; label?: unknown }>(
+      entry,
+      ['accountId', 'label'],
+      'Jira mention'
+    )
+    return {
+      accountId: validateStringLength(safe.accountId, 1, 200),
+      label: validateStringLength(safe.label, 1, 200)
+    }
+  })
+}
+
+function validateJiraCommentAttachments(value: unknown): JiraCommentAttachmentInput[] {
+  if (value === undefined || value === null) return []
+  if (!Array.isArray(value) || value.length > 10) {
+    throw new Error('Invalid Jira comment attachments.')
+  }
+  return value.map(entry => {
+    const safe = validateExactObject<{ id?: unknown; filename?: unknown }>(
+      entry,
+      ['id', 'filename'],
+      'Jira comment attachment'
+    )
+    const id = validateStringLength(safe.id, 1, 200)
+    if (!/^[A-Za-z0-9-]+$/.test(id)) throw new Error('Invalid Jira attachment ID.')
+    return {
+      id,
+      filename: validateStringLength(safe.filename, 1, 500)
+    }
+  })
+}
+
+function validateJiraCommentText(value: unknown) {
+  if (typeof value !== 'string') throw new Error('Invalid Jira comment text.')
+  const text = value
+    .replace(/\0/g, '')
+    .replace(/\r\n?/g, '\n')
+    .replace(/[\x01-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '')
+    .trim()
+  if (!text) throw new Error('Jira comment cannot be empty.')
+  if (text.length > 10000) throw new Error('Jira comment is too long.')
+  return text
+}
+
+function jiraCommentBodyToText(value: unknown): string {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return value.map(jiraCommentBodyToText).join('')
+  if (!value || typeof value !== 'object') return ''
+  const node = value as {
+    type?: unknown
+    text?: unknown
+    attrs?: { text?: unknown }
+    content?: unknown
+  }
+  if (node.type === 'hardBreak') return '\n'
+  if (node.type === 'mention' && typeof node.attrs?.text === 'string') return node.attrs.text
+  const ownText = typeof node.text === 'string' ? node.text : ''
+  const contentText = jiraCommentBodyToText(node.content)
+  const suffix =
+    node.type === 'paragraph' || node.type === 'heading' || node.type === 'listItem'
+      ? '\n'
+      : ''
+  return `${ownText}${contentText}${suffix}`
+}
+
+function extractJiraCommentAttachmentCandidates(value: unknown) {
+  const candidates: JiraCommentAttachmentCandidate[] = []
+  const addUrlCandidate = (urlValue: unknown, nameValue?: unknown) => {
+    if (typeof urlValue !== 'string') return
+    const match = urlValue.match(
+      /\/(?:secure\/attachment\/|rest\/api\/3\/attachment\/content\/)([A-Za-z0-9-]+)(?:\/([^?#]+))?/i
+    )
+    if (!match) return
+    let decodedName = typeof nameValue === 'string' ? nameValue.trim() : ''
+    if (!decodedName && match[2]) {
+      try {
+        decodedName = decodeURIComponent(match[2])
+      } catch {
+        decodedName = match[2]
+      }
+    }
+    candidates.push({ id: match[1], name: decodedName || undefined })
+  }
+  const visit = (nodeValue: unknown) => {
+    if (Array.isArray(nodeValue)) {
+      nodeValue.forEach(visit)
+      return
+    }
+    if (!nodeValue || typeof nodeValue !== 'object') return
+    const node = nodeValue as {
+      type?: unknown
+      text?: unknown
+      attrs?: Record<string, unknown>
+      marks?: Array<{ type?: unknown; attrs?: Record<string, unknown> }>
+      content?: unknown
+    }
+    if (node.type === 'inlineCard') addUrlCandidate(node.attrs?.url)
+    if (node.type === 'media') {
+      const alt = typeof node.attrs?.alt === 'string' ? node.attrs.alt.trim() : ''
+      candidates.push({
+        id: typeof node.attrs.id === 'string' ? node.attrs.id : undefined,
+        name: alt || undefined
+      })
+    }
+    for (const mark of node.marks ?? []) {
+      if (mark.type === 'link') addUrlCandidate(mark.attrs?.href, node.text)
+    }
+    visit(node.content)
+  }
+  visit(value)
+  return candidates
+}
+
+function normalizeJiraComment(comment: JiraComment, issueAttachments: JiraIssueAttachment[] = []) {
+  const text = jiraCommentBodyToText(comment.body)
+    .replace(/\n{3,}/g, '\n\n')
+    .trim()
+    .slice(0, 4000)
+  const attachmentCandidates = extractJiraCommentAttachmentCandidates(comment.body)
+  const attachmentsById = new Map(
+    issueAttachments
+      .filter(attachment => attachment.id !== undefined && attachment.id !== null)
+      .map(attachment => [String(attachment.id), attachment])
+  )
+  const attachmentsByName = new Map(
+    issueAttachments
+      .filter(attachment => attachment.filename?.trim())
+      .map(attachment => [attachment.filename!.trim().toLocaleLowerCase(), attachment])
+  )
+  const resolvedAttachments = new Map<
+    string,
+    { id: string; name: string; mimeType: string | null }
+  >()
+  let unresolvedMediaCount = 0
+  for (const candidate of attachmentCandidates) {
+    const issueAttachment =
+      (candidate.id ? attachmentsById.get(candidate.id) : undefined) ??
+      (candidate.name ? attachmentsByName.get(candidate.name.toLocaleLowerCase()) : undefined)
+    const id = issueAttachment?.id ?? (candidate.name ? candidate.id : undefined)
+    const name = issueAttachment?.filename?.trim() || candidate.name?.trim()
+    if (id !== undefined && id !== null && name) {
+      resolvedAttachments.set(String(id), {
+        id: String(id),
+        name,
+        mimeType: issueAttachment?.mimeType?.trim() || null
+      })
+    } else {
+      unresolvedMediaCount += 1
+    }
+  }
+
+  if (unresolvedMediaCount > 0) {
+    const commentTime = Date.parse(comment.created ?? comment.updated ?? '')
+    if (Number.isFinite(commentTime)) {
+      const matchingAuthorId = comment.author?.accountId ?? null
+      const nearbyAttachments = issueAttachments
+        .filter(attachment => {
+          if (attachment.id === undefined || attachment.id === null || !attachment.filename?.trim()) {
+            return false
+          }
+          if (resolvedAttachments.has(String(attachment.id))) return false
+          const attachmentTime = Date.parse(attachment.created ?? '')
+          if (!Number.isFinite(attachmentTime)) return false
+          const delayMs = commentTime - attachmentTime
+          if (delayMs < -5000 || delayMs > 5 * 60 * 1000) return false
+          const attachmentAuthorId = attachment.author?.accountId ?? null
+          return !matchingAuthorId || !attachmentAuthorId || matchingAuthorId === attachmentAuthorId
+        })
+        .sort((left, right) => {
+          const leftDistance = Math.abs(commentTime - Date.parse(left.created ?? ''))
+          const rightDistance = Math.abs(commentTime - Date.parse(right.created ?? ''))
+          return leftDistance - rightDistance
+        })
+        .slice(0, unresolvedMediaCount)
+      for (const attachment of nearbyAttachments) {
+        resolvedAttachments.set(String(attachment.id), {
+          id: String(attachment.id),
+          name: attachment.filename!.trim(),
+          mimeType: attachment.mimeType?.trim() || null
+        })
+      }
+    }
+  }
+  const attachments = Array.from(resolvedAttachments.values())
+  return {
+    id: comment.id ?? '',
+    source: 'jira' as const,
+    authorId: comment.author?.accountId ?? null,
+    authorName: comment.author?.displayName?.trim() || 'Jira user',
+    avatarUrl:
+      comment.author?.avatarUrls?.['48x48'] ??
+      comment.author?.avatarUrls?.['32x32'] ??
+      null,
+    text,
+    attachments,
+    createdAt: comment.created ?? comment.updated ?? new Date(0).toISOString()
+  }
+}
+
+function adfCommentDocument(
+  text: string,
+  mentions: JiraMentionInput[],
+  attachments: Array<JiraCommentAttachmentInput & { downloadUrl: string }> = []
+) {
+  const mentionsByLabel = new Map(
+    mentions.map(mention => [mention.label.trim().toLocaleLowerCase(), mention])
+  )
+  const buildInlineContent = (line: string) => {
+    const content: Array<Record<string, unknown>> = []
+    const tokenPattern = /@\[([^\]\n]{1,200})\]|\*([^*\n]+)\*|_([^_\n]+)_|`([^`\n]+)`/g
+    let cursor = 0
+    let match: RegExpExecArray | null
+    while ((match = tokenPattern.exec(line)) !== null) {
+      if (match.index > cursor) {
+        content.push({ type: 'text', text: line.slice(cursor, match.index) })
+      }
+      if (match[1]) {
+        const label = match[1].trim()
+        const mention = mentionsByLabel.get(label.toLocaleLowerCase())
+        if (mention) {
+          content.push({
+            type: 'mention',
+            attrs: {
+              id: mention.accountId,
+              text: `@${mention.label}`,
+              userType: 'DEFAULT'
+            }
+          })
+        } else {
+          content.push({ type: 'text', text: match[0] })
+        }
+      } else {
+        const formattedText = match[2] ?? match[3] ?? match[4] ?? ''
+        const markType = match[2] ? 'strong' : match[3] ? 'em' : 'code'
+        content.push({
+          type: 'text',
+          text: formattedText,
+          marks: [{ type: markType }]
+        })
+      }
+      cursor = match.index + match[0].length
+    }
+    if (cursor < line.length) content.push({ type: 'text', text: line.slice(cursor) })
+    return content
+  }
+
+  const content: Array<Record<string, unknown>> = text.split('\n').map(line => ({
+    type: 'paragraph',
+    content: buildInlineContent(line)
+  }))
+  if (attachments.length) {
+    content.push({ type: 'rule' })
+    content.push({
+      type: 'paragraph',
+      content: [
+        {
+          type: 'text',
+          text: 'Attachments',
+          marks: [{ type: 'strong' }]
+        }
+      ]
+    })
+    for (const attachment of attachments) {
+      content.push({
+        type: 'paragraph',
+        content: [
+          { type: 'text', text: '📎 ' },
+          {
+            type: 'inlineCard',
+            attrs: { url: attachment.downloadUrl }
+          },
+          { type: 'text', text: ' · ' },
+          {
+            type: 'text',
+            text: attachment.filename,
+            marks: [
+              {
+                type: 'link',
+                attrs: { href: attachment.downloadUrl }
+              }
+            ]
+          },
+          { type: 'text', text: ' (download)' }
+        ]
+      })
+    }
+  }
+
+  return {
+    type: 'doc',
+    version: 1,
+    content
   }
 }
 
@@ -625,6 +982,147 @@ export function registerJiraIpc() {
     }))
     ipcMain.handle('jira:deleteWorklog', async () => true)
     ipcMain.handle('jira:getWorklogHistory', async () => [])
+    ipcMain.handle('jira:searchUsers', async (_event, query: unknown) => {
+      const safeQuery = validateStringLength(query, 1, 100).toLocaleLowerCase()
+      return [
+        {
+          accountId: 'e2e-dror',
+          displayName: 'Dror Rahamim',
+          emailAddress: 'dror@example.com',
+          avatarUrl: null
+        },
+        {
+          accountId: 'e2e-vitaly',
+          displayName: 'Vitaly Shechtman',
+          emailAddress: 'vitaly@example.com',
+          avatarUrl: null
+        }
+      ].filter(user =>
+        `${user.displayName} ${user.emailAddress}`.toLocaleLowerCase().includes(safeQuery)
+      )
+    })
+    ipcMain.handle('jira:getTransitions', async (_event, issueKey: unknown) => {
+      validateJiraIssueKey(issueKey)
+      return [
+        { id: '21', name: 'In Progress', toStatusName: 'In Progress' },
+        { id: '31', name: 'Done', toStatusName: 'Done' }
+      ]
+    })
+    ipcMain.handle('jira:getRecentComments', async (_event, issueKey: unknown) => {
+      const safeIssueKey = validateJiraIssueKey(issueKey)
+      const normalizedComment = normalizeJiraComment(
+        {
+          id: 'e2e-jira-comment-1',
+          author: {
+            accountId: 'e2e-vitaly',
+            displayName: 'Vitaly Shechtman'
+          },
+          created: '2026-09-03T14:40:00.000Z',
+          body: {
+            type: 'doc',
+            version: 1,
+            content: [
+              {
+                type: 'mediaGroup',
+                content: [
+                  {
+                    type: 'media',
+                    attrs: {
+                      id: 'e2e-media-services-id',
+                      type: 'file',
+                      collection: ''
+                    }
+                  }
+                ]
+              },
+              {
+                type: 'paragraph',
+                content: [
+                  {
+                    type: 'text',
+                    text: `The latest Jira update for ${safeIssueKey} is ready for review.`
+                  }
+                ]
+              }
+            ]
+          }
+        },
+        [
+          {
+            id: 10000,
+            filename: 'hrs-e2e-image.png',
+            mimeType: 'image/png',
+            created: '2026-09-03T14:39:59.700Z',
+            author: { accountId: 'e2e-vitaly' }
+          }
+        ]
+      )
+      return [
+        {
+          ...normalizedComment,
+          attachments: normalizedComment.attachments.map(attachment => ({
+            ...attachment,
+            previewDataUrl:
+              'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+          }))
+        }
+      ]
+    })
+    ipcMain.handle('jira:openAttachment', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{ id?: unknown; filename?: unknown }>(
+        payload ?? {},
+        ['id', 'filename'],
+        'Jira attachment'
+      )
+      validateStringLength(safe.id, 1, 200)
+      validateStringLength(safe.filename, 1, 500)
+      return true
+    })
+    ipcMain.handle('jira:addComment', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{
+        issueKey?: unknown
+        text?: unknown
+        mentions?: unknown
+        attachments?: unknown
+      }>(
+        payload ?? {},
+        ['issueKey', 'text', 'mentions', 'attachments'],
+        'Jira comment'
+      )
+      const attachments = validateJiraCommentAttachments(safe.attachments)
+      return {
+        id: `e2e-comment-${Date.now()}`,
+        issueKey: validateJiraIssueKey(safe.issueKey),
+        text: validateJiraCommentText(safe.text),
+        mentions: validateJiraMentions(safe.mentions),
+        attachments
+      }
+    })
+    ipcMain.handle('jira:uploadAttachments', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{ issueKey?: unknown; attachmentIds?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'attachmentIds'],
+        'Jira attachments'
+      )
+      const attachments = await resolveIntegrationAttachments(safe.attachmentIds)
+      return attachments.map((attachment, index) => ({
+        id: 10000 + index,
+        filename: attachment.name,
+        size: attachment.size,
+        issueKey: validateJiraIssueKey(safe.issueKey)
+      }))
+    })
+    ipcMain.handle('jira:transitionIssue', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{ issueKey?: unknown; transitionId?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'transitionId'],
+        'Jira transition'
+      )
+      validateJiraIssueKey(safe.issueKey)
+      const transitionId = validateStringLength(safe.transitionId, 1, 32)
+      if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+      return true
+    })
     return
   }
 
@@ -687,6 +1185,163 @@ export function registerJiraIpc() {
     }))
     setCachedValue('epics', epics, 30 * 60 * 1000)
     return epics
+  })
+
+  ipcMain.handle('jira:searchUsers', async (_event, query: unknown) => {
+    const safeQuery = validateStringLength(query, 1, 100)
+    const params = new URLSearchParams({
+      query: safeQuery,
+      maxResults: '20'
+    })
+    const users = (await jiraRequest(
+      `/rest/api/3/user/search?${params.toString()}`
+    )) as JiraDirectoryUser[]
+    return users
+      .filter(user => user.active !== false && user.accountId && user.displayName)
+      .slice(0, 20)
+      .map(user => ({
+        accountId: user.accountId,
+        displayName: user.displayName,
+        emailAddress: user.emailAddress ?? null,
+        avatarUrl: user.avatarUrls?.['48x48'] ?? user.avatarUrls?.['32x32'] ?? null
+      }))
+  })
+
+  ipcMain.handle('jira:getTransitions', async (_event, issueKey: unknown) => {
+    const safeIssueKey = validateJiraIssueKey(issueKey)
+    const data = (await jiraRequest(
+      `/rest/api/3/issue/${encodeURIComponent(safeIssueKey)}/transitions`
+    )) as { transitions?: JiraTransition[] }
+    return (data.transitions ?? []).map(transition => ({
+      id: transition.id,
+      name: transition.name,
+      toStatusName: transition.to?.name ?? transition.name
+    }))
+  })
+
+  ipcMain.handle('jira:getRecentComments', async (_event, issueKey: unknown) => {
+    const safeIssueKey = validateJiraIssueKey(issueKey)
+    const params = new URLSearchParams({
+      maxResults: '5',
+      orderBy: '-created'
+    })
+    const [data, issueData] = await Promise.all([
+      jiraRequest(
+        `/rest/api/3/issue/${encodeURIComponent(safeIssueKey)}/comment?${params.toString()}`
+      ) as Promise<{ comments?: JiraComment[] }>,
+      jiraRequest(
+        `/rest/api/3/issue/${encodeURIComponent(safeIssueKey)}?fields=attachment`
+      ).catch(() => ({ fields: { attachment: [] } })) as Promise<{
+        fields?: { attachment?: JiraIssueAttachment[] }
+      }>
+    ])
+    const issueAttachments = issueData.fields?.attachment ?? []
+    const comments = (data.comments ?? [])
+      .map(comment => normalizeJiraComment(comment, issueAttachments))
+      .filter(comment => comment.id && (comment.text || comment.attachments.length))
+      .slice(0, 5)
+    let remainingPreviewBudget = 5
+    return Promise.all(
+      comments.map(async comment => ({
+        ...comment,
+        attachments: await Promise.all(
+          comment.attachments.map(async attachment => {
+            if (!attachment.mimeType?.startsWith('image/') || remainingPreviewBudget <= 0) {
+              return attachment
+            }
+            remainingPreviewBudget -= 1
+            const previewDataUrl = await getJiraAttachmentPreviewDataUrl(attachment.id)
+            return previewDataUrl ? { ...attachment, previewDataUrl } : attachment
+          })
+        )
+      }))
+    )
+  })
+
+  ipcMain.handle('jira:openAttachment', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{ id?: unknown; filename?: unknown }>(
+      payload ?? {},
+      ['id', 'filename'],
+      'Jira attachment'
+    )
+    const id = validateStringLength(safe.id, 1, 200)
+    if (!/^[A-Za-z0-9-]+$/.test(id)) throw new Error('Invalid Jira attachment ID.')
+    const filename = validateStringLength(safe.filename, 1, 500)
+      .replace(/[\\/\0]/g, '_')
+    const { baseUrl } = await getJiraCredentials()
+    await shell.openExternal(
+      `${baseUrl.replace(/\/$/, '')}/secure/attachment/${encodeURIComponent(id)}/${encodeURIComponent(filename)}`
+    )
+    return true
+  })
+
+  ipcMain.handle('jira:addComment', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{
+      issueKey?: unknown
+      text?: unknown
+      mentions?: unknown
+      attachments?: unknown
+    }>(
+      payload ?? {},
+      ['issueKey', 'text', 'mentions', 'attachments'],
+      'Jira comment'
+    )
+    const issueKey = validateJiraIssueKey(safe.issueKey)
+    const text = validateJiraCommentText(safe.text)
+    const mentions = validateJiraMentions(safe.mentions)
+    const attachments = validateJiraCommentAttachments(safe.attachments)
+    const { baseUrl } = await getJiraCredentials()
+    const linkedAttachments = attachments.map(attachment => ({
+      ...attachment,
+      downloadUrl: `${baseUrl.replace(/\/$/, '')}/secure/attachment/${encodeURIComponent(
+        attachment.id
+      )}/${encodeURIComponent(attachment.filename)}`
+    }))
+    return jiraRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`, {
+      method: 'POST',
+      body: JSON.stringify({ body: adfCommentDocument(text, mentions, linkedAttachments) })
+    })
+  })
+
+  ipcMain.handle('jira:uploadAttachments', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{ issueKey?: unknown; attachmentIds?: unknown }>(
+      payload ?? {},
+      ['issueKey', 'attachmentIds'],
+      'Jira attachments'
+    )
+    const issueKey = validateJiraIssueKey(safe.issueKey)
+    const attachments = await resolveIntegrationAttachments(safe.attachmentIds)
+    if (!attachments.length) return []
+    const form = new FormData()
+    for (const attachment of attachments) {
+      form.append(
+        'file',
+        new Blob([attachment.bytes], { type: attachment.mimeType }),
+        attachment.name
+      )
+    }
+    return jiraRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/attachments`, {
+      method: 'POST',
+      headers: { 'X-Atlassian-Token': 'no-check' },
+      body: form
+    })
+  })
+
+  ipcMain.handle('jira:transitionIssue', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{ issueKey?: unknown; transitionId?: unknown }>(
+      payload ?? {},
+      ['issueKey', 'transitionId'],
+      'Jira transition'
+    )
+    const issueKey = validateJiraIssueKey(safe.issueKey)
+    const transitionId = validateStringLength(safe.transitionId, 1, 32)
+    if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transitionId } })
+    })
+    clearAllWorkItemCaches()
+    return true
   })
 
   ipcMain.handle('jira:getWorkItems', async (_event, epicKey: string) => {
@@ -1446,7 +2101,7 @@ async function jiraRequest(path: string, options: RequestInit = {}, attempt = 0)
       ...options,
       headers: {
         Accept: 'application/json',
-        'Content-Type': 'application/json',
+        ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
         Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`,
         ...(options.headers ?? {})
       },
@@ -1470,7 +2125,7 @@ async function jiraRequest(path: string, options: RequestInit = {}, attempt = 0)
     return jiraRequest(path, options, attempt + 1)
   }
   if (!res.ok) {
-    if (res.status === 401 || res.status === 403) {
+    if (res.status === 401) {
       await res.text().catch(() => {})
       throw new Error('JIRA_AUTH_REQUIRED')
     }
@@ -1479,4 +2134,36 @@ async function jiraRequest(path: string, options: RequestInit = {}, attempt = 0)
   }
   if (res.status === 204) return {}
   return res.json()
+}
+
+async function getJiraAttachmentPreviewDataUrl(id: string) {
+  if (!/^[A-Za-z0-9-]+$/.test(id)) return null
+  const { baseUrl, email, token } = await getJiraCredentials()
+  if (!email || !token) return null
+  const controller = new AbortController()
+  const timeoutId = setTimeout(() => controller.abort(), 12000)
+  try {
+    const response = await fetch(
+      `${baseUrl}/rest/api/3/attachment/thumbnail/${encodeURIComponent(id)}?redirect=false&fallbackToDefault=true`,
+      {
+        headers: {
+          Accept: 'image/*',
+          Authorization: `Basic ${Buffer.from(`${email}:${token}`).toString('base64')}`
+        },
+        signal: controller.signal
+      }
+    )
+    if (!response.ok) return null
+    const mimeType = response.headers.get('content-type')?.split(';')[0]?.trim() ?? ''
+    if (!mimeType.startsWith('image/')) return null
+    const declaredSize = Number(response.headers.get('content-length'))
+    if (Number.isFinite(declaredSize) && declaredSize > 2 * 1024 * 1024) return null
+    const bytes = Buffer.from(await response.arrayBuffer())
+    if (!bytes.length || bytes.length > 2 * 1024 * 1024) return null
+    return `data:${mimeType};base64,${bytes.toString('base64')}`
+  } catch {
+    return null
+  } finally {
+    clearTimeout(timeoutId)
+  }
 }

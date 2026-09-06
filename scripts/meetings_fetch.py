@@ -345,8 +345,42 @@ def cached_chrome_driver_pair() -> tuple[str, str] | None:
 def chrome_binary_version(binary_path: str | None) -> str | None:
     if not binary_path:
         return None
+    normalized_binary_path = os.path.normcase(os.path.normpath(binary_path))
+    is_installed_windows_chrome = (
+        os.name == "nt"
+        and normalized_binary_path.endswith(
+            os.path.normcase(r"Google\Chrome\Application\chrome.exe")
+        )
+    )
+    if is_installed_windows_chrome:
+        # Starting chrome.exe with only --version can open the user's regular Chrome
+        # window on Windows. Read the installed version from the registry first so a
+        # background meeting sync never creates a visible browser.
+        try:
+            import winreg
+
+            registry_locations = (
+                (winreg.HKEY_CURRENT_USER, r"Software\Google\Chrome\BLBeacon"),
+                (winreg.HKEY_LOCAL_MACHINE, r"Software\Google\Chrome\BLBeacon"),
+                (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Google\Chrome\BLBeacon"),
+            )
+            for hive, key_path in registry_locations:
+                try:
+                    with winreg.OpenKey(hive, key_path) as key:
+                        value, _value_type = winreg.QueryValueEx(key, "version")
+                    if isinstance(value, str) and value[:1].isdigit():
+                        return value.strip()
+                except OSError:
+                    continue
+        except (ImportError, OSError):
+            pass
     try:
-        output = subprocess.check_output([binary_path, "--version"], text=True, timeout=5)
+        command = [binary_path, "--version"]
+        kwargs = {}
+        if os.name == "nt":
+            command = [binary_path, "--headless=new", "--disable-gpu", "--version"]
+            kwargs["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        output = subprocess.check_output(command, text=True, timeout=5, **kwargs)
     except Exception:
         return None
     match = output.strip().split()
@@ -406,7 +440,8 @@ def build_driver(browser: str, headless: bool):
         options.add_argument("--disable-logging")
         options.add_argument("--log-level=3")
         options.add_argument("--silent")
-        options.add_experimental_option("excludeSwitches", ["enable-logging"])
+        options.add_experimental_option("excludeSwitches", ["enable-logging", "enable-automation"])
+        options.add_experimental_option("useAutomationExtension", False)
         options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
         options.add_experimental_option(
             "perfLoggingPrefs",
@@ -421,11 +456,23 @@ def build_driver(browser: str, headless: bool):
             options.add_argument("--disable-gpu")
             options.add_argument("--no-first-run")
             options.add_argument("--no-default-browser-check")
+            options.add_argument("--disable-blink-features=AutomationControlled")
+            options.add_argument("--disable-backgrounding-occluded-windows")
+            options.add_argument("--disable-renderer-backgrounding")
             if os.name == "nt":
                 options.add_argument("--disable-features=MediaRouter,OptimizationHints,Translate")
                 options.add_argument("--remote-debugging-pipe")
         if chromedriver:
-            service = ChromeService(executable_path=chromedriver, log_output=subprocess.DEVNULL)
+            service_kwargs = {}
+            if os.name == "nt":
+                service_kwargs["popen_kw"] = {
+                    "creation_flags": getattr(subprocess, "CREATE_NO_WINDOW", 0)
+                }
+            service = ChromeService(
+                executable_path=chromedriver,
+                log_output=subprocess.DEVNULL,
+                **service_kwargs,
+            )
             driver = webdriver.Chrome(service=service, options=options)
         else:
             driver = webdriver.Chrome(options=options)
@@ -640,7 +687,19 @@ def token_rejection_reason(value: str | None) -> str:
 
 
 def looks_like_graph_access_token(value: str) -> bool:
-    return token_rejection_reason(value) == "accepted"
+    token = normalize_token_value(value)
+    reason = token_rejection_reason(token)
+    if reason == "accepted":
+        return True
+    # Microsoft explicitly treats access tokens as opaque. Some tenants issue a
+    # non-JWT Graph token, so the client must not reject it only because it cannot
+    # decode it. Short values (including Graph Explorer's abbreviated display
+    # token) remain rejected; the Graph calendar request is the final authority.
+    return (
+        token.count(".") != 2
+        and len(token) >= 160
+        and not any(character.isspace() for character in token)
+    )
 
 
 def build_direct_graph_authorize_url() -> str:
@@ -835,8 +894,7 @@ def collect_token_candidates_from_object(data, source: str, key: str) -> list[di
 def select_calendar_token(candidates: list[dict], context: str) -> str | None:
     for candidate in candidates:
         token = normalize_token_value(candidate.get("token"))
-        reason = token_rejection_reason(token)
-        if reason == "accepted":
+        if looks_like_graph_access_token(token):
             log(f"Microsoft Graph token acquired from {context}.")
             return token
     return None
@@ -871,9 +929,21 @@ def extract_access_token_from_performance_entries(entries: object) -> str | None
         if not isinstance(payload, dict):
             continue
         method = str(payload.get("method") or "")
+        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
+        if method == "Page.frameNavigated":
+            frame = params.get("frame") if isinstance(params.get("frame"), dict) else {}
+            token = extract_access_token_from_url(frame.get("url"))
+            if token:
+                return token
+            continue
+        if method in {"Target.targetCreated", "Target.targetInfoChanged"}:
+            target = params.get("targetInfo") if isinstance(params.get("targetInfo"), dict) else {}
+            token = extract_access_token_from_url(target.get("url"))
+            if token:
+                return token
+            continue
         if method not in {"Network.requestWillBeSent", "Network.requestWillBeSentExtraInfo"}:
             continue
-        params = payload.get("params") if isinstance(payload.get("params"), dict) else {}
         token = extract_bearer_token_from_headers(params.get("headers"))
         if token:
             return token

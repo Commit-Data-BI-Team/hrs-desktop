@@ -57,6 +57,10 @@ const PREF_PATCH_KEYS = [
   'meetingsCache',
   'meetingClientMappings',
   'meetingExcludedSubjects',
+  'integrationFavoritePeople',
+  'integrationTextDirection',
+  'favoriteProjects',
+  'hiddenProjects',
   'reportWorkLogsCache',
   'smartDefaults'
 ] as const
@@ -143,6 +147,16 @@ function validatePreferencesPatch(payload: unknown) {
       case 'meetingsBrowser':
         out[key] = validateEnum(value, ['safari', 'chrome'] as const)
         break
+      case 'integrationTextDirection':
+        out[key] = validateEnum(value, ['auto', 'ltr', 'rtl'] as const)
+        break
+      case 'favoriteProjects':
+      case 'hiddenProjects':
+        if (!Array.isArray(value)) throw new Error(`Invalid ${key}: expected array`)
+        out[key] = Array.from(
+          new Set(value.slice(0, 1000).map(project => validateStringLength(project, 1, 500)))
+        )
+        break
       case 'jiraManualBudgets':
       case 'jiraEpicAliases':
       case 'jiraCustomerAliases':
@@ -161,6 +175,45 @@ function validatePreferencesPatch(payload: unknown) {
             .filter(Boolean)
         }
         out[key] = result
+        break
+      }
+      case 'integrationFavoritePeople': {
+        if (!Array.isArray(value)) {
+          throw new Error('Invalid integrationFavoritePeople: expected array')
+        }
+        out[key] = value.slice(0, 100).map(item => {
+          const safe = validateExactObject<{
+            key?: unknown
+            label?: unknown
+            email?: unknown
+            avatarUrl?: unknown
+            jiraAccountId?: unknown
+            slackUserId?: unknown
+          }>(
+            item,
+            ['key', 'label', 'email', 'avatarUrl', 'jiraAccountId', 'slackUserId'],
+            'integration favorite person'
+          )
+          const jiraAccountId = validateOptionalString(safe.jiraAccountId, {
+            min: 1,
+            max: 500
+          })
+          const slackUserId = validateOptionalString(safe.slackUserId, { min: 1, max: 100 })
+          if (!jiraAccountId && !slackUserId) {
+            throw new Error('Invalid integration favorite person: missing Jira or Slack identity')
+          }
+          return {
+            key: validateStringLength(safe.key, 1, 700),
+            label: validateStringLength(safe.label, 1, 200),
+            email:
+              validateOptionalString(safe.email, { min: 0, max: 320, allowNull: true }) ?? null,
+            avatarUrl:
+              validateOptionalString(safe.avatarUrl, { min: 0, max: 3000, allowNull: true }) ??
+              null,
+            ...(jiraAccountId ? { jiraAccountId } : {}),
+            ...(slackUserId ? { slackUserId } : {})
+          }
+        })
         break
       }
       case 'commentRules': {
@@ -464,6 +517,17 @@ export function registerPreferencesIpc() {
         >
         meetingClientMappings: Record<string, string>
         meetingExcludedSubjects: Record<string, string[]>
+        integrationFavoritePeople: Array<{
+          key: string
+          label: string
+          email: string | null
+          avatarUrl: string | null
+          jiraAccountId?: string
+          slackUserId?: string
+        }>
+        integrationTextDirection: 'auto' | 'ltr' | 'rtl'
+        favoriteProjects: string[]
+        hiddenProjects: string[]
         reportWorkLogsCache: Record<
           string,
           Array<{

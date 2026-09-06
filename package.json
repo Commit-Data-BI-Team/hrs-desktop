@@ -2,7 +2,7 @@
   "name": "hrs-desktop",
   "description": "HRS Desktop time logging app",
   "private": true,
-  "version": "1.0.16",
+  "version": "1.0.17",
   "author": "b4db1r3",
   "type": "module",
   "scripts": {

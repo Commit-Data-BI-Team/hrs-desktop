@@ -52,7 +52,23 @@ import {
   IconInfoCircle,
   IconBellRinging,
   IconPhoneCall,
-  IconPin
+  IconPin,
+  IconMessageCircle,
+  IconSend,
+  IconPaperclip,
+  IconStar,
+  IconBold,
+  IconItalic,
+  IconList,
+  IconListNumbers,
+  IconPhotoPlus,
+  IconSparkles,
+  IconRefresh,
+  IconArrowBackUp,
+  IconEyeOff,
+  IconEye,
+  IconTicket,
+  IconBrandSlack
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -73,6 +89,11 @@ import {
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from './sharedProjects'
+import { resolveIntegrationJiraTarget } from './integrationTarget'
+import {
+  detectIntegrationTextDirection,
+  formatIntegrationMessage
+} from './integrationEditor'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -108,6 +129,14 @@ type MeetingItem = {
   attendanceCount: number | null
   attendanceEmails: string[]
   attendeeEmails: string[]
+}
+
+type IsraeliHoliday = {
+  date: string
+  name: string
+  nameEnglish: string
+  category: string
+  yomTov: boolean
 }
 type AgendaItem = {
   id?: string
@@ -347,6 +376,44 @@ type JiraEpic = {
   summary: string
 }
 
+type JiraDirectoryUser = {
+  accountId: string
+  displayName: string
+  emailAddress: string | null
+  avatarUrl: string | null
+}
+
+type SlackDirectoryUser = {
+  id: string
+  displayName: string
+  realName: string
+  email: string | null
+  avatarUrl: string | null
+}
+
+type JiraTransition = {
+  id: string
+  name: string
+  toStatusName: string
+}
+
+type IntegrationDestination = 'jira' | 'slack' | 'both'
+
+type IntegrationMention = {
+  key: string
+  label: string
+  email: string | null
+  avatarUrl: string | null
+  jiraAccountId?: string
+  slackUserId?: string
+}
+
+type IntegrationDirectoryResult = {
+  state: 'idle' | 'loading' | 'ready' | 'empty' | 'error' | 'disconnected'
+  count: number
+  message?: string
+}
+
 type JiraWorkItem = {
   key: string
   summary: string
@@ -490,6 +557,10 @@ type AppPreferences = {
   meetingClientMappings: Record<string, string>
   meetingExcludedSubjects: Record<string, string[]>
   reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
+  integrationFavoritePeople: IntegrationMention[]
+  integrationTextDirection: 'auto' | 'ltr' | 'rtl'
+  favoriteProjects: string[]
+  hiddenProjects: string[]
   smartDefaults: {
     lastTaskByWeekday: Record<string, number>
     lastTaskId: number | null
@@ -2145,6 +2216,9 @@ export default function App() {
   const sessionRetryErrorRef = useRef<string | null>(null)
 
   const [projectName, setProjectName] = useState<string | null>(null)
+  const [favoriteProjects, setFavoriteProjects] = useState<string[]>([])
+  const [hiddenProjects, setHiddenProjects] = useState<string[]>([])
+  const [hiddenProjectsModalOpen, setHiddenProjectsModalOpen] = useState(false)
   const [customerName, setCustomerName] = useState<string | null>(null)
   const [taskName, setTaskName] = useState<string | null>(null)
   const [debouncedProjectName] = useDebouncedValue(projectName, 150)
@@ -2205,6 +2279,8 @@ export default function App() {
   const [reportMonth, setReportMonth] = useState<Date>(() => new Date())
   const [selectedReportDate, setSelectedReportDate] = useState<Date | null>(() => new Date())
   const [monthlyReport, setMonthlyReport] = useState<MonthlyReport | null>(null)
+  const [previousMonthPreviewReport, setPreviousMonthPreviewReport] =
+    useState<MonthlyReport | null>(null)
   const [currentMonthReport, setCurrentMonthReport] = useState<MonthlyReport | null>(null)
   const [currentMonthKey, setCurrentMonthKey] = useState<string | null>(null)
   const [reportSource, setReportSource] = useState<ReportSource>('hrs')
@@ -2308,6 +2384,7 @@ export default function App() {
   const [logToJira, setLogToJira] = useState(false)
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({ state: 'idle' })
   const [appUpdateActionLoading, setAppUpdateActionLoading] = useState(false)
+  const [israeliHolidays, setIsraeliHolidays] = useState<IsraeliHoliday[]>([])
   const [jiraActiveOnly, setJiraActiveOnly] = useState(true)
   const [jiraReportedOnly, setJiraReportedOnly] = useState(true)
   const [jiraMappingProject, setJiraMappingProject] = useState<string | null>(null)
@@ -2339,6 +2416,63 @@ export default function App() {
   const [slackMappingCustomer, setSlackMappingCustomer] = useState<string | null>(null)
   const [slackMappingChannel, setSlackMappingChannel] = useState<string | null>(null)
   const [slackManualChannelId, setSlackManualChannelId] = useState('')
+  const [integrationDestination, setIntegrationDestination] =
+    useState<IntegrationDestination>('both')
+  const [integrationCustomer, setIntegrationCustomer] = useState<string | null>(null)
+  const [integrationJiraIssueKey, setIntegrationJiraIssueKey] = useState('')
+  const [integrationJiraIssueOptions, setIntegrationJiraIssueOptions] = useState<
+    Array<{ value: string; label: string }>
+  >([])
+  const [integrationSlackChannelId, setIntegrationSlackChannelId] = useState<string | null>(null)
+  const [integrationMessageText, setIntegrationMessageText] = useState('')
+  const [integrationTextDirection, setIntegrationTextDirection] = useState<
+    'auto' | 'ltr' | 'rtl'
+  >('auto')
+  const [integrationMentions, setIntegrationMentions] = useState<IntegrationMention[]>([])
+  const [integrationFavoritePeople, setIntegrationFavoritePeople] = useState<
+    IntegrationMention[]
+  >([])
+  const [integrationMentionCandidates, setIntegrationMentionCandidates] = useState<
+    IntegrationMention[]
+  >([])
+  const [integrationMentionOpen, setIntegrationMentionOpen] = useState(false)
+  const [integrationMentionLoading, setIntegrationMentionLoading] = useState(false)
+  const [integrationMentionError, setIntegrationMentionError] = useState<string | null>(null)
+  const [integrationDirectoryResults, setIntegrationDirectoryResults] = useState<{
+    jira: IntegrationDirectoryResult
+    slack: IntegrationDirectoryResult
+  }>({
+    jira: { state: 'idle', count: 0 },
+    slack: { state: 'idle', count: 0 }
+  })
+  const [integrationTransitions, setIntegrationTransitions] = useState<JiraTransition[]>([])
+  const [integrationTransitionId, setIntegrationTransitionId] = useState<string | null>(null)
+  const [integrationTransitionLoading, setIntegrationTransitionLoading] = useState(false)
+  const [integrationSending, setIntegrationSending] = useState(false)
+  const [integrationAttachmentLoading, setIntegrationAttachmentLoading] = useState(false)
+  const [integrationAttachments, setIntegrationAttachments] = useState<IntegrationAttachment[]>([])
+  const [integrationRecentMessages, setIntegrationRecentMessages] = useState<
+    IntegrationRecentMessage[]
+  >([])
+  const [integrationRecentCollapsed, setIntegrationRecentCollapsed] = useState<
+    Record<'jira' | 'slack', boolean>
+  >({ jira: true, slack: true })
+  const [integrationRecentLoading, setIntegrationRecentLoading] = useState(false)
+  const [integrationRecentError, setIntegrationRecentError] = useState<string | null>(null)
+  const [integrationReplyTarget, setIntegrationReplyTarget] = useState<
+    IntegrationRecentMessage | null
+  >(null)
+  const [integrationError, setIntegrationError] = useState<string | null>(null)
+  const [integrationSuccess, setIntegrationSuccess] = useState<string | null>(null)
+  const [integrationComposerOpen, setIntegrationComposerOpen] = useState(false)
+  const [integrationQuickLogLinked, setIntegrationQuickLogLinked] = useState(false)
+  const integrationTextareaRef = useRef<HTMLTextAreaElement>(null)
+  const integrationMentionRangeRef = useRef<{ start: number; end: number } | null>(null)
+  const integrationMentionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const integrationMentionRequestRef = useRef(0)
+  const integrationIssueRequestRef = useRef(0)
+  const integrationTransitionRequestRef = useRef(0)
+  const integrationRecentRequestRef = useRef(0)
   const [projectDashboardCustomer, setProjectDashboardCustomer] = useState<string | null>(null)
   const [projectDashboardProject, setProjectDashboardProject] = useState<string | null>(null)
   const [missionName, setMissionName] = useState('')
@@ -2536,7 +2670,13 @@ export default function App() {
   const [trayClosingAnimating, setTrayClosingAnimating] = useState(false)
   const [trayPinned, setTrayPinned] = useState(false)
   const [trayPanel, setTrayPanel] = useState<
-    'log' | 'clockify' | 'meetings' | 'agenda' | 'employees' | 'reports' | 'settings'
+    | 'log'
+    | 'clockify'
+    | 'meetings'
+    | 'agenda'
+    | 'employees'
+    | 'reports'
+    | 'settings'
   >('log')
   const [employeesAccessChecked, setEmployeesAccessChecked] = useState(false)
   const [employeesLoading, setEmployeesLoading] = useState(false)
@@ -3689,6 +3829,24 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    if (!window.hrs?.getIsraeliHolidays) return
+    let cancelled = false
+    const month = dayjs(reportMonth).format('YYYY-MM')
+    void window.hrs
+      .getIsraeliHolidays(month)
+      .then(holidays => {
+        if (!cancelled) setIsraeliHolidays(holidays)
+      })
+      .catch(error => {
+        console.warn('[ISRAELI HOLIDAYS]', error)
+        if (!cancelled) setIsraeliHolidays([])
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [reportMonth])
+
+  useEffect(() => {
     if (!supabaseStatus?.email || !window.hrs?.getSharedFictiveTasks) return
     const refresh = () => {
       void loadSharedFictiveTasks()
@@ -4028,7 +4186,14 @@ export default function App() {
   }
 
   function switchTrayPanel(
-    nextPanel: 'log' | 'clockify' | 'meetings' | 'agenda' | 'employees' | 'reports' | 'settings'
+    nextPanel:
+      | 'log'
+      | 'clockify'
+      | 'meetings'
+      | 'agenda'
+      | 'employees'
+      | 'reports'
+      | 'settings'
   ) {
     if (nextPanel === 'agenda' && !AGENDA_UI_ENABLED) {
       setTrayPanel('log')
@@ -4476,11 +4641,17 @@ export default function App() {
       return null
     }
     try {
+      const { start, end } = getMonthRange(reportMonth)
       const usage = await window.hrs.getSupabaseProjectUsage(
         normalizedCustomer,
-        normalizedProject
+        normalizedProject,
+        start,
+        end
       )
-      const key = getSharedProjectKey(normalizedCustomer, normalizedProject)
+      const key = `${dayjs(reportMonth).format('YYYY-MM')}:${getSharedProjectKey(
+        normalizedCustomer,
+        normalizedProject
+      )}`
       setSupabaseProjectUsageByKey(previous => ({ ...previous, [key]: usage }))
       return usage
     } catch (error) {
@@ -4568,7 +4739,7 @@ export default function App() {
 
     const shouldUpdate =
       currentEmployeeId !== identity.employeeId ||
-      (!status.profile?.display_name && Boolean(displayName))
+      (Boolean(displayName) && status.profile?.display_name?.trim() !== displayName.trim())
 
     if (shouldUpdate) {
       await window.hrs.updateSupabaseProfile({
@@ -4729,13 +4900,19 @@ export default function App() {
       day.reports.forEach((entry, index) => {
         const meta = taskMetaById.get(entry.taskId)
         const cleanComment = stripMissionCommentMarkers(entry.comment)
-        const mission = findMappedMissionForReport(missions, missionMapOverride, {
+        const mappedMission = findMappedMissionForReport(missions, missionMapOverride, {
           date: day.date,
           taskId: entry.taskId,
           hoursHHMM: entry.hours_HHMM,
           comment: entry.comment,
           reportingFrom: entry.reporting_from
         })
+        const mission =
+          mappedMission?.shared &&
+          mappedMission.createdAt &&
+          day.date < dayjs(mappedMission.createdAt).format('YYYY-MM-DD')
+            ? null
+            : mappedMission
         const customer = mission?.customerName || meta?.customerName || entry.projectInstance || 'Unknown'
         const project = mission?.projectName || meta?.projectName || entry.projectInstance || customer
         const externalTaskName = mission?.virtual ? mission.name : entry.taskName
@@ -5075,6 +5252,10 @@ export default function App() {
         ])
       )
       setMeetingExcludedSubjects(normalizedExcludedSubjects)
+      setIntegrationFavoritePeople(prefs.integrationFavoritePeople ?? [])
+      setIntegrationTextDirection(prefs.integrationTextDirection ?? 'auto')
+      setFavoriteProjects(prefs.favoriteProjects ?? [])
+      setHiddenProjects(prefs.hiddenProjects ?? [])
       if (prefs.reportWorkLogsCache && typeof prefs.reportWorkLogsCache === 'object') {
         const normalizedWorkLogs = Object.fromEntries(
           Object.entries(prefs.reportWorkLogsCache).map(([key, entries]) => {
@@ -5135,7 +5316,8 @@ export default function App() {
       return []
     }
     try {
-      const usage = await window.hrs.getSharedFictiveTaskUsage(ids)
+      const { start, end } = getMonthRange(reportMonth)
+      const usage = await window.hrs.getSharedFictiveTaskUsage(ids, start, end)
       const nextUsage = Object.fromEntries(usage.map(item => [item.taskId, item]))
       setSharedFictiveTaskUsage(previous =>
         replace ? nextUsage : { ...previous, ...nextUsage }
@@ -5416,6 +5598,1717 @@ export default function App() {
     }
   }
 
+  function integrationUsesJira(destination = integrationDestination) {
+    return destination === 'jira' || destination === 'both'
+  }
+
+  function integrationUsesSlack(destination = integrationDestination) {
+    return destination === 'slack' || destination === 'both'
+  }
+
+  function findMappedValue<T>(record: Record<string, T>, customer: string): T | null {
+    const exact = record[customer]
+    if (exact) return exact
+    const normalizedCustomer = normalizeText(customer)
+    const match = Object.entries(record).find(
+      ([name]) => normalizeText(name) === normalizedCustomer
+    )
+    return match?.[1] ?? null
+  }
+
+  async function loadIntegrationIssueOptions(customer: string, issueKey?: string | null) {
+    const requestId = ++integrationIssueRequestRef.current
+    const mappedEpic = findMappedValue(jiraMappings, customer)
+    const defaultIssueKey = issueKey || mappedEpic || ''
+    const defaultMission = defaultIssueKey
+      ? allProjectMissions.find(
+          mission => mission.jiraIssueKey?.trim().toUpperCase() === defaultIssueKey
+        )
+      : null
+    const defaultOption = defaultIssueKey
+      ? {
+          value: defaultIssueKey,
+          label: defaultMission
+            ? `${defaultIssueKey} · ${defaultMission.name}`
+            : defaultIssueKey
+        }
+      : null
+    if (defaultIssueKey) setIntegrationJiraIssueKey(defaultIssueKey)
+    if (!mappedEpic || !jiraConfigured || !window.hrs?.getJiraWorkItems) {
+      setIntegrationJiraIssueOptions(defaultOption ? [defaultOption] : [])
+      if (defaultIssueKey) void loadIntegrationTransitions(defaultIssueKey)
+      return
+    }
+    try {
+      const items = await window.hrs.getJiraWorkItems(mappedEpic)
+      if (requestId !== integrationIssueRequestRef.current) return
+      const options = [
+        ...(defaultOption ? [defaultOption] : []),
+        {
+          value: mappedEpic,
+          label:
+            jiraEpics.find(epic => epic.key === mappedEpic)?.summary
+              ? `${mappedEpic} · ${jiraEpics.find(epic => epic.key === mappedEpic)?.summary}`
+              : mappedEpic
+        },
+        ...items.flatMap(item => [
+          {
+            value: item.key,
+            label: `${item.key} · ${item.summary} (${formatJiraHours(item.timespent)} logged)`
+          },
+          ...(item.subtasks ?? []).map(subtask => ({
+            value: subtask.key,
+            label: `${subtask.key} · ${subtask.summary} (${formatJiraHours(subtask.timespent)} logged)`
+          }))
+        ])
+      ]
+      setIntegrationJiraIssueOptions(
+        Array.from(new Map(options.map(option => [option.value, option])).values())
+      )
+      void loadIntegrationTransitions(defaultIssueKey || mappedEpic)
+    } catch (error) {
+      if (requestId !== integrationIssueRequestRef.current) return
+      setIntegrationJiraIssueOptions(
+        Array.from(
+          new Map(
+            [
+              ...(defaultOption ? [defaultOption] : []),
+              { value: mappedEpic, label: mappedEpic }
+            ].map(option => [option.value, option])
+          ).values()
+        )
+      )
+      setIntegrationError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  function selectIntegrationCustomer(customer: string | null) {
+    setIntegrationQuickLogLinked(false)
+    setIntegrationReplyTarget(null)
+    setIntegrationCustomer(customer)
+    setIntegrationError(null)
+    setIntegrationSuccess(null)
+    if (!customer) {
+      setIntegrationJiraIssueOptions([])
+      setIntegrationSlackChannelId(null)
+      return
+    }
+    const slackMapping = findMappedValue(slackStatus?.mappings ?? {}, customer)
+    setIntegrationSlackChannelId(slackMapping?.channelId ?? null)
+    void loadIntegrationIssueOptions(customer)
+  }
+
+  async function loadIntegrationTransitions(issueKeyValue = integrationJiraIssueKey) {
+    const issueKey = issueKeyValue.trim().toUpperCase()
+    const requestId = ++integrationTransitionRequestRef.current
+    setIntegrationTransitionId(null)
+    if (!jiraConfigured || !/^[A-Z][A-Z0-9_]{0,14}-\d+$/.test(issueKey)) {
+      setIntegrationTransitions([])
+      setIntegrationTransitionLoading(false)
+      return
+    }
+    setIntegrationTransitionLoading(true)
+    try {
+      const transitions = await window.hrs.getJiraTransitions(issueKey)
+      if (requestId !== integrationTransitionRequestRef.current) return
+      setIntegrationTransitions(transitions)
+    } catch (error) {
+      if (requestId !== integrationTransitionRequestRef.current) return
+      setIntegrationTransitions([])
+      setIntegrationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      if (requestId === integrationTransitionRequestRef.current) {
+        setIntegrationTransitionLoading(false)
+      }
+    }
+  }
+
+  async function loadIntegrationRecentMessages(
+    issueKeyValue = integrationJiraIssueKey,
+    channelIdValue = integrationSlackChannelId
+  ) {
+    const requestId = ++integrationRecentRequestRef.current
+    const requests: Array<{
+      source: 'jira' | 'slack'
+      promise: Promise<IntegrationRecentMessage[]>
+    }> = []
+    const issueKey = issueKeyValue.trim().toUpperCase()
+    if (
+      jiraConfigured &&
+      /^[A-Z][A-Z0-9_]{0,14}-\d+$/.test(issueKey) &&
+      window.hrs?.getJiraRecentComments
+    ) {
+      requests.push({
+        source: 'jira',
+        promise: window.hrs.getJiraRecentComments(issueKey)
+      })
+    }
+    if (
+      slackStatus?.configured &&
+      channelIdValue &&
+      window.hrs?.getSlackRecentMessages
+    ) {
+      requests.push({
+        source: 'slack',
+        promise: window.hrs.getSlackRecentMessages(channelIdValue)
+      })
+    }
+    if (!requests.length) {
+      setIntegrationRecentMessages([])
+      setIntegrationRecentError(null)
+      setIntegrationRecentLoading(false)
+      return
+    }
+    setIntegrationRecentLoading(true)
+    setIntegrationRecentError(null)
+    const settled = await Promise.allSettled(requests.map(request => request.promise))
+    if (requestId !== integrationRecentRequestRef.current) return
+    const messages: IntegrationRecentMessage[] = []
+    const failures: string[] = []
+    settled.forEach((result, index) => {
+      if (result.status === 'fulfilled') {
+        messages.push(...result.value)
+      } else {
+        const label = requests[index].source === 'jira' ? 'Jira' : 'Slack'
+        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason)
+        failures.push(`${label}: ${reason}`)
+      }
+    })
+    setIntegrationRecentMessages(
+      messages
+        .sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+        .slice(0, 8)
+    )
+    setIntegrationRecentError(failures.length ? failures.join(' ') : null)
+    setIntegrationRecentLoading(false)
+  }
+
+  function startIntegrationNewMessage() {
+    setIntegrationReplyTarget(null)
+    setIntegrationMessageText('')
+    setIntegrationMentions([])
+    setIntegrationAttachments([])
+    setIntegrationTransitionId(null)
+    setIntegrationError(null)
+    setIntegrationSuccess(null)
+    requestAnimationFrame(() => integrationTextareaRef.current?.focus())
+  }
+
+  function startIntegrationReply(message: IntegrationRecentMessage) {
+    const label = message.authorName.trim() || (message.source === 'jira' ? 'Jira user' : 'Slack user')
+    const mention: IntegrationMention | null = message.authorId
+      ? {
+          key: `${message.source}:${message.authorId}`,
+          label,
+          email: null,
+          avatarUrl: message.avatarUrl,
+          ...(message.source === 'jira'
+            ? { jiraAccountId: message.authorId }
+            : { slackUserId: message.authorId })
+        }
+      : null
+    setIntegrationReplyTarget(message)
+    setIntegrationRecentCollapsed(previous => ({ ...previous, [message.source]: false }))
+    setIntegrationMentions(mention ? [mention] : [])
+    setIntegrationMessageText(mention ? `@[${label}] ` : `@${label} `)
+    setIntegrationAttachments([])
+    setIntegrationTransitionId(null)
+    setIntegrationError(null)
+    setIntegrationSuccess(null)
+    requestAnimationFrame(() => {
+      const editor = integrationTextareaRef.current
+      editor?.focus()
+      const cursor = editor?.value.length ?? 0
+      editor?.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  function integrationPeopleMatch(a: IntegrationMention, b: IntegrationMention) {
+    if (a.jiraAccountId && b.jiraAccountId && a.jiraAccountId === b.jiraAccountId) return true
+    if (a.slackUserId && b.slackUserId && a.slackUserId === b.slackUserId) return true
+    if (a.email && b.email && a.email.toLocaleLowerCase() === b.email.toLocaleLowerCase()) {
+      return true
+    }
+    return normalizeText(a.label) === normalizeText(b.label)
+  }
+
+  function isIntegrationFavorite(
+    candidate: IntegrationMention,
+    favorites = integrationFavoritePeople
+  ) {
+    return favorites.some(favorite => integrationPeopleMatch(favorite, candidate))
+  }
+
+  function sortIntegrationMentionCandidates(
+    candidates: IntegrationMention[],
+    favorites = integrationFavoritePeople
+  ) {
+    return [...candidates].sort((a, b) => {
+      const favoriteDifference =
+        Number(isIntegrationFavorite(b, favorites)) - Number(isIntegrationFavorite(a, favorites))
+      if (favoriteDifference) return favoriteDifference
+      const aCoverage = Number(Boolean(a.jiraAccountId)) + Number(Boolean(a.slackUserId))
+      const bCoverage = Number(Boolean(b.jiraAccountId)) + Number(Boolean(b.slackUserId))
+      return bCoverage - aCoverage || a.label.localeCompare(b.label)
+    })
+  }
+
+  function favoritePeopleMatching(query: string) {
+    const normalizedQuery = normalizeText(query)
+    if (!normalizedQuery) return sortIntegrationMentionCandidates(integrationFavoritePeople)
+    return sortIntegrationMentionCandidates(
+      integrationFavoritePeople.filter(candidate =>
+        [candidate.label, candidate.email ?? ''].some(value =>
+          normalizeText(value).includes(normalizedQuery)
+        )
+      )
+    )
+  }
+
+  function toggleIntegrationFavorite(candidate: IntegrationMention) {
+    setIntegrationFavoritePeople(previous => {
+      const existing = previous.find(favorite => integrationPeopleMatch(favorite, candidate))
+      const next = existing
+        ? previous.filter(favorite => !integrationPeopleMatch(favorite, candidate))
+        : [candidate, ...previous].slice(0, 100)
+      setIntegrationMentionCandidates(current =>
+        sortIntegrationMentionCandidates(current, next)
+      )
+      return next
+    })
+  }
+
+  async function searchIntegrationMentions(query: string, requestId: number) {
+    const searches: Array<{
+      source: 'jira' | 'slack'
+      promise: Promise<unknown[]>
+    }> = []
+    if (integrationUsesJira() && jiraConfigured && window.hrs?.searchJiraUsers) {
+      searches.push({ source: 'jira', promise: window.hrs.searchJiraUsers(query) })
+    }
+    if (integrationUsesSlack() && slackStatus?.configured && window.hrs?.searchSlackUsers) {
+      searches.push({ source: 'slack', promise: window.hrs.searchSlackUsers(query) })
+    }
+    if (!searches.length) {
+      setIntegrationMentionLoading(false)
+      setIntegrationMentionCandidates([])
+      setIntegrationMentionError('Connect Jira or Slack in Settings to search actual users.')
+      setIntegrationDirectoryResults({
+        jira: { state: jiraConfigured ? 'empty' : 'disconnected', count: 0 },
+        slack: { state: slackStatus?.configured ? 'empty' : 'disconnected', count: 0 }
+      })
+      return
+    }
+    const results = await Promise.allSettled(searches.map(search => search.promise))
+    if (requestId !== integrationMentionRequestRef.current) return
+    const merged: IntegrationMention[] = favoritePeopleMatching(query)
+    const directoryResults: {
+      jira: IntegrationDirectoryResult
+      slack: IntegrationDirectoryResult
+    } = {
+      jira: { state: jiraConfigured ? 'empty' : 'disconnected', count: 0 },
+      slack: { state: slackStatus?.configured ? 'empty' : 'disconnected', count: 0 }
+    }
+    const findMatch = (label: string, email: string | null) =>
+      merged.find(candidate => {
+        if (email && candidate.email) {
+          return candidate.email.toLocaleLowerCase() === email.toLocaleLowerCase()
+        }
+        return normalizeText(candidate.label) === normalizeText(label)
+      })
+    results.forEach((result, index) => {
+      const source = searches[index].source
+      if (result.status === 'rejected') {
+        directoryResults[source] = {
+          state: 'error',
+          count: 0,
+          message: result.reason instanceof Error ? result.reason.message : String(result.reason)
+        }
+        return
+      }
+      directoryResults[source] = {
+        state: result.value.length ? 'ready' : 'empty',
+        count: result.value.length
+      }
+      if (source === 'jira') {
+        for (const rawUser of result.value as JiraDirectoryUser[]) {
+          const existing = findMatch(rawUser.displayName, rawUser.emailAddress)
+          if (existing) {
+            existing.jiraAccountId = rawUser.accountId
+            existing.email ||= rawUser.emailAddress
+            existing.avatarUrl ||= rawUser.avatarUrl
+          } else {
+            merged.push({
+              key: `jira:${rawUser.accountId}`,
+              label: rawUser.displayName,
+              email: rawUser.emailAddress,
+              avatarUrl: rawUser.avatarUrl,
+              jiraAccountId: rawUser.accountId
+            })
+          }
+        }
+      } else {
+        for (const rawUser of result.value as SlackDirectoryUser[]) {
+          const existing = findMatch(rawUser.displayName, rawUser.email)
+          if (existing) {
+            existing.slackUserId = rawUser.id
+            existing.email ||= rawUser.email
+            existing.avatarUrl ||= rawUser.avatarUrl
+          } else {
+            merged.push({
+              key: `slack:${rawUser.id}`,
+              label: rawUser.displayName,
+              email: rawUser.email,
+              avatarUrl: rawUser.avatarUrl,
+              slackUserId: rawUser.id
+            })
+          }
+        }
+      }
+    })
+    const failures = (['jira', 'slack'] as const)
+      .map(source => directoryResults[source].message)
+      .filter((message): message is string => Boolean(message))
+    setIntegrationMentionCandidates(sortIntegrationMentionCandidates(merged))
+    setIntegrationDirectoryResults(directoryResults)
+    setIntegrationMentionError(failures.length ? failures.join(' ') : null)
+    setIntegrationMentionLoading(false)
+  }
+
+  function handleIntegrationMessageChange(value: string, cursor: number) {
+    setIntegrationMessageText(value)
+    setIntegrationSuccess(null)
+    if (integrationMentionTimerRef.current) clearTimeout(integrationMentionTimerRef.current)
+    const beforeCursor = value.slice(0, cursor)
+    const match = beforeCursor.match(/@([^@\n]{0,100})$/)
+    const query = match?.[1]?.trim() ?? ''
+    if (!match || query.includes('[') || query.includes(']')) {
+      integrationMentionRangeRef.current = null
+      setIntegrationMentionOpen(false)
+      setIntegrationMentionCandidates([])
+      setIntegrationMentionLoading(false)
+      setIntegrationMentionError(null)
+      setIntegrationDirectoryResults({
+        jira: { state: 'idle', count: 0 },
+        slack: { state: 'idle', count: 0 }
+      })
+      return
+    }
+    integrationMentionRangeRef.current = {
+      start: cursor - match[0].length,
+      end: cursor
+    }
+    setIntegrationMentionOpen(true)
+    if (!query) {
+      setIntegrationMentionCandidates(favoritePeopleMatching(''))
+      setIntegrationMentionLoading(false)
+      setIntegrationMentionError(null)
+      setIntegrationDirectoryResults({
+        jira: { state: jiraConfigured ? 'idle' : 'disconnected', count: 0 },
+        slack: { state: slackStatus?.configured ? 'idle' : 'disconnected', count: 0 }
+      })
+      return
+    }
+    setIntegrationMentionCandidates(favoritePeopleMatching(query))
+    setIntegrationMentionLoading(true)
+    setIntegrationMentionError(null)
+    setIntegrationDirectoryResults({
+      jira: { state: jiraConfigured ? 'loading' : 'disconnected', count: 0 },
+      slack: { state: slackStatus?.configured ? 'loading' : 'disconnected', count: 0 }
+    })
+    const requestId = ++integrationMentionRequestRef.current
+    integrationMentionTimerRef.current = setTimeout(() => {
+      void searchIntegrationMentions(query, requestId)
+    }, 220)
+  }
+
+  function insertIntegrationMention(candidate: IntegrationMention) {
+    const range = integrationMentionRangeRef.current
+    if (!range) return
+    const token = `@[${candidate.label}] `
+    const next =
+      integrationMessageText.slice(0, range.start) +
+      token +
+      integrationMessageText.slice(range.end)
+    const nextCursor = range.start + token.length
+    setIntegrationMessageText(next)
+    setIntegrationMentions(previous => {
+      const withoutDuplicate = previous.filter(item => item.key !== candidate.key)
+      return [...withoutDuplicate, candidate]
+    })
+    integrationMentionRangeRef.current = null
+    setIntegrationMentionOpen(false)
+    setIntegrationMentionCandidates([])
+    window.requestAnimationFrame(() => {
+      integrationTextareaRef.current?.focus()
+      integrationTextareaRef.current?.setSelectionRange(nextCursor, nextCursor)
+    })
+  }
+
+  function updateIntegrationEditor(
+    nextValue: string,
+    selectionStart = nextValue.length,
+    selectionEnd = selectionStart
+  ) {
+    setIntegrationMessageText(nextValue)
+    setIntegrationSuccess(null)
+    integrationMentionRangeRef.current = null
+    setIntegrationMentionOpen(false)
+    window.requestAnimationFrame(() => {
+      integrationTextareaRef.current?.focus()
+      integrationTextareaRef.current?.setSelectionRange(selectionStart, selectionEnd)
+    })
+  }
+
+  function wrapIntegrationEditorSelection(prefix: string, suffix: string, placeholder: string) {
+    const editor = integrationTextareaRef.current
+    const start = editor?.selectionStart ?? integrationMessageText.length
+    const end = editor?.selectionEnd ?? start
+    const selection = integrationMessageText.slice(start, end) || placeholder
+    const replacement = `${prefix}${selection}${suffix}`
+    const next =
+      integrationMessageText.slice(0, start) +
+      replacement +
+      integrationMessageText.slice(end)
+    const contentStart = start + prefix.length
+    updateIntegrationEditor(next, contentStart, contentStart + selection.length)
+  }
+
+  function prefixIntegrationEditorLines(ordered: boolean) {
+    const editor = integrationTextareaRef.current
+    const selectionStart = editor?.selectionStart ?? integrationMessageText.length
+    const selectionEnd = editor?.selectionEnd ?? selectionStart
+    const blockStart = selectionStart === 0
+      ? 0
+      : integrationMessageText.lastIndexOf('\n', selectionStart - 1) + 1
+    const nextBreak = integrationMessageText.indexOf('\n', selectionEnd)
+    const blockEnd = nextBreak === -1 ? integrationMessageText.length : nextBreak
+    const block = integrationMessageText.slice(blockStart, blockEnd)
+    const markerPattern = ordered ? /^\d+[.)]\s+/ : /^[•-]\s+/
+    const lines = block.split('\n')
+    const shouldRemove = lines.every(line => !line.trim() || markerPattern.test(line))
+    const replacement = lines
+      .map((line, index) => {
+        if (!line.trim()) return line
+        if (shouldRemove) return line.replace(markerPattern, '')
+        const clean = line.replace(/^\d+[.)]\s+|^[•-]\s+/, '')
+        return ordered ? `${index + 1}. ${clean}` : `• ${clean}`
+      })
+      .join('\n')
+    const next =
+      integrationMessageText.slice(0, blockStart) +
+      replacement +
+      integrationMessageText.slice(blockEnd)
+    updateIntegrationEditor(next, blockStart, blockStart + replacement.length)
+  }
+
+  function formatIntegrationEditorText() {
+    const formatted = formatIntegrationMessage(integrationMessageText)
+    updateIntegrationEditor(formatted)
+  }
+
+  async function selectIntegrationImages() {
+    setIntegrationAttachmentLoading(true)
+    setIntegrationError(null)
+    try {
+      const selected = await window.hrs.selectIntegrationAttachments({ imagesOnly: true })
+      if (!selected.length) return
+      setIntegrationAttachments(previous =>
+        Array.from(
+          new Map([...previous, ...selected].map(attachment => [attachment.id, attachment])).values()
+        ).slice(0, 10)
+      )
+      const editor = integrationTextareaRef.current
+      const start = editor?.selectionStart ?? integrationMessageText.length
+      const end = editor?.selectionEnd ?? start
+      const markers = selected.map(image => `🖼️ ${image.name}`).join('\n')
+      const separatorBefore = start > 0 && integrationMessageText[start - 1] !== '\n' ? '\n' : ''
+      const separatorAfter = end < integrationMessageText.length && integrationMessageText[end] !== '\n'
+        ? '\n'
+        : ''
+      const insertion = `${separatorBefore}${markers}${separatorAfter}`
+      const next =
+        integrationMessageText.slice(0, start) +
+        insertion +
+        integrationMessageText.slice(end)
+      updateIntegrationEditor(next, start + insertion.length)
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIntegrationAttachmentLoading(false)
+    }
+  }
+
+  async function selectIntegrationAttachments() {
+    setIntegrationAttachmentLoading(true)
+    setIntegrationError(null)
+    try {
+      const selected = await window.hrs.selectIntegrationAttachments()
+      setIntegrationAttachments(previous =>
+        Array.from(
+          new Map([...previous, ...selected].map(attachment => [attachment.id, attachment])).values()
+        ).slice(0, 10)
+      )
+    } catch (error) {
+      setIntegrationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setIntegrationAttachmentLoading(false)
+    }
+  }
+
+  function formatAttachmentSize(bytes: number) {
+    if (bytes < 1024) return `${bytes} B`
+    if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+  }
+
+  async function sendIntegrationUpdate() {
+    const rawText = integrationMessageText.trim()
+    if (!rawText) {
+      setIntegrationError('Write an update before sending.')
+      return
+    }
+    const resolvedDirection = integrationTextDirection === 'auto'
+      ? detectIntegrationTextDirection(rawText)
+      : integrationTextDirection
+    const text = resolvedDirection === 'rtl' ? `\u200F${rawText}` : rawText
+    setIntegrationSending(true)
+    setIntegrationError(null)
+    setIntegrationSuccess(null)
+    const successes: string[] = []
+    const failures: string[] = []
+    const sendToJira = integrationReplyTarget
+      ? integrationReplyTarget.source === 'jira'
+      : integrationUsesJira()
+    const sendToSlack = integrationReplyTarget
+      ? integrationReplyTarget.source === 'slack'
+      : integrationUsesSlack()
+    const liveMentions = integrationMentions.filter(mention =>
+      rawText.includes(`@[${mention.label}]`)
+    )
+
+    if (sendToJira) {
+      const issueKey = integrationJiraIssueKey.trim().toUpperCase()
+      if (!jiraConfigured) {
+        failures.push('Jira is not connected.')
+      } else if (!/^[A-Z][A-Z0-9_]{0,14}-\d+$/.test(issueKey)) {
+        failures.push('Choose a valid Jira issue.')
+      } else {
+        let commentPosted = false
+        let attachmentsPosted = integrationAttachments.length === 0
+        let statusUpdated = !integrationTransitionId
+        let jiraCommentAttachments: Array<{ id: string; filename: string }> = []
+        if (integrationAttachments.length) {
+          try {
+            const uploadedAttachments = await window.hrs.uploadJiraAttachments({
+              issueKey,
+              attachmentIds: integrationAttachments.map(attachment => attachment.id)
+            })
+            jiraCommentAttachments = uploadedAttachments.flatMap(attachment =>
+              attachment.id && attachment.filename
+                ? [{ id: String(attachment.id), filename: attachment.filename }]
+                : []
+            )
+            attachmentsPosted = jiraCommentAttachments.length === integrationAttachments.length
+            if (!attachmentsPosted) {
+              failures.push('Jira files: Jira did not confirm every uploaded attachment.')
+            }
+          } catch (error) {
+            failures.push(`Jira files: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+        try {
+          await window.hrs.addJiraComment({
+            issueKey,
+            text,
+            mentions: liveMentions
+              .filter(mention => mention.jiraAccountId)
+              .map(mention => ({
+                accountId: mention.jiraAccountId as string,
+                label: mention.label
+              })),
+            attachments: jiraCommentAttachments
+          })
+          commentPosted = true
+        } catch (error) {
+          failures.push(`Jira comment: ${error instanceof Error ? error.message : String(error)}`)
+        }
+        if (commentPosted && integrationTransitionId) {
+          try {
+            await window.hrs.transitionJiraIssue({
+              issueKey,
+              transitionId: integrationTransitionId
+            })
+            statusUpdated = true
+          } catch (error) {
+            failures.push(`Jira status: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+        if (commentPosted) {
+          const jiraResults = [
+            integrationReplyTarget?.source === 'jira' ? 'Jira reply posted' : 'Jira comment posted'
+          ]
+          if (integrationTransitionId && statusUpdated) jiraResults.push('status updated')
+          if (attachmentsPosted && integrationAttachments.length) {
+            jiraResults.push(
+              `${integrationAttachments.length} file${integrationAttachments.length === 1 ? '' : 's'} uploaded`
+            )
+          }
+          successes.push(jiraResults.join(', '))
+        }
+      }
+    }
+
+    if (sendToSlack) {
+      if (!slackStatus?.configured) {
+        failures.push('Slack is not connected.')
+      } else if (!integrationSlackChannelId) {
+        failures.push('Choose a Slack channel.')
+      } else {
+        try {
+          await window.hrs.postSlackMessage({
+            channelId: integrationSlackChannelId,
+            text,
+            mentions: liveMentions
+              .filter(mention => mention.slackUserId)
+              .map(mention => ({
+                slackUserId: mention.slackUserId as string,
+                label: mention.label
+              })),
+            attachmentIds: integrationAttachments.map(attachment => attachment.id),
+            threadTs:
+              integrationReplyTarget?.source === 'slack'
+                ? integrationReplyTarget.id
+                : null
+          })
+          successes.push(
+            integrationAttachments.length
+              ? `Slack ${integrationReplyTarget?.source === 'slack' ? 'reply' : 'message'} and ${integrationAttachments.length} file${integrationAttachments.length === 1 ? '' : 's'} posted`
+              : integrationReplyTarget?.source === 'slack'
+                ? 'Slack reply posted'
+                : 'Slack message posted'
+          )
+        } catch (error) {
+          failures.push(`Slack: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+    }
+
+    if (successes.length) setIntegrationSuccess(`${successes.join(' · ')}.`)
+    if (failures.length) setIntegrationError(failures.join(' '))
+    if (!failures.length) {
+      setIntegrationMessageText('')
+      setIntegrationMentions([])
+      setIntegrationAttachments([])
+      setIntegrationTransitionId(null)
+      void loadIntegrationRecentMessages()
+    }
+    setIntegrationSending(false)
+  }
+
+  function openIntegrationUpdate(context?: {
+    customer?: string | null
+    issueKey?: string | null
+    message?: string
+    followQuickLog?: boolean
+  }) {
+    const nextCustomer = context?.customer?.trim() || customerName?.trim() || null
+    const nextIssueKey = context?.issueKey?.trim().toUpperCase() || null
+    setIntegrationError(null)
+    setIntegrationSuccess(null)
+    setIntegrationReplyTarget(null)
+    setIntegrationDestination('both')
+    setIntegrationQuickLogLinked(Boolean(context?.followQuickLog))
+    if (context?.message !== undefined) setIntegrationMessageText(context.message)
+    if (nextCustomer) {
+      setIntegrationCustomer(nextCustomer)
+      const slackMapping = findMappedValue(slackStatus?.mappings ?? {}, nextCustomer)
+      setIntegrationSlackChannelId(slackMapping?.channelId ?? null)
+      void loadIntegrationIssueOptions(nextCustomer, nextIssueKey)
+    } else if (nextIssueKey) {
+      setIntegrationJiraIssueKey(nextIssueKey)
+      setIntegrationJiraIssueOptions([{ value: nextIssueKey, label: nextIssueKey }])
+      void loadIntegrationTransitions(nextIssueKey)
+    }
+    setIntegrationComposerOpen(true)
+    if (trayPanel !== 'log') switchTrayPanel('log')
+    void loadSlackStatus({ loadChannels: true }).then(status => {
+      if (!nextCustomer || !status) return
+      const refreshedMapping = findMappedValue(status.mappings, nextCustomer)
+      if (refreshedMapping) setIntegrationSlackChannelId(refreshedMapping.channelId)
+    })
+    void loadJiraStatus()
+  }
+
+  function renderIntegrationUpdatePanel() {
+    const customers = Array.from(
+      new Set([
+        ...uniqueCustomers,
+        ...Object.keys(jiraMappings),
+        ...Object.keys(slackStatus?.mappings ?? {})
+      ])
+    )
+      .filter(Boolean)
+      .sort((a, b) => a.localeCompare(b))
+      .map(customer => ({ value: customer, label: customer }))
+    const mappedChannels = Object.values(slackStatus?.mappings ?? {})
+    const channelOptions = Array.from(
+      new Map(
+        [
+          ...slackChannels.map(channel => ({ value: channel.id, label: channel.label })),
+          ...mappedChannels.map(mapping => ({
+            value: mapping.channelId,
+            label: `#${mapping.channelName}`
+          }))
+        ].map(option => [option.value, option])
+      ).values()
+    ).sort((a, b) => a.label.localeCompare(b.label))
+    const jiraWorkItemOptions = integrationJiraIssueKey &&
+      !integrationJiraIssueOptions.some(option => option.value === integrationJiraIssueKey)
+      ? [
+          { value: integrationJiraIssueKey, label: integrationJiraIssueKey },
+          ...integrationJiraIssueOptions
+        ]
+      : integrationJiraIssueOptions
+    const selectedIntegrationMission = allProjectMissions.find(
+      mission =>
+        mission.jiraIssueKey?.trim().toUpperCase() === integrationJiraIssueKey.trim().toUpperCase()
+    )
+    const integrationParentKey = integrationCustomer
+      ? findMappedValue(jiraMappings, integrationCustomer)
+      : null
+    const jiraTargetDescription = selectedIntegrationMission
+      ? `Selected automatically from fictive task “${selectedIntegrationMission.name}”.`
+      : integrationParentKey === integrationJiraIssueKey
+        ? 'Using the customer parent because no fictive task is selected.'
+        : 'Choose the Jira work item that will receive this update.'
+    const resolvedIntegrationTextDirection = integrationTextDirection === 'auto'
+      ? detectIntegrationTextDirection(integrationMessageText)
+      : integrationTextDirection
+    const integrationImages = integrationAttachments.filter(attachment =>
+      attachment.mimeType.startsWith('image/')
+    )
+    const directoryBadge = (source: 'jira' | 'slack') => {
+      const result = integrationDirectoryResults[source]
+      const label = source === 'jira' ? 'Jira' : 'Slack'
+      const detail =
+        result.state === 'loading'
+          ? 'searching'
+          : result.state === 'ready'
+            ? String(result.count)
+            : result.state === 'empty'
+              ? 'no matches'
+              : result.state === 'error'
+                ? 'permission needed'
+                : result.state === 'disconnected'
+                  ? 'disconnected'
+                  : 'ready'
+      const color =
+        result.state === 'error' || result.state === 'disconnected'
+          ? 'red'
+          : result.state === 'ready'
+            ? source === 'jira'
+              ? 'blue'
+              : 'violet'
+            : 'gray'
+      return (
+        <Badge key={source} size="xs" color={color} variant="light">
+          {label} · {detail}
+        </Badge>
+      )
+    }
+
+    return (
+      <Stack gap="xs" className="tray-communicate-panel is-inline">
+        <Card radius="md" withBorder className="tray-integration-composer-card">
+          <Stack gap="xs">
+            <Group justify="space-between" align="center">
+              <div>
+                <Text fw={700} size="sm">
+                  {integrationReplyTarget
+                    ? `Reply to ${integrationReplyTarget.authorName}`
+                    : 'Send update'}
+                </Text>
+                <Text size="xs" c="dimmed">
+                  {integrationReplyTarget
+                    ? `Replying on ${integrationReplyTarget.source === 'jira' ? 'Jira' : 'Slack'}.`
+                    : 'Send the same customer update to Jira and Slack together.'}
+                </Text>
+              </div>
+              <ActionIcon
+                size="sm"
+                variant="subtle"
+                aria-label="Close customer update"
+                onClick={() => {
+                  setIntegrationComposerOpen(false)
+                  setIntegrationMentionOpen(false)
+                }}
+              >
+                <IconX size={15} />
+              </ActionIcon>
+            </Group>
+
+            <Card radius="md" withBorder className="integration-both-banner">
+              <Group justify="space-between" align="center" wrap="nowrap">
+                <Text size="xs" fw={700}>
+                  {integrationReplyTarget
+                    ? `Reply only in ${integrationReplyTarget.source === 'jira' ? 'Jira' : 'Slack'}`
+                    : 'New messages send to both'}
+                </Text>
+                <Group gap={6} wrap="nowrap">
+                  {(!integrationReplyTarget || integrationReplyTarget.source === 'jira') && (
+                    <Badge size="xs" color="blue">Jira</Badge>
+                  )}
+                  {(!integrationReplyTarget || integrationReplyTarget.source === 'slack') && (
+                    <Badge size="xs" color="violet">Slack</Badge>
+                  )}
+                </Group>
+              </Group>
+            </Card>
+
+            <Select
+              label="Customer"
+              placeholder="Choose customer"
+              data={customers}
+              value={integrationCustomer}
+              onChange={selectIntegrationCustomer}
+              searchable
+              clearable
+              size="xs"
+            />
+
+            {integrationUsesJira() && (
+              <Card radius="md" withBorder className="integration-destination-card">
+                <Stack gap={8}>
+                  <Group justify="space-between">
+                    <Text size="xs" fw={700}>Jira</Text>
+                    <Badge size="xs" color={jiraConfigured ? 'teal' : 'red'} variant="light">
+                      {jiraConfigured ? 'Connected' : 'Connect in Settings'}
+                    </Badge>
+                  </Group>
+                  <Select
+                    label="Jira work item"
+                    description={jiraTargetDescription}
+                    placeholder="Choose the parent or task work item"
+                    data={jiraWorkItemOptions}
+                    value={integrationJiraIssueKey || null}
+                    onChange={value => {
+                      if (!value) return
+                      setIntegrationReplyTarget(null)
+                      setIntegrationJiraIssueKey(value)
+                      void loadIntegrationTransitions(value)
+                    }}
+                    searchable
+                    allowDeselect={false}
+                    nothingFoundMessage="No Jira work items found"
+                    disabled={!jiraConfigured || !jiraWorkItemOptions.length}
+                    size="xs"
+                  />
+                  <Select
+                    label="Status change (optional)"
+                    placeholder={integrationTransitionLoading ? 'Loading statuses...' : 'Keep current status'}
+                    data={integrationTransitions.map(transition => ({
+                      value: transition.id,
+                      label:
+                        transition.toStatusName === transition.name
+                          ? transition.name
+                          : `${transition.name} → ${transition.toStatusName}`
+                    }))}
+                    value={integrationTransitionId}
+                    onChange={setIntegrationTransitionId}
+                    searchable
+                    clearable
+                    disabled={!jiraConfigured || integrationTransitionLoading}
+                    rightSection={integrationTransitionLoading ? <Loader size={14} /> : undefined}
+                    size="xs"
+                  />
+                </Stack>
+              </Card>
+            )}
+
+            {integrationUsesSlack() && (
+              <Card radius="md" withBorder className="integration-destination-card">
+                <Stack gap={8}>
+                  <Group justify="space-between">
+                    <Text size="xs" fw={700}>Slack</Text>
+                    <Badge size="xs" color={slackStatus?.configured ? 'teal' : 'red'} variant="light">
+                      {slackStatus?.configured ? 'Connected' : 'Connect in Settings'}
+                    </Badge>
+                  </Group>
+                  <Select
+                    label="Slack channel"
+                    placeholder="Mapped customer channel"
+                    data={channelOptions}
+                    value={integrationSlackChannelId}
+                    onChange={value => {
+                      setIntegrationReplyTarget(null)
+                      setIntegrationSlackChannelId(value)
+                    }}
+                    searchable
+                    size="xs"
+                    nothingFoundMessage="No accessible channels"
+                  />
+                </Stack>
+              </Card>
+            )}
+
+            <Card radius="md" withBorder className="integration-recent-card">
+              <Stack gap={8}>
+                <Group justify="space-between" align="center" wrap="nowrap">
+                  <div>
+                    <Text size="xs" fw={700}>Recent messages</Text>
+                    <Text size="xs" c="dimmed">Latest comments from this Jira item and Slack channel.</Text>
+                  </div>
+                  <Group gap={5} wrap="nowrap">
+                    <Button
+                      size="compact-xs"
+                      variant={integrationReplyTarget ? 'light' : 'filled'}
+                      onClick={startIntegrationNewMessage}
+                    >
+                      New message
+                    </Button>
+                    <Tooltip label="Refresh messages" withArrow>
+                      <ActionIcon
+                        size="sm"
+                        variant="subtle"
+                        aria-label="Refresh recent Jira and Slack messages"
+                        loading={integrationRecentLoading}
+                        onClick={() => void loadIntegrationRecentMessages()}
+                      >
+                        <IconRefresh size={15} />
+                      </ActionIcon>
+                    </Tooltip>
+                  </Group>
+                </Group>
+
+                {integrationRecentMessages.length > 0 && (
+                  <Group gap={5} wrap="nowrap" className="integration-recent-source-toggles">
+                    {(['jira', 'slack'] as const).map(source => {
+                      const count = integrationRecentMessages.filter(
+                        message => message.source === source
+                      ).length
+                      if (!count) return null
+                      const collapsed = integrationRecentCollapsed[source]
+                      const label = source === 'jira' ? 'Jira comments' : 'Slack messages'
+                      return (
+                        <Button
+                          key={source}
+                          size="compact-xs"
+                          variant={collapsed ? 'subtle' : 'light'}
+                          color={source === 'jira' ? 'blue' : 'violet'}
+                          leftSection={
+                            source === 'jira'
+                              ? <IconTicket size={13} />
+                              : <IconBrandSlack size={13} />
+                          }
+                          rightSection={
+                            collapsed
+                              ? <IconChevronRight size={13} />
+                              : <IconChevronDown size={13} />
+                          }
+                          aria-expanded={!collapsed}
+                          onClick={() =>
+                            setIntegrationRecentCollapsed(previous => ({
+                              ...previous,
+                              [source]: !previous[source]
+                            }))
+                          }
+                        >
+                          {label} · {count}
+                        </Button>
+                      )
+                    })}
+                  </Group>
+                )}
+
+                {integrationRecentLoading && !integrationRecentMessages.length ? (
+                  <Group gap="xs" className="integration-recent-empty">
+                    <Loader size="xs" />
+                    <Text size="xs" c="dimmed">Loading recent messages...</Text>
+                  </Group>
+                ) : integrationRecentMessages.length ? (
+                  <Stack gap={6} className="integration-recent-list">
+                    {integrationRecentMessages.map(message => (
+                      <Collapse
+                        key={`${message.source}:${message.id}`}
+                        in={!integrationRecentCollapsed[message.source]}
+                      >
+                      <Card
+                          radius="sm"
+                          withBorder
+                          className={`integration-recent-message is-${message.source}${
+                            integrationReplyTarget?.source === message.source &&
+                            integrationReplyTarget.id === message.id
+                              ? ' is-replying'
+                              : ''
+                          }`}
+                        >
+                        <Group align="flex-start" wrap="nowrap" gap={8}>
+                          <span className="integration-recent-avatar">
+                            {message.source === 'slack' && /^(?:jira(?: cloud)?|atlassian)$/i.test(message.authorName.trim()) ? (
+                              <IconBrandSlack size={20} aria-hidden="true" />
+                            ) : message.avatarUrl ? (
+                              <img src={message.avatarUrl} alt="" />
+                            ) : (
+                              message.authorName.charAt(0).toUpperCase()
+                            )}
+                          </span>
+                          <div className="integration-recent-copy">
+                            <Group justify="space-between" align="center" wrap="nowrap" gap={6}>
+                              <Group gap={6} wrap="nowrap" className="integration-recent-author">
+                                <Text size="xs" fw={700} truncate>
+                                  {message.source === 'slack' && /^(?:jira(?: cloud)?|atlassian)$/i.test(message.authorName.trim())
+                                    ? 'Slack'
+                                    : message.authorName}
+                                </Text>
+                                <Badge
+                                  size="xs"
+                                  color={message.source === 'jira' ? 'blue' : 'violet'}
+                                  variant="light"
+                                  leftSection={
+                                    message.source === 'jira'
+                                      ? <IconTicket size={11} />
+                                      : <IconBrandSlack size={11} />
+                                  }
+                                >
+                                  {message.source === 'jira' ? 'Jira comment' : 'Slack message'}
+                                </Badge>
+                              </Group>
+                              <Text size="xs" c="dimmed" className="integration-recent-time">
+                                {dayjs(message.createdAt).format('DD MMM · HH:mm')}
+                              </Text>
+                            </Group>
+                            <Text size="xs" lineClamp={3} title={message.text} className="integration-recent-text">
+                              {message.text}
+                            </Text>
+                            {message.source === 'jira' && message.attachments?.length ? (
+                              <div className="integration-recent-attachments" aria-label="Jira attachments">
+                                {message.attachments.map(attachment => (
+                                  <button
+                                    key={attachment.id}
+                                    type="button"
+                                    className={`integration-recent-attachment${attachment.previewDataUrl ? ' has-preview' : ''}`}
+                                    aria-label={`Open Jira attachment ${attachment.name}`}
+                                    title={`Open or download ${attachment.name}`}
+                                    onClick={() => {
+                                      setIntegrationError(null)
+                                      void window.hrs.openJiraAttachment({
+                                        id: attachment.id,
+                                        filename: attachment.name
+                                      }).catch(error => {
+                                        setIntegrationError(
+                                          `Jira attachment: ${error instanceof Error ? error.message : String(error)}`
+                                        )
+                                      })
+                                    }}
+                                  >
+                                    {attachment.previewDataUrl ? (
+                                      <img
+                                        className="integration-recent-attachment-preview"
+                                        src={attachment.previewDataUrl}
+                                        alt=""
+                                      />
+                                    ) : (
+                                      <IconPaperclip size={13} aria-hidden="true" />
+                                    )}
+                                    <span>{attachment.name}</span>
+                                    <span className="integration-recent-attachment-action">Open</span>
+                                  </button>
+                                ))}
+                              </div>
+                            ) : null}
+                            <Group justify="space-between" align="center" mt={5}>
+                              <Text size="xs" c="dimmed">
+                                {message.source === 'slack' && message.replyCount
+                                  ? `${message.replyCount} repl${message.replyCount === 1 ? 'y' : 'ies'}`
+                                  : message.source === 'jira'
+                                    ? 'From Jira issue'
+                                    : 'From Slack channel'}
+                              </Text>
+                              <Button
+                                size="compact-xs"
+                                variant="subtle"
+                                leftSection={<IconArrowBackUp size={13} />}
+                                aria-label={`Reply to ${message.authorName} on ${message.source === 'jira' ? 'Jira' : 'Slack'}`}
+                                onClick={() => startIntegrationReply(message)}
+                              >
+                                Reply
+                              </Button>
+                            </Group>
+                          </div>
+                        </Group>
+                        {integrationReplyTarget?.source === message.source &&
+                          integrationReplyTarget.id === message.id && (
+                          <div className="integration-inline-reply">
+                            <Group
+                              justify="space-between"
+                              align="center"
+                              gap={5}
+                              wrap="wrap"
+                              className="integration-inline-reply-toolbar"
+                            >
+                              <Group gap={3} wrap="nowrap">
+                                <Button
+                                  size="compact-xs"
+                                  variant="light"
+                                  leftSection={<IconSparkles size={12} />}
+                                  aria-label="Format reply text"
+                                  onClick={formatIntegrationEditorText}
+                                >
+                                  Format
+                                </Button>
+                                <ActionIcon
+                                  size="sm"
+                                  variant="subtle"
+                                  aria-label="Bold selected reply text"
+                                  onClick={() => wrapIntegrationEditorSelection('*', '*', 'bold text')}
+                                >
+                                  <IconBold size={14} />
+                                </ActionIcon>
+                                <ActionIcon
+                                  size="sm"
+                                  variant="subtle"
+                                  aria-label="Italicize selected reply text"
+                                  onClick={() => wrapIntegrationEditorSelection('_', '_', 'italic text')}
+                                >
+                                  <IconItalic size={14} />
+                                </ActionIcon>
+                                <ActionIcon
+                                  size="sm"
+                                  variant="subtle"
+                                  aria-label="Add reply bullet list"
+                                  onClick={() => prefixIntegrationEditorLines(false)}
+                                >
+                                  <IconList size={14} />
+                                </ActionIcon>
+                              </Group>
+                              <Group gap={4} wrap="nowrap">
+                                <SegmentedControl
+                                  size="xs"
+                                  value={integrationTextDirection}
+                                  onChange={value =>
+                                    setIntegrationTextDirection(value as 'auto' | 'ltr' | 'rtl')
+                                  }
+                                  aria-label="Reply text direction"
+                                  data={[
+                                    { value: 'auto', label: 'Auto' },
+                                    { value: 'ltr', label: 'LTR' },
+                                    { value: 'rtl', label: 'RTL' }
+                                  ]}
+                                />
+                                <Button
+                                  size="compact-xs"
+                                  variant="light"
+                                  leftSection={<IconPhotoPlus size={13} />}
+                                  loading={integrationAttachmentLoading}
+                                  aria-label="Insert reply image"
+                                  onClick={() => void selectIntegrationImages()}
+                                >
+                                  Image
+                                </Button>
+                                <Button
+                                  size="compact-xs"
+                                  variant="light"
+                                  leftSection={<IconPaperclip size={13} />}
+                                  loading={integrationAttachmentLoading}
+                                  onClick={() => void selectIntegrationAttachments()}
+                                >
+                                  Attach
+                                </Button>
+                              </Group>
+                            </Group>
+
+                            <Textarea
+                              ref={integrationTextareaRef}
+                              label={`Reply to ${message.authorName}`}
+                              description="Type @ to add another person."
+                              placeholder="Write your reply..."
+                              minRows={3}
+                              autosize
+                              maxRows={7}
+                              value={integrationMessageText}
+                              dir={integrationTextDirection === 'auto' ? 'auto' : integrationTextDirection}
+                              data-text-direction={resolvedIntegrationTextDirection}
+                              styles={{
+                                input: {
+                                  direction: resolvedIntegrationTextDirection,
+                                  textAlign: resolvedIntegrationTextDirection === 'rtl' ? 'right' : 'left'
+                                }
+                              }}
+                              onChange={event =>
+                                handleIntegrationMessageChange(
+                                  event.currentTarget.value,
+                                  event.currentTarget.selectionStart ?? event.currentTarget.value.length
+                                )
+                              }
+                              size="xs"
+                            />
+
+                            {integrationMentionOpen && (
+                              <div className="integration-inline-reply-mentions" role="listbox">
+                                {integrationMentionLoading && !integrationMentionCandidates.length ? (
+                                  <Group gap="xs" p={6}>
+                                    <Loader size="xs" />
+                                    <Text size="xs" c="dimmed">Finding people...</Text>
+                                  </Group>
+                                ) : integrationMentionCandidates.length ? (
+                                  integrationMentionCandidates.slice(0, 6).map(candidate => (
+                                    <button
+                                      key={candidate.key}
+                                      type="button"
+                                      role="option"
+                                      aria-selected="false"
+                                      className="integration-inline-reply-mention"
+                                      onMouseDown={event => event.preventDefault()}
+                                      onClick={() => insertIntegrationMention(candidate)}
+                                    >
+                                      <span>{candidate.label}</span>
+                                      <small>
+                                        {candidate.jiraAccountId ? 'Jira' : ''}
+                                        {candidate.jiraAccountId && candidate.slackUserId ? ' + ' : ''}
+                                        {candidate.slackUserId ? 'Slack' : ''}
+                                      </small>
+                                    </button>
+                                  ))
+                                ) : (
+                                  <Text size="xs" c="dimmed" p={6}>No matching people.</Text>
+                                )}
+                              </div>
+                            )}
+
+                            {integrationImages.length > 0 && (
+                              <div className="integration-inline-images is-reply" aria-label="Reply images">
+                                {integrationImages.map(image => (
+                                  <figure key={image.id} className="integration-inline-image">
+                                    {image.previewDataUrl ? (
+                                      <img src={image.previewDataUrl} alt={image.name} />
+                                    ) : (
+                                      <div className="integration-inline-image-placeholder">
+                                        <IconPhotoPlus size={20} />
+                                      </div>
+                                    )}
+                                    <figcaption>{image.name}</figcaption>
+                                    <ActionIcon
+                                      size="sm"
+                                      variant="filled"
+                                      color="dark"
+                                      className="integration-inline-image-remove"
+                                      aria-label={`Remove ${image.name}`}
+                                      onClick={() =>
+                                        setIntegrationAttachments(previous =>
+                                          previous.filter(item => item.id !== image.id)
+                                        )
+                                      }
+                                    >
+                                      <IconX size={13} />
+                                    </ActionIcon>
+                                  </figure>
+                                ))}
+                              </div>
+                            )}
+
+                            {integrationAttachments.some(
+                              attachment => !attachment.mimeType.startsWith('image/')
+                            ) && (
+                              <Stack gap={4}>
+                                {integrationAttachments
+                                  .filter(attachment => !attachment.mimeType.startsWith('image/'))
+                                  .map(attachment => (
+                                    <Group
+                                      key={attachment.id}
+                                      justify="space-between"
+                                      wrap="nowrap"
+                                      className="integration-attachment-row"
+                                    >
+                                      <Text size="xs" truncate>{attachment.name}</Text>
+                                      <ActionIcon
+                                        size="sm"
+                                        variant="subtle"
+                                        color="red"
+                                        aria-label={`Remove ${attachment.name}`}
+                                        onClick={() =>
+                                          setIntegrationAttachments(previous =>
+                                            previous.filter(item => item.id !== attachment.id)
+                                          )
+                                        }
+                                      >
+                                        <IconX size={13} />
+                                      </ActionIcon>
+                                    </Group>
+                                  ))}
+                              </Stack>
+                            )}
+
+                            {integrationSuccess && (
+                              <Alert color="teal" variant="light" radius="md">
+                                {integrationSuccess}
+                              </Alert>
+                            )}
+                            {integrationError && (
+                              <Alert color="red" variant="light" radius="md">
+                                {integrationError}
+                              </Alert>
+                            )}
+                            <Group justify="flex-end" align="center" wrap="nowrap">
+                              <Group gap={5} wrap="nowrap">
+                                <Button
+                                  size="compact-xs"
+                                  variant="subtle"
+                                  color="gray"
+                                  onClick={startIntegrationNewMessage}
+                                >
+                                  Cancel
+                                </Button>
+                                <Button
+                                  size="compact-xs"
+                                  leftSection={<IconSend size={13} />}
+                                  loading={integrationSending}
+                                  disabled={!integrationMessageText.trim()}
+                                  onClick={() => void sendIntegrationUpdate()}
+                                >
+                                  Reply in {message.source === 'jira' ? 'Jira' : 'Slack'}
+                                </Button>
+                              </Group>
+                            </Group>
+                          </div>
+                        )}
+                        </Card>
+                      </Collapse>
+                    ))}
+                  </Stack>
+                ) : (
+                  <Text size="xs" c="dimmed" className="integration-recent-empty">
+                    No recent Jira or Slack messages found for the selected destinations.
+                  </Text>
+                )}
+                {integrationRecentError && (
+                  <Text size="xs" c="orange">
+                    {integrationRecentError}
+                  </Text>
+                )}
+              </Stack>
+            </Card>
+
+            <div
+              className={`integration-main-composer${
+                integrationReplyTarget ? ' is-hidden-for-reply' : ''
+              }`}
+            >
+            <Group
+              justify="space-between"
+              align="center"
+              gap={6}
+              wrap="wrap"
+              className="integration-editor-toolbar"
+            >
+              <Group gap={4} wrap="nowrap">
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  leftSection={<IconSparkles size={13} />}
+                  aria-label="Format update text"
+                  onClick={formatIntegrationEditorText}
+                >
+                  Format
+                </Button>
+                <Tooltip label="Bold" withArrow>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    aria-label="Bold selected text"
+                    onClick={() => wrapIntegrationEditorSelection('*', '*', 'bold text')}
+                  >
+                    <IconBold size={15} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Italic" withArrow>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    aria-label="Italicize selected text"
+                    onClick={() => wrapIntegrationEditorSelection('_', '_', 'italic text')}
+                  >
+                    <IconItalic size={15} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Bulleted list" withArrow>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    aria-label="Toggle bulleted list"
+                    onClick={() => prefixIntegrationEditorLines(false)}
+                  >
+                    <IconList size={15} />
+                  </ActionIcon>
+                </Tooltip>
+                <Tooltip label="Numbered list" withArrow>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    aria-label="Toggle numbered list"
+                    onClick={() => prefixIntegrationEditorLines(true)}
+                  >
+                    <IconListNumbers size={15} />
+                  </ActionIcon>
+                </Tooltip>
+              </Group>
+              <Group gap={6} wrap="nowrap">
+                <SegmentedControl
+                  size="xs"
+                  value={integrationTextDirection}
+                  onChange={value =>
+                    setIntegrationTextDirection(value as 'auto' | 'ltr' | 'rtl')
+                  }
+                  aria-label="Text direction"
+                  data={[
+                    { value: 'auto', label: 'Auto' },
+                    { value: 'ltr', label: 'LTR' },
+                    { value: 'rtl', label: 'RTL' }
+                  ]}
+                />
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  leftSection={<IconPhotoPlus size={14} />}
+                  loading={integrationAttachmentLoading}
+                  aria-label="Insert image"
+                  onClick={() => void selectIntegrationImages()}
+                >
+                  Image
+                </Button>
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  leftSection={<IconPaperclip size={13} />}
+                  loading={integrationAttachmentLoading}
+                  onClick={() => void selectIntegrationAttachments()}
+                >
+                  Attach
+                </Button>
+              </Group>
+            </Group>
+
+            <Popover
+              opened={!integrationReplyTarget && integrationMentionOpen}
+              position="bottom-start"
+              width="target"
+              withinPortal={false}
+              trapFocus={false}
+            >
+              <Popover.Target>
+                <Textarea
+                  ref={integrationReplyTarget ? undefined : integrationTextareaRef}
+                  label="Update"
+                  description="Format the update, use RTL when needed, or type @ to tag a Jira or Slack user."
+                  placeholder="Customer is blocked by @[Name]..."
+                  minRows={4}
+                  autosize
+                  maxRows={8}
+                  value={integrationMessageText}
+                  dir={integrationTextDirection === 'auto' ? 'auto' : integrationTextDirection}
+                  data-text-direction={resolvedIntegrationTextDirection}
+                  styles={{
+                    input: {
+                      direction: resolvedIntegrationTextDirection,
+                      textAlign: resolvedIntegrationTextDirection === 'rtl' ? 'right' : 'left'
+                    }
+                  }}
+                  onChange={event =>
+                    handleIntegrationMessageChange(
+                      event.currentTarget.value,
+                      event.currentTarget.selectionStart ?? event.currentTarget.value.length
+                    )
+                  }
+                  size="xs"
+                />
+              </Popover.Target>
+              <Popover.Dropdown className="integration-mention-dropdown">
+                <Group gap={6} px="xs" py={5} className="integration-directory-status">
+                  {integrationFavoritePeople.length ? (
+                    <Badge size="xs" color="yellow" variant="light">
+                      {integrationFavoritePeople.length} favorite{integrationFavoritePeople.length === 1 ? '' : 's'}
+                    </Badge>
+                  ) : null}
+                  {directoryBadge('jira')}
+                  {directoryBadge('slack')}
+                </Group>
+                {integrationMentionCandidates.length ? (
+                  <Stack gap={4}>
+                    {integrationMentionCandidates.map(candidate => {
+                      const favorite = isIntegrationFavorite(candidate)
+                      return (
+                        <div
+                          key={candidate.key}
+                          role="option"
+                          tabIndex={0}
+                          aria-selected="false"
+                          className={`integration-mention-option${favorite ? ' is-favorite' : ''}`}
+                          onMouseDown={event => event.preventDefault()}
+                          onClick={() => insertIntegrationMention(candidate)}
+                          onKeyDown={event => {
+                            if (event.target !== event.currentTarget) return
+                            if (event.key === 'Enter' || event.key === ' ') {
+                              event.preventDefault()
+                              insertIntegrationMention(candidate)
+                            }
+                          }}
+                        >
+                          <span className="integration-mention-avatar">
+                            {candidate.avatarUrl ? (
+                              <img src={candidate.avatarUrl} alt="" />
+                            ) : (
+                              candidate.label.charAt(0).toUpperCase()
+                            )}
+                          </span>
+                          <span className="integration-mention-copy">
+                            <strong>{candidate.label}</strong>
+                            <small>{candidate.email || 'Workspace member'}</small>
+                          </span>
+                          <span className="integration-mention-services">
+                            {candidate.jiraAccountId ? <Badge size="xs">Jira</Badge> : null}
+                            {candidate.slackUserId ? <Badge size="xs" color="violet">Slack</Badge> : null}
+                            <ActionIcon
+                              size="sm"
+                              variant={favorite ? 'light' : 'subtle'}
+                              color={favorite ? 'yellow' : 'gray'}
+                              aria-label={`${favorite ? 'Remove' : 'Add'} ${candidate.label} ${favorite ? 'from' : 'to'} favorites`}
+                              title={favorite ? 'Remove favorite' : 'Add favorite'}
+                              onMouseDown={event => event.preventDefault()}
+                              onClick={event => {
+                                event.stopPropagation()
+                                toggleIntegrationFavorite(candidate)
+                              }}
+                            >
+                              <IconStar size={15} fill={favorite ? 'currentColor' : 'none'} />
+                            </ActionIcon>
+                          </span>
+                        </div>
+                      )
+                    })}
+                    {integrationMentionLoading && (
+                      <Group gap="xs" px="xs" py={4}>
+                        <Loader size="xs" />
+                        <Text size="xs" c="dimmed">Updating directory results...</Text>
+                      </Group>
+                    )}
+                    {integrationMentionError && (
+                      <Text size="xs" c="orange" px="xs" py={4}>
+                        One directory could not be searched: {integrationMentionError}
+                      </Text>
+                    )}
+                  </Stack>
+                ) : integrationMentionLoading ? (
+                  <Group gap="xs" p="xs">
+                    <Loader size="xs" />
+                    <Text size="xs">Finding people...</Text>
+                  </Group>
+                ) : (
+                  <Text size="xs" c={integrationMentionError ? 'red' : 'dimmed'} p="xs">
+                    {integrationMentionError ||
+                      (integrationDirectoryResults.jira.state === 'idle' &&
+                      integrationDirectoryResults.slack.state === 'idle'
+                        ? 'Type a name after @, then use the star to save a favorite.'
+                        : 'No matching users.')}
+                  </Text>
+                )}
+              </Popover.Dropdown>
+            </Popover>
+
+            {integrationImages.length > 0 && (
+              <div className="integration-inline-images" aria-label="Inserted images">
+                {integrationImages.map(image => (
+                  <figure key={image.id} className="integration-inline-image">
+                    {image.previewDataUrl ? (
+                      <img src={image.previewDataUrl} alt={image.name} />
+                    ) : (
+                      <div className="integration-inline-image-placeholder">
+                        <IconPhotoPlus size={22} />
+                      </div>
+                    )}
+                    <figcaption>{image.name}</figcaption>
+                    <ActionIcon
+                      size="sm"
+                      variant="filled"
+                      color="dark"
+                      className="integration-inline-image-remove"
+                      aria-label={`Remove ${image.name}`}
+                      onClick={() =>
+                        setIntegrationAttachments(previous =>
+                          previous.filter(item => item.id !== image.id)
+                        )
+                      }
+                    >
+                      <IconX size={13} />
+                    </ActionIcon>
+                  </figure>
+                ))}
+              </div>
+            )}
+
+            {integrationAttachments.some(
+              attachment => !attachment.mimeType.startsWith('image/')
+            ) && (
+            <Stack gap={6} className="integration-attachments">
+              {integrationAttachments
+                .filter(attachment => !attachment.mimeType.startsWith('image/'))
+                .map(attachment => (
+                <Group
+                  key={attachment.id}
+                  justify="space-between"
+                  align="center"
+                  wrap="nowrap"
+                  className="integration-attachment-row"
+                >
+                  <Group gap={7} wrap="nowrap" style={{ minWidth: 0 }}>
+                    <IconPaperclip size={13} />
+                    <div style={{ minWidth: 0 }}>
+                      <Text size="xs" truncate>{attachment.name}</Text>
+                      <Text size="xs" c="dimmed">{formatAttachmentSize(attachment.size)}</Text>
+                    </div>
+                  </Group>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    color="red"
+                    aria-label={`Remove ${attachment.name}`}
+                    onClick={() =>
+                      setIntegrationAttachments(previous =>
+                        previous.filter(item => item.id !== attachment.id)
+                      )
+                    }
+                  >
+                    <IconX size={13} />
+                  </ActionIcon>
+                </Group>
+              ))}
+            </Stack>
+            )}
+
+            {!integrationReplyTarget && integrationSuccess && (
+              <Alert color="teal" variant="light" radius="md">
+                {integrationSuccess}
+              </Alert>
+            )}
+            {!integrationReplyTarget && integrationError && (
+              <Alert color="red" variant="light" radius="md">
+                {integrationError}
+              </Alert>
+            )}
+            <Button
+              leftSection={<IconSend size={15} />}
+              loading={integrationSending}
+              disabled={!integrationMessageText.trim()}
+              onClick={() => void sendIntegrationUpdate()}
+            >
+              Send update
+            </Button>
+            </div>
+          </Stack>
+        </Card>
+      </Stack>
+    )
+  }
+
   function getCurrentReporterName() {
     return (
       supabaseHrsIdentity?.employeeName ||
@@ -5675,6 +7568,12 @@ export default function App() {
                 For private channels, add the bot to the channel and paste the channel ID if Slack
                 does not return it in the picker.
               </Text>
+              <Text size="xs" c="dimmed">
+                @ suggestions require the users:read bot scope; users:read.email enables reliable
+                Jira-to-Slack identity matching, files:write enables attachments, and
+                channels:history / groups:history load recent public / private channel messages.
+                After changing scopes, reinstall the Slack app to the workspace and reconnect its token.
+              </Text>
               <Group justify="flex-end">
                 <Button
                   size={compact ? 'xs' : 'sm'}
@@ -5752,6 +7651,40 @@ export default function App() {
               </Group>
             </>
           )}
+
+          <Card radius="md" withBorder className="slack-scope-guide">
+            <Stack gap={6}>
+              <Group justify="space-between" align="center" wrap="nowrap">
+                <Text size="xs" fw={700}>Slack bot permissions</Text>
+                <Badge size="xs" variant="light" color="violet">Bot scopes</Badge>
+              </Group>
+              <Text size="xs" c="dimmed">
+                api.slack.com/apps → the app whose bot user is hrs_desktop → OAuth &amp;
+                Permissions → Scopes → Bot Token Scopes → Add an OAuth Scope.
+              </Text>
+              <Group gap={6} wrap="wrap" className="slack-scope-list">
+                {[
+                  'chat:write',
+                  'users:read',
+                  'users:read.email',
+                  'files:write',
+                  'channels:history',
+                  'groups:history'
+                ].map(scope => (
+                  <Badge key={scope} size="xs" variant="outline" color="blue">
+                    {scope}
+                  </Badge>
+                ))}
+              </Group>
+              <Text size="xs" c="dimmed">
+                Then click Reinstall to Workspace, approve the permissions, copy the refreshed Bot
+                User OAuth Token, and reconnect it here. Invite hrs_desktop to private channels.
+              </Text>
+              <Text size="xs" className="slack-apps-url">
+                https://api.slack.com/apps
+              </Text>
+            </Stack>
+          </Card>
 
           {slackMessage && (
             <Alert color="teal" variant="light" radius="md">
@@ -6511,7 +8444,12 @@ export default function App() {
         if (taskCapMinutes > 0) {
           let usedTaskMinutes = getMissionUsedMinutesFromReports(effectiveMission, allReportItems)
           if (effectiveMission.shared && window.hrs?.getSharedFictiveTaskUsage) {
-            const usage = await window.hrs.getSharedFictiveTaskUsage([effectiveMission.id])
+            const { start, end } = getMonthRange(reportMonth)
+            const usage = await window.hrs.getSharedFictiveTaskUsage(
+              [effectiveMission.id],
+              start,
+              end
+            )
             const current = usage.find(item => item.taskId === effectiveMission.id)
             usedTaskMinutes = Math.round((current?.usedSeconds ?? 0) / 60)
             if (current) {
@@ -8138,7 +10076,12 @@ export default function App() {
         for (const mission of matchingCappedMissions) {
           let usedMinutes = getMissionUsedMinutesFromReports(mission, capSourceReports)
           if (mission.shared && window.hrs?.getSharedFictiveTaskUsage) {
-            const freshUsage = await window.hrs.getSharedFictiveTaskUsage([mission.id])
+            const { start, end } = getMonthRange(reportMonth)
+            const freshUsage = await window.hrs.getSharedFictiveTaskUsage(
+              [mission.id],
+              start,
+              end
+            )
             const taskUsage = freshUsage.find(item => item.taskId === mission.id)
             usedMinutes = Math.round((taskUsage?.usedSeconds ?? 0) / 60)
             if (taskUsage) {
@@ -9688,7 +11631,9 @@ export default function App() {
 
   function beginMonthTransition(nextMonth: Date) {
     setReportsError(null)
-    const cached = reportsCacheRef.current.get(dayjs(nextMonth).format('YYYY-MM'))
+    const cached = reportsCacheRef.current.get(
+      `${reportSource}:${dayjs(nextMonth).format('YYYY-MM')}`
+    )
     if (cached) {
       setMonthlyReport(cached)
       setReportsLoading(false)
@@ -9713,7 +11658,18 @@ export default function App() {
     reportsRequestId.current += 1
   }
 
-  const projectOptions = useMemo(() => buildOptions(logs, log => log.projectName), [logs])
+  const allProjectOptions = useMemo(() => buildOptions(logs, log => log.projectName), [logs])
+
+  const projectOptions = useMemo(() => {
+    const hidden = new Set(hiddenProjects)
+    const favorites = new Set(favoriteProjects)
+    return allProjectOptions
+      .filter(option => !hidden.has(option.value))
+      .sort(
+        (left, right) =>
+          Number(favorites.has(right.value)) - Number(favorites.has(left.value))
+      )
+  }, [allProjectOptions, favoriteProjects, hiddenProjects])
 
   const customerOptions = useMemo(() => {
     const scope = logs.filter(log => !projectName || log.projectName === projectName)
@@ -9779,11 +11735,15 @@ export default function App() {
     reports: Array<ReportItem | WorkReportEntry>
   ) => {
     const hrsTaskIds = new Set((mission.hrsTaskIds ?? []).map(String))
+    const activeFrom = mission.shared && mission.createdAt
+      ? dayjs(mission.createdAt).format('YYYY-MM-DD')
+      : null
     return reports.reduce((sum, item) => {
       const taskMatch = hrsTaskIds.size ? hrsTaskIds.has(String(item.taskId)) : false
       if (!taskMatch) return sum
       if (mission.virtual) {
         const dateKey = 'dateKey' in item ? item.dateKey : null
+        if (activeFrom && dateKey && dateKey < activeFrom) return sum
         const mappedMission = dateKey
           ? findMappedMissionForReport(allProjectMissions, reportMissionMap, {
               date: dateKey,
@@ -9806,9 +11766,21 @@ export default function App() {
     reports: Array<ReportItem | WorkReportEntry>
   ) => {
     const requestedProjectKey = getSharedProjectKey(customer, project)
+    const activeFrom = allProjectMissions
+      .filter(
+        mission =>
+          mission.projectBudgetCreatedAt &&
+          getSharedProjectKey(
+            mission.customerName,
+            mission.projectName || mission.customerName
+          ) === requestedProjectKey
+      )
+      .map(mission => dayjs(mission.projectBudgetCreatedAt).format('YYYY-MM-DD'))
+      .sort()[0] ?? null
     return reports.reduce((sum, item) => {
-      const meta = taskMetaById.get(item.taskId)
       const dateKey = 'dateKey' in item ? item.dateKey : null
+      if (activeFrom && dateKey && dateKey < activeFrom) return sum
+      const meta = taskMetaById.get(item.taskId)
       const mappedMission = dateKey
         ? findMappedMissionForReport(allProjectMissions, reportMissionMap, {
             date: dateKey,
@@ -9905,6 +11877,169 @@ export default function App() {
       setSuppressTaskAutoSelect(true)
     }
     await deleteProjectMission(mission)
+  }
+
+  function hideProjectFromPicker(project: string) {
+    setHiddenProjects(previous =>
+      previous.includes(project) ? previous : [...previous, project].sort((a, b) => a.localeCompare(b))
+    )
+    if (projectName === project) {
+      setProjectName(null)
+      setCustomerName(null)
+      setTaskName(null)
+      setSuppressCustomerAutoSelect(true)
+      setSuppressTaskAutoSelect(true)
+    }
+  }
+
+  function unhideProject(project: string) {
+    setHiddenProjects(previous => previous.filter(item => item !== project))
+  }
+
+  function toggleFavoriteProject(project: string) {
+    setFavoriteProjects(previous =>
+      previous.includes(project)
+        ? previous.filter(item => item !== project)
+        : [...previous, project].sort((left, right) => left.localeCompare(right))
+    )
+  }
+
+  const projectSelectRenderOption: SelectProps['renderOption'] = ({ option, checked }) => (
+    <Group justify="space-between" align="center" wrap="nowrap" gap="xs" className="project-select-option">
+      <Text size="sm" truncate className="project-select-option-text">
+        {option.label}
+      </Text>
+      <Group gap={5} wrap="nowrap" className="project-select-option-actions">
+        <ActionIcon
+          size="sm"
+          radius="xl"
+          variant="subtle"
+          color={favoriteProjects.includes(option.value) ? 'yellow' : 'gray'}
+          className={favoriteProjects.includes(option.value) ? 'is-favorite' : undefined}
+          aria-label={`${favoriteProjects.includes(option.value) ? 'Remove' : 'Add'} ${option.label} ${favoriteProjects.includes(option.value) ? 'from' : 'to'} favorites`}
+          title={favoriteProjects.includes(option.value) ? 'Remove favorite' : 'Favorite project'}
+          onMouseDown={event => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            toggleFavoriteProject(option.value)
+          }}
+        >
+          <IconStar
+            size={14}
+            fill={favoriteProjects.includes(option.value) ? 'currentColor' : 'none'}
+          />
+        </ActionIcon>
+        <ActionIcon
+          size="sm"
+          radius="xl"
+          variant="subtle"
+          color="gray"
+          aria-label={`Hide ${option.label}`}
+          title="Hide project"
+          onMouseDown={event => {
+            event.preventDefault()
+            event.stopPropagation()
+          }}
+          onClick={event => {
+            event.preventDefault()
+            event.stopPropagation()
+            hideProjectFromPicker(option.value)
+          }}
+        >
+          <IconEyeOff size={14} />
+        </ActionIcon>
+        {checked && <IconCheck size={16} className="project-option-check" />}
+      </Group>
+    </Group>
+  )
+
+  function renderHiddenProjectsSettings(compact = false) {
+    const optionsByValue = new Map(allProjectOptions.map(option => [option.value, option.label]))
+    return (
+      <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
+        <Stack gap="xs">
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <div>
+              <Text fw={700} size={compact ? 'sm' : 'md'}>Hidden projects</Text>
+              <Text size="xs" c="dimmed">
+                Hidden only from your Project picker on this computer.
+              </Text>
+            </div>
+            <Badge size="xs" variant="light" color={hiddenProjects.length ? 'orange' : 'gray'}>
+              {hiddenProjects.length}
+            </Badge>
+          </Group>
+          <Button
+            size={compact ? 'xs' : 'sm'}
+            variant="light"
+            leftSection={<IconEye size={14} />}
+            disabled={!hiddenProjects.length}
+            onClick={() => setHiddenProjectsModalOpen(true)}
+          >
+            Unhide hidden projects
+          </Button>
+          <Modal
+            opened={hiddenProjectsModalOpen}
+            onClose={() => setHiddenProjectsModalOpen(false)}
+            title="Unhide hidden projects"
+            centered
+            size="sm"
+          >
+            <Stack gap="sm">
+              {hiddenProjects.length ? (
+                <>
+                  <Text size="sm" c="dimmed">
+                    Restore projects to every Project picker for this user.
+                  </Text>
+                  <Stack gap={6} className="hidden-projects-list">
+                    {hiddenProjects.map(project => (
+                      <Group key={project} justify="space-between" align="center" wrap="nowrap">
+                        <Text size="sm" truncate title={optionsByValue.get(project) ?? project}>
+                          {optionsByValue.get(project) ?? project}
+                        </Text>
+                        <Button
+                          size="compact-xs"
+                          variant="subtle"
+                          leftSection={<IconEye size={13} />}
+                          onClick={() => unhideProject(project)}
+                        >
+                          Restore
+                        </Button>
+                      </Group>
+                    ))}
+                  </Stack>
+                  <Group justify="space-between">
+                    <Button
+                      size="xs"
+                      variant="subtle"
+                      onClick={() => setHiddenProjectsModalOpen(false)}
+                    >
+                      Close
+                    </Button>
+                    <Button
+                      size="xs"
+                      variant="light"
+                      onClick={() => {
+                        setHiddenProjects([])
+                        setHiddenProjectsModalOpen(false)
+                      }}
+                    >
+                      Restore all
+                    </Button>
+                  </Group>
+                </>
+              ) : (
+                <Text size="sm" c="dimmed">No hidden projects.</Text>
+              )}
+            </Stack>
+          </Modal>
+        </Stack>
+      </Card>
+    )
   }
 
   const taskSelectRenderOption: SelectProps['renderOption'] = ({ option, checked }) => {
@@ -10546,6 +12681,14 @@ export default function App() {
   }, [])
 
   useEffect(() => {
+    return () => {
+      if (integrationMentionTimerRef.current) {
+        clearTimeout(integrationMentionTimerRef.current)
+      }
+    }
+  }, [])
+
+  useEffect(() => {
     if (!loggedIn || !supabaseStatus?.profile?.employee_id || !pendingReportSyncMonths.length) {
       return
     }
@@ -10691,6 +12834,15 @@ export default function App() {
     supabaseStatus?.email,
     supabaseStatus?.profile?.employee_id
   ])
+
+  useEffect(() => {
+    setSupabaseProjectUsageByKey({})
+    if (!supabaseStatus?.email || !sharedFictiveTasks.length) {
+      setSharedFictiveTaskUsage({})
+      return
+    }
+    void refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
+  }, [reportMonth, supabaseStatus?.email, sharedFictiveTasks])
 
   useEffect(() => {
     const syncMonthOnRollover = () => {
@@ -11000,27 +13152,52 @@ export default function App() {
   }, [loggedIn])
 
   useEffect(() => {
-    if (!loggedIn || !shouldLoadLogData || !monthlyReport) return
+    if (!loggedIn || !shouldLoadLogData || !monthlyReport) {
+      setPreviousMonthPreviewReport(null)
+      return
+    }
     const base = dayjs(reportMonth).startOf('month')
+    const previousMonthKey = base.subtract(1, 'month').format('YYYY-MM')
+    const cachedPrevious = reportsCacheRef.current.get(`${reportSource}:${previousMonthKey}`)
+    setPreviousMonthPreviewReport(cachedPrevious ?? null)
+    let cancelled = false
     const targets = Array.from({ length: 6 }, (_, index) =>
       base.subtract(index, 'month').toDate()
     )
     for (const target of targets) {
-      const key = dayjs(target).format('YYYY-MM')
-      if (reportsCacheRef.current.has(key) || reportsPrefetchRef.current.has(key)) continue
-      reportsPrefetchRef.current.add(key)
+      const monthKey = dayjs(target).format('YYYY-MM')
+      const cacheKey = `${reportSource}:${monthKey}`
+      const cached = reportsCacheRef.current.get(cacheKey)
+      if (cached) {
+        if (monthKey === previousMonthKey) setPreviousMonthPreviewReport(cached)
+        continue
+      }
+      if (reportsPrefetchRef.current.has(cacheKey) && monthKey !== previousMonthKey) continue
+      reportsPrefetchRef.current.add(cacheKey)
       const range = getMonthRange(target)
-      void window.hrs
-        .getReports(range.start, range.end)
+      const request =
+        reportSource === 'supabase'
+          ? window.hrs
+              .getSupabaseWorkReports(range.start, range.end)
+              .then(rows => monthlyReportFromSupabaseRows(rows, range.start, range.end))
+          : window.hrs.getReports(range.start, range.end)
+      void request
         .then(data => {
-          reportsCacheRef.current.set(key, data as MonthlyReport)
+          const report = data as MonthlyReport
+          reportsCacheRef.current.set(cacheKey, report)
+          if (!cancelled && monthKey === previousMonthKey) {
+            setPreviousMonthPreviewReport(report)
+          }
         })
         .catch(() => {})
         .finally(() => {
-          reportsPrefetchRef.current.delete(key)
+          reportsPrefetchRef.current.delete(cacheKey)
         })
     }
-  }, [loggedIn, shouldLoadLogData, reportMonth, monthlyReport])
+    return () => {
+      cancelled = true
+    }
+  }, [loggedIn, shouldLoadLogData, reportMonth, monthlyReport, reportSource])
 
   useEffect(() => {
     const key = dayjs().format('YYYY-MM')
@@ -11340,6 +13517,10 @@ export default function App() {
       meetingsCache,
       meetingClientMappings,
       meetingExcludedSubjects,
+      integrationFavoritePeople,
+      integrationTextDirection,
+      favoriteProjects,
+      hiddenProjects,
       smartDefaults
     })
   }, [
@@ -11381,6 +13562,10 @@ export default function App() {
     meetingsCache,
     meetingClientMappings,
     meetingExcludedSubjects,
+    integrationFavoritePeople,
+    integrationTextDirection,
+    favoriteProjects,
+    hiddenProjects,
     smartDefaults,
     preferencesLoaded
   ])
@@ -11533,9 +13718,51 @@ export default function App() {
     selectedQuickLogMission?.customerName?.trim() || customerName?.trim() || ''
   const selectedQuickLogUsageProject =
     selectedQuickLogMission?.projectName?.trim() || projectName?.trim() || ''
+  const selectedQuickLogParentJiraKey = getMappedJiraParentForNames([
+    selectedQuickLogUsageCustomer,
+    selectedQuickLogUsageProject,
+    customerName,
+    projectName
+  ])
+  const selectedQuickLogJiraTarget = resolveIntegrationJiraTarget(
+    selectedQuickLogMission?.jiraIssueKey,
+    selectedQuickLogParentJiraKey
+  )
+
+  useEffect(() => {
+    if (!integrationComposerOpen || !integrationQuickLogLinked) return
+    if (!selectedQuickLogUsageCustomer || !selectedQuickLogJiraTarget) return
+    setIntegrationCustomer(selectedQuickLogUsageCustomer)
+    setIntegrationJiraIssueKey(selectedQuickLogJiraTarget)
+    void loadIntegrationIssueOptions(
+      selectedQuickLogUsageCustomer,
+      selectedQuickLogJiraTarget
+    )
+  }, [
+    integrationComposerOpen,
+    integrationQuickLogLinked,
+    selectedQuickLogMission?.id,
+    selectedQuickLogJiraTarget,
+    selectedQuickLogUsageCustomer
+  ])
+
+  useEffect(() => {
+    if (!integrationComposerOpen) return
+    void loadIntegrationRecentMessages(integrationJiraIssueKey, integrationSlackChannelId)
+  }, [
+    integrationComposerOpen,
+    integrationJiraIssueKey,
+    integrationSlackChannelId,
+    jiraConfigured,
+    slackStatus?.configured
+  ])
+
   const selectedQuickLogProjectKey =
     selectedQuickLogUsageCustomer && selectedQuickLogUsageProject
-      ? getSharedProjectKey(selectedQuickLogUsageCustomer, selectedQuickLogUsageProject)
+      ? `${dayjs(reportMonth).format('YYYY-MM')}:${getSharedProjectKey(
+          selectedQuickLogUsageCustomer,
+          selectedQuickLogUsageProject
+        )}`
       : null
   const selectedQuickLogProjectUsage = selectedQuickLogProjectKey
     ? supabaseProjectUsageByKey[selectedQuickLogProjectKey] ?? null
@@ -11551,6 +13778,7 @@ export default function App() {
   }, [
     selectedQuickLogUsageCustomer,
     selectedQuickLogUsageProject,
+    reportMonth,
     supabaseStatus?.email,
     supabaseStatus?.profile?.employee_id
   ])
@@ -12953,14 +15181,33 @@ export default function App() {
                     {gauge.title}
                   </Text>
                 </div>
-                <Text
-                  size={compact ? 'xs' : 'sm'}
-                  c="dimmed"
-                  className="quick-fictive-usage-hours"
-                >
-                  {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
-                  {percentLabel}
-                </Text>
+                <Group gap={4} wrap="nowrap">
+                  <Text
+                    size={compact ? 'xs' : 'sm'}
+                    c="dimmed"
+                    className="quick-fictive-usage-hours"
+                  >
+                    {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
+                    {percentLabel}
+                  </Text>
+                  <Tooltip label="Send project update" withArrow withinPortal>
+                    <ActionIcon
+                      size="sm"
+                      variant="subtle"
+                      aria-label="Send project update"
+                      onClick={() =>
+                        openIntegrationUpdate({
+                          customer: selectedQuickLogUsageCustomer,
+                          issueKey: selectedQuickLogJiraTarget,
+                          message: `${gauge.title}: `,
+                          followQuickLog: true
+                        })
+                      }
+                    >
+                      <IconMessageCircle size={14} />
+                    </ActionIcon>
+                  </Tooltip>
+                </Group>
               </Group>
               <div
                 className="quick-fictive-usage-track"
@@ -13558,6 +15805,29 @@ export default function App() {
     }
     return map
   }, [monthlyReport])
+
+  const calendarReportsByDate = useMemo(() => {
+    const map = new Map(reportsByDate)
+    if (!previousMonthPreviewReport) return map
+    for (const day of previousMonthPreviewReport.days) {
+      const totalMinutes = day.reports.reduce(
+        (sum, report) => sum + parseHoursHHMMToMinutes(report.hours_HHMM),
+        0
+      )
+      map.set(normalizeReportDateKey(day.date), { day, totalMinutes })
+    }
+    return map
+  }, [reportsByDate, previousMonthPreviewReport])
+
+  const israeliHolidaysByDate = useMemo(() => {
+    const map = new Map<string, IsraeliHoliday[]>()
+    for (const holiday of israeliHolidays) {
+      const current = map.get(holiday.date) ?? []
+      current.push(holiday)
+      map.set(holiday.date, current)
+    }
+    return map
+  }, [israeliHolidays])
 
   const employeeReportEmployeeOptions = useMemo(
     () => {
@@ -16257,8 +18527,14 @@ export default function App() {
           <Stack gap="sm">
             <Select
               label="Project"
+              aria-label="Project"
               placeholder="Choose a project"
               data={projectOptions}
+              renderOption={projectSelectRenderOption}
+              classNames={{
+                dropdown: 'project-select-dropdown',
+                option: 'project-select-mantine-option'
+              }}
               value={projectName}
               onChange={value => setProjectName(value)}
               searchable
@@ -16671,21 +18947,30 @@ export default function App() {
                     <IconChartBar size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
-                <Tooltip label="Settings" withArrow openDelay={120} withinPortal>
-                  <ActionIcon
-                    className="tray-nav-icon-btn"
-                    size={38}
-                    radius="md"
-                    variant={trayPanel === 'settings' ? 'light' : 'subtle'}
-                    onClick={() => {
-                      switchTrayPanel('settings')
-                    }}
-                    aria-label="Settings"
-                    title="Settings"
-                  >
-                    <IconSettings size={18} stroke={2.2} />
-                  </ActionIcon>
-                </Tooltip>
+                <div className="tray-settings-update-anchor">
+                  {(['available', 'downloading', 'ready'] as AppUpdateState['state'][]).includes(
+                    appUpdateState.state
+                  ) ? (
+                    <span className="tray-update-available-bubble" role="status">
+                      Update Available
+                    </span>
+                  ) : null}
+                  <Tooltip label="Settings" withArrow openDelay={120} withinPortal>
+                    <ActionIcon
+                      className="tray-nav-icon-btn"
+                      size={38}
+                      radius="md"
+                      variant={trayPanel === 'settings' ? 'light' : 'subtle'}
+                      onClick={() => {
+                        switchTrayPanel('settings')
+                      }}
+                      aria-label="Settings"
+                      title="Settings"
+                    >
+                      <IconSettings size={18} stroke={2.2} />
+                    </ActionIcon>
+                  </Tooltip>
+                </div>
               </div>
 
               <div className={`tray-panel-body${trayPanel === 'clockify' ? ' is-clockify' : ''}`}>
@@ -16727,21 +19012,28 @@ export default function App() {
                               {weeks.map((week, weekIndex) => (
                                 <div className="tray-calendar-row" role="row" key={`week-${weekIndex}`}>
                                   {week.map(dayCell => {
-                                    const info = reportsByDate.get(dayCell.key)
                                     const dateValue = dayjs(dayCell.date)
+                                    const isOutsidePrevious =
+                                      !dayCell.inMonth && dateValue.isBefore(monthStart, 'month')
+                                    const isOutsideNext =
+                                      !dayCell.inMonth && dateValue.isAfter(monthStart, 'month')
+                                    const canShowReportStatus = dayCell.inMonth || isOutsidePrevious
+                                    const info = canShowReportStatus
+                                      ? calendarReportsByDate.get(dayCell.key)
+                                      : undefined
                                     const hasReports = Boolean(info?.day.reports.length)
                                     const isHoliday = Boolean(info?.day.isHoliday)
                                     const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
                                     const isFuture = dateValue.isAfter(dayjs(), 'day')
                                     const dayTargetMinutes = getDayTargetMinutes(info?.day)
                                     const isMissing =
-                                      dayCell.inMonth &&
+                                      canShowReportStatus &&
                                       !hasReports &&
                                       !isWeekend &&
                                       !isHoliday &&
                                       !isFuture
                                     const isUnderTarget =
-                                      dayCell.inMonth &&
+                                      canShowReportStatus &&
                                       hasReports &&
                                       !isWeekend &&
                                       !isHoliday &&
@@ -16753,7 +19045,7 @@ export default function App() {
                                     const isToday = todayDayKey === dayCell.key
                                     const heatmapActive =
                                       heatmapEnabled &&
-                                      dayCell.inMonth &&
+                                      canShowReportStatus &&
                                       hasReports &&
                                       info &&
                                       maxDayMinutes &&
@@ -16764,18 +19056,20 @@ export default function App() {
                                     const tooltipLabel = renderCalendarTooltip(info?.day.reports, {
                                       totalMinutes: info?.totalMinutes,
                                       targetMinutes:
-                                        dayCell.inMonth && !isWeekend && !isHoliday && !isFuture
+                                        canShowReportStatus && !isWeekend && !isHoliday && !isFuture
                                           ? dayTargetMinutes
                                           : undefined
                                     })
                                     const dayMeetings = meetingsVisibleByDate.get(dayCell.key) ?? []
                                     const hasMeetings = dayMeetings.length > 0
                                     const hasManyMeetings = dayMeetings.length > 1
-                                    const hasDayHoverContent = hasReports || hasMeetings
+                                    const dayHolidays = israeliHolidaysByDate.get(dayCell.key) ?? []
+                                    const hasIsraeliHoliday = dayHolidays.length > 0
+                                    const hasDayHoverContent = hasReports || hasMeetings || hasIsraeliHoliday
                                     return (
                                       <HoverCard
                                         key={dayCell.key}
-                                        disabled={!dayCell.inMonth || !hasDayHoverContent}
+                                        disabled={isOutsideNext || !hasDayHoverContent}
                                         position="top"
                                         withArrow
                                         openDelay={120}
@@ -16793,9 +19087,12 @@ export default function App() {
                                               className={[
                                                 'tray-day-button',
                                                 dayCell.inMonth ? '' : 'is-outside',
+                                                isOutsidePrevious ? 'is-outside-previous' : '',
+                                                isOutsideNext ? 'is-outside-next' : '',
                                                 hasReports ? 'has-reports' : '',
                                                 hasMeetings ? 'has-meetings' : '',
                                                 hasManyMeetings ? 'has-many-meetings' : '',
+                                                hasIsraeliHoliday ? 'has-israeli-holiday' : '',
                                                 isMissing ? 'is-missing' : '',
                                                 isUnderTarget ? 'is-under-target' : '',
                                                 isHoliday ? 'is-holiday' : '',
@@ -16823,11 +19120,24 @@ export default function App() {
                                               disabled={!dayCell.inMonth}
                                             >
                                               <span className="tray-day-number">{dateValue.date()}</span>
+                                              {hasIsraeliHoliday ? (
+                                                <span className="tray-day-holiday-name" dir="rtl">
+                                                  {dayHolidays.map(holiday => holiday.name).join(' · ')}
+                                                </span>
+                                              ) : null}
                                             </button>
                                           </span>
                                         </HoverCard.Target>
                                         <HoverCard.Dropdown>
                                           <Stack gap="xs" className="calendar-day-hover">
+                                            {hasIsraeliHoliday ? (
+                                              <div className="calendar-day-hover-holidays" dir="rtl">
+                                                <span className="calendar-tooltip-title">
+                                                  {dayHolidays.map(holiday => holiday.name).join(' · ')}
+                                                </span>
+                                                <span className="calendar-holiday-source">Hebcal</span>
+                                              </div>
+                                            ) : null}
                                             <div className="calendar-day-hover-hours">
                                               {tooltipLabel}
                                             </div>
@@ -16905,11 +19215,17 @@ export default function App() {
 
                     {renderRecentQuickLogShortcuts(true)}
 
-                    <SimpleGrid cols={3} spacing="xs" className="tray-filters">
+                    <SimpleGrid cols={1} spacing={6} className="tray-filters">
                       <Select
                         label="Project"
+                        aria-label="Project"
                         placeholder="Choose a project"
                         data={projectOptions}
+                        renderOption={projectSelectRenderOption}
+                        classNames={{
+                          dropdown: 'project-select-dropdown',
+                          option: 'project-select-mantine-option'
+                        }}
                         value={projectName}
                         onChange={value => {
                           filtersTouchedRef.current = true
@@ -16997,7 +19313,7 @@ export default function App() {
                     </Text>
 
                     <Textarea
-                      label="Comment"
+                      label="HRS Comment"
                       placeholder="Add a note (mandatory)"
                       value={comment}
                       onChange={event => setComment(event.currentTarget.value)}
@@ -17007,6 +19323,41 @@ export default function App() {
                       size="xs"
                       withAsterisk
                     />
+
+                    <Button
+                      size="xs"
+                      variant={integrationComposerOpen ? 'filled' : 'light'}
+                      className={`tray-integration-launch${integrationComposerOpen ? ' is-open' : ''}`}
+                      leftSection={<IconMessageCircle size={14} />}
+                      disabled={!selectedQuickLogUsageCustomer && !customerName}
+                      onClick={() => {
+                        if (integrationComposerOpen) {
+                          setIntegrationComposerOpen(false)
+                          setIntegrationMentionOpen(false)
+                          return
+                        }
+                        openIntegrationUpdate({
+                          customer: selectedQuickLogUsageCustomer || customerName,
+                          issueKey: selectedQuickLogJiraTarget,
+                          message: comment.trim(),
+                          followQuickLog: true
+                        })
+                      }}
+                    >
+                      {integrationComposerOpen
+                        ? 'Close Jira + Slack update'
+                        : 'Update Jira & Slack'}
+                    </Button>
+
+                    <Collapse
+                      in={integrationComposerOpen}
+                      transitionDuration={320}
+                      transitionTimingFunction="cubic-bezier(0.2, 0.8, 0.2, 1)"
+                    >
+                      <div className="tray-integration-inline-shell">
+                        {renderIntegrationUpdatePanel()}
+                      </div>
+                    </Collapse>
 
                     {jiraConfigured && (
                       <Stack gap="xs" className="tray-jira-section">
@@ -17315,14 +19666,36 @@ export default function App() {
                                 <Text size="xs" c="dimmed" className="tray-meeting-time">
                                   {startLabel} → {endLabel}
                                 </Text>
-                                <Button
-                                  size="xs"
-                                  variant={isLogged ? 'filled' : 'light'}
-                                  onClick={() => handleLogMeeting(meeting)}
-                                  disabled={isLogged}
-                                >
-                                  {isLogged ? 'Logged' : 'Log'}
-                                </Button>
+                                <Group gap={4} wrap="nowrap">
+                                  <Tooltip label="Send meeting update" withArrow withinPortal>
+                                    <ActionIcon
+                                      size="sm"
+                                      variant="subtle"
+                                      aria-label="Send meeting update"
+                                      onClick={() =>
+                                        openIntegrationUpdate({
+                                          customer:
+                                            mappedCustomer === 'Unmapped' ? null : mappedCustomer,
+                                          issueKey:
+                                            mappedCustomer === 'Unmapped'
+                                              ? null
+                                              : findMappedValue(jiraMappings, mappedCustomer),
+                                          message: `Meeting: ${meeting.subject || 'Meeting'}\n`
+                                        })
+                                      }
+                                    >
+                                      <IconMessageCircle size={14} />
+                                    </ActionIcon>
+                                  </Tooltip>
+                                  <Button
+                                    size="xs"
+                                    variant={isLogged ? 'filled' : 'light'}
+                                    onClick={() => handleLogMeeting(meeting)}
+                                    disabled={isLogged}
+                                  >
+                                    {isLogged ? 'Logged' : 'Log'}
+                                  </Button>
+                                </Group>
                               </Group>
                             </Card>
                           )
@@ -18002,17 +20375,27 @@ export default function App() {
                               return weeks.map((week, weekIndex) => (
                                 <div className="tray-calendar-row" role="row" key={`employee-week-${weekIndex}`}>
                                   {week.map(dayCell => {
+                                    const dateValue = dayjs(dayCell.date)
+                                    const isOutsidePrevious =
+                                      !dayCell.inMonth && dateValue.isBefore(monthStart, 'month')
+                                    const isOutsideNext =
+                                      !dayCell.inMonth && dateValue.isAfter(monthStart, 'month')
                                     const dayInfo = employeeReportDaysByDate.get(dayCell.key)
+                                    const dayHolidays = israeliHolidaysByDate.get(dayCell.key) ?? []
+                                    const hasIsraeliHoliday = dayHolidays.length > 0
                                     const inPeriod =
                                       dayCell.key >= employeeReportFrom && dayCell.key <= employeeReportTo
                                     const hasHours = Boolean(dayInfo?.entries.length)
                                     const isSelected = employeeReportSelectedDate === dayCell.key
                                     const isToday = todayKey === dayCell.key
-                                    const tooltipLabel = dayInfo?.entries.length
+                                    const reportTooltipLabel = dayInfo?.entries.length
                                       ? `${dayjs(dayCell.date).format('DD/MM/YYYY')} · ${minutesToHHMM(dayInfo.totalMinutes)} · ${dayInfo.entries.length} entries`
                                       : dayCell.inMonth && inPeriod
                                         ? `${dayjs(dayCell.date).format('DD/MM/YYYY')} · no report`
                                         : dayjs(dayCell.date).format('DD/MM/YYYY')
+                                    const tooltipLabel = hasIsraeliHoliday
+                                      ? `${dayHolidays.map(holiday => holiday.name).join(' · ')} · ${reportTooltipLabel}`
+                                      : reportTooltipLabel
                                     return (
                                       <Tooltip key={dayCell.key} label={tooltipLabel} position="top" withArrow>
                                         <span className="tray-day-tooltip-target" role="gridcell">
@@ -18022,8 +20405,11 @@ export default function App() {
                                               'tray-day-button',
                                               'employee-hours-day',
                                               dayCell.inMonth ? '' : 'is-outside',
+                                              isOutsidePrevious ? 'is-outside-previous' : '',
+                                              isOutsideNext ? 'is-outside-next' : '',
                                               inPeriod ? 'is-in-period' : 'is-outside-period',
                                               hasHours ? 'has-reports' : '',
+                                              hasIsraeliHoliday ? 'has-israeli-holiday' : '',
                                               isSelected ? 'is-selected' : '',
                                               isToday ? 'is-today' : ''
                                             ]
@@ -18036,6 +20422,11 @@ export default function App() {
                                             disabled={!dayCell.inMonth || !inPeriod}
                                           >
                                             <span className="tray-day-number">{dayjs(dayCell.date).date()}</span>
+                                            {hasIsraeliHoliday ? (
+                                              <span className="tray-day-holiday-name" dir="rtl">
+                                                {dayHolidays.map(holiday => holiday.name).join(' · ')}
+                                              </span>
+                                            ) : null}
                                             {hasHours ? (
                                               <span className="employee-hours-day-hours">
                                                 {minutesToHHMM(dayInfo?.totalMinutes ?? 0)}
@@ -18745,6 +21136,7 @@ export default function App() {
                           )}
                         </Stack>
                       </Card>
+                      {renderHiddenProjectsSettings(true)}
                       </Stack>
                     )}
 
@@ -19494,6 +21886,7 @@ export default function App() {
                   </SimpleGrid>
                 </Stack>
               </Card>
+              {renderHiddenProjectsSettings()}
             </Stack>
           </Card>
         </Container>
@@ -21452,8 +23845,14 @@ export default function App() {
                   <SimpleGrid cols={{ base: 1, md: 3 }} spacing="lg" className="filters-grid">
                     <Select
                       label="Project"
+                      aria-label="Project"
                       placeholder="Choose a project"
                       data={projectOptions}
+                      renderOption={projectSelectRenderOption}
+                      classNames={{
+                        dropdown: 'project-select-dropdown',
+                        option: 'project-select-mantine-option'
+                      }}
                       value={projectName}
                       onChange={value => {
                         filtersTouchedRef.current = true
@@ -21944,31 +24343,49 @@ export default function App() {
                           size="md"
                           highlightToday
                           getDayProps={date => {
-                            const key = dayjs(date).format('YYYY-MM-DD')
-                            const info = reportsByDate.get(key)
+                            const dateValue = dayjs(date)
+                            const key = dateValue.format('YYYY-MM-DD')
+                            const isCurrentMonth = dateValue.isSame(reportMonth, 'month')
+                            const isOutsidePrevious = dateValue.isBefore(reportMonth, 'month')
+                            const isOutsideNext = dateValue.isAfter(reportMonth, 'month')
+                            const info = isCurrentMonth || isOutsidePrevious
+                              ? calendarReportsByDate.get(key)
+                              : undefined
+                            const hasIsraeliHoliday = Boolean(israeliHolidaysByDate.get(key)?.length)
                             return {
                               'data-has-reports': info?.day.reports.length ? true : undefined,
-                              'data-holiday': info?.day.isHoliday ? true : undefined
+                              'data-holiday': info?.day.isHoliday ? true : undefined,
+                              'data-israeli-holiday': hasIsraeliHoliday ? true : undefined,
+                              'data-outside-previous': isOutsidePrevious ? true : undefined,
+                              'data-outside-next': isOutsideNext ? true : undefined
                             }
                           }}
                           renderDay={date => {
-                            const key = dayjs(date).format('YYYY-MM-DD')
-                            const info = reportsByDate.get(key)
+                            const dateValue = dayjs(date)
+                            const key = dateValue.format('YYYY-MM-DD')
+                            const isCurrentMonth = dateValue.isSame(reportMonth, 'month')
+                            const isOutsidePrevious = dateValue.isBefore(reportMonth, 'month')
+                            const isOutsideNext = dateValue.isAfter(reportMonth, 'month')
+                            const canShowReportStatus = isCurrentMonth || isOutsidePrevious
+                            const info = canShowReportStatus
+                              ? calendarReportsByDate.get(key)
+                              : undefined
                             const hasReports = Boolean(info?.day.reports.length)
+                            const dayHolidays = israeliHolidaysByDate.get(key) ?? []
+                            const hasIsraeliHoliday = dayHolidays.length > 0
                             const isHoliday = Boolean(info?.day.isHoliday)
-                            const isWeekend = weekendDays.includes(dayjs(date).day() as DayOfWeek)
-                            const isCurrentMonth = dayjs(date).isSame(reportMonth, 'month')
-                            const isFuture = dayjs(date).isAfter(dayjs(), 'day')
+                            const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
+                            const isFuture = dateValue.isAfter(dayjs(), 'day')
                             const dayTargetMinutes = getDayTargetMinutes(info?.day)
                             const isMissing =
                               !hasReports &&
-                              isCurrentMonth &&
+                              canShowReportStatus &&
                               !isWeekend &&
                               !isHoliday &&
                               !isFuture
                             const isUnderTarget =
                               hasReports &&
-                              isCurrentMonth &&
+                              canShowReportStatus &&
                               !isWeekend &&
                               !isHoliday &&
                               !isFuture &&
@@ -21977,17 +24394,33 @@ export default function App() {
                               (info?.totalMinutes ?? 0) < dayTargetMinutes
                             const hoursLabel = info ? formatMinutesToLabel(info.totalMinutes) : ''
                             const heatmapActive =
-                              heatmapEnabled && hasReports && info && maxDayMinutes && !isWeekend
+                              heatmapEnabled &&
+                              canShowReportStatus &&
+                              hasReports &&
+                              info &&
+                              maxDayMinutes &&
+                              !isWeekend
                             const intensity = heatmapActive
                               ? Math.min(info.totalMinutes / maxDayMinutes, 1)
                               : 0
-                            const tooltipLabel = renderCalendarTooltip(info?.day.reports, {
+                            const reportsTooltip = renderCalendarTooltip(info?.day.reports, {
                               totalMinutes: info?.totalMinutes,
                               targetMinutes:
-                                isCurrentMonth && !isWeekend && !isHoliday && !isFuture
+                                canShowReportStatus && !isWeekend && !isHoliday && !isFuture
                                   ? dayTargetMinutes
                                   : undefined
                             })
+                            const tooltipLabel = hasIsraeliHoliday ? (
+                              <Stack gap={6}>
+                                <div className="calendar-day-hover-holidays" dir="rtl">
+                                  <span className="calendar-tooltip-title">
+                                    {dayHolidays.map(holiday => holiday.name).join(' · ')}
+                                  </span>
+                                  <span className="calendar-holiday-source">Hebcal</span>
+                                </div>
+                                {hasReports ? reportsTooltip : <span>No reports</span>}
+                              </Stack>
+                            ) : reportsTooltip
                             return (
                               <Tooltip
                                 label={tooltipLabel}
@@ -22001,10 +24434,13 @@ export default function App() {
                                 <div
                                   className={[
                                     'calendar-day',
+                                    isOutsidePrevious ? 'is-outside-previous' : '',
+                                    isOutsideNext ? 'is-outside-next' : '',
                                     hasReports ? 'has-reports' : '',
                                     isMissing ? 'is-missing' : '',
                                     isUnderTarget ? 'is-under-target' : '',
                                     isHoliday ? 'is-holiday' : '',
+                                    hasIsraeliHoliday ? 'has-israeli-holiday' : '',
                                     isWeekend ? 'is-weekend' : '',
                                     heatmapActive ? 'heatmap' : ''
                                   ]
@@ -22015,6 +24451,11 @@ export default function App() {
                                   }
                                 >
                                   <span className="calendar-date">{dayjs(date).date()}</span>
+                                  {hasIsraeliHoliday ? (
+                                    <span className="calendar-holiday-name" dir="rtl">
+                                      {dayHolidays.map(holiday => holiday.name).join(' · ')}
+                                    </span>
+                                  ) : null}
                                   <span className={`calendar-meta${hasReports ? '' : ' is-empty'}`}>
                                     {hasReports ? (
                                       <>

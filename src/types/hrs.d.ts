@@ -166,6 +166,19 @@ type JiraCreatedIssue = {
   estimateSeconds: number
 }
 
+type JiraDirectoryUser = {
+  accountId: string
+  displayName: string
+  emailAddress: string | null
+  avatarUrl: string | null
+}
+
+type JiraTransition = {
+  id: string
+  name: string
+  toStatusName: string
+}
+
 type SupabaseProfile = {
   id: string
   email: string
@@ -180,6 +193,14 @@ type SupabaseStatus = {
   hasPublishableKey: boolean
   email: string | null
   profile: SupabaseProfile | null
+}
+
+type IsraeliHoliday = {
+  date: string
+  name: string
+  nameEnglish: string
+  category: string
+  yomTov: boolean
 }
 
 type SupabaseWorkReportRow = {
@@ -204,6 +225,8 @@ type SupabaseWorkReportRow = {
 type SupabaseProjectUsage = {
   customer: string
   project: string
+  startDate: string
+  endDate: string
   usedSeconds: number
   contributorCount: number
   employees: Array<{
@@ -345,6 +368,7 @@ type ProjectMission = {
   plannedHours: number | null
   cappedHours: number | null
   projectCappedHours?: number | null
+  projectBudgetCreatedAt?: string | null
   status: MissionStatus
   startDate?: string
   dueDate?: string
@@ -407,6 +431,39 @@ type SlackChannelOption = {
   label: string
 }
 
+type SlackDirectoryUser = {
+  id: string
+  displayName: string
+  realName: string
+  email: string | null
+  avatarUrl: string | null
+}
+
+type IntegrationAttachment = {
+  id: string
+  name: string
+  size: number
+  mimeType: string
+  previewDataUrl?: string
+}
+
+type IntegrationRecentMessage = {
+  id: string
+  source: 'jira' | 'slack'
+  authorId: string | null
+  authorName: string
+  avatarUrl: string | null
+  text: string
+  attachments?: Array<{
+    id: string
+    name: string
+    mimeType: string | null
+    previewDataUrl?: string
+  }>
+  createdAt: string
+  replyCount?: number
+}
+
 type SlackPostResult = {
   posted: boolean
   reason?: string
@@ -453,6 +510,15 @@ type StoredReportLogEntry = {
   comment: string
   reporting_from: string
   projectInstance?: string
+}
+
+type IntegrationFavoritePerson = {
+  key: string
+  label: string
+  email: string | null
+  avatarUrl: string | null
+  jiraAccountId?: string
+  slackUserId?: string
 }
 
 type AppPreferences = {
@@ -504,6 +570,10 @@ type AppPreferences = {
   meetingsCache: Record<string, MeetingsCacheEntry>
   meetingClientMappings: Record<string, string>
   meetingExcludedSubjects: Record<string, string[]>
+  integrationFavoritePeople: IntegrationFavoritePerson[]
+  integrationTextDirection: 'auto' | 'ltr' | 'rtl'
+  favoriteProjects: string[]
+  hiddenProjects: string[]
   reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
   smartDefaults: SmartDefaults
 }
@@ -542,6 +612,27 @@ type HrsApi = {
   setJiraCredentials: (email: string, token: string) => Promise<boolean>
   clearJiraCredentials: () => Promise<boolean>
   getJiraEpics: () => Promise<JiraEpic[]>
+  searchJiraUsers: (query: string) => Promise<JiraDirectoryUser[]>
+  getJiraTransitions: (issueKey: string) => Promise<JiraTransition[]>
+  getJiraRecentComments: (issueKey: string) => Promise<IntegrationRecentMessage[]>
+  openJiraAttachment: (payload: { id: string; filename: string }) => Promise<boolean>
+  addJiraComment: (payload: {
+    issueKey: string
+    text: string
+    mentions?: Array<{ accountId: string; label: string }>
+    attachments?: Array<{ id: string; filename: string }>
+  }) => Promise<{
+    id?: string
+    attachments?: Array<{ id: string; filename: string }>
+  }>
+  uploadJiraAttachments: (payload: {
+    issueKey: string
+    attachmentIds: string[]
+  }) => Promise<Array<{ id?: string | number; filename?: string; size?: number }>>
+  transitionJiraIssue: (payload: {
+    issueKey: string
+    transitionId: string
+  }) => Promise<boolean>
   getJiraMappings: () => Promise<JiraMappings>
   setJiraMapping: (customer: string, epicKey: string | null) => Promise<JiraMappings>
   getJiraWorkItems: (epicKey: string) => Promise<JiraWorkItem[]>
@@ -602,9 +693,12 @@ type HrsApi = {
     startDate: string,
     endDate: string
   ) => Promise<SupabaseWorkReportRow[]>
+  getIsraeliHolidays: (month: string) => Promise<IsraeliHoliday[]>
   getSupabaseProjectUsage: (
     customer: string,
-    project: string
+    project: string,
+    startDate: string,
+    endDate: string
   ) => Promise<SupabaseProjectUsage>
   getSharedFictiveTasks: () => Promise<{
     available: boolean
@@ -627,7 +721,11 @@ type HrsApi = {
     assignedEmployeeIds?: Array<string | number>
   }) => Promise<ProjectMission>
   archiveSharedFictiveTask: (taskId: string) => Promise<boolean>
-  getSharedFictiveTaskUsage: (taskIds: string[]) => Promise<SharedFictiveTaskUsage[]>
+  getSharedFictiveTaskUsage: (
+    taskIds: string[],
+    startDate: string,
+    endDate: string
+  ) => Promise<SharedFictiveTaskUsage[]>
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string
@@ -692,6 +790,16 @@ type HrsApi = {
   setSlackToken: (token: string) => Promise<SlackStatus>
   clearSlack: () => Promise<SlackStatus>
   getSlackChannels: () => Promise<SlackChannelOption[]>
+  searchSlackUsers: (query: string) => Promise<SlackDirectoryUser[]>
+  getSlackRecentMessages: (channelId: string) => Promise<IntegrationRecentMessage[]>
+  postSlackMessage: (payload: {
+    channelId: string
+    text: string
+    mentions?: Array<{ slackUserId: string; label: string }>
+    attachmentIds?: string[]
+    threadTs?: string | null
+  }) => Promise<SlackPostResult>
+  selectIntegrationAttachments: (options?: { imagesOnly?: boolean }) => Promise<IntegrationAttachment[]>
   setSlackCustomerMapping: (payload: {
     customerName: string
     channelId: string
@@ -763,6 +871,10 @@ type HrsApi = {
 	    meetingsCache?: Record<string, MeetingsCacheEntry>
 	    meetingClientMappings?: Record<string, string>
 	    meetingExcludedSubjects?: Record<string, string[]>
+	    integrationFavoritePeople?: IntegrationFavoritePerson[]
+	    integrationTextDirection?: 'auto' | 'ltr' | 'rtl'
+	    favoriteProjects?: string[]
+	    hiddenProjects?: string[]
 	    reportWorkLogsCache?: Record<string, StoredReportLogEntry[]>
     smartDefaults?: SmartDefaults
   }) => Promise<AppPreferences>

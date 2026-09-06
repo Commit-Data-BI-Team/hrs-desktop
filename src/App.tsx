@@ -399,6 +399,15 @@ type JiraTransition = {
 
 type IntegrationDestination = 'jira' | 'slack' | 'both'
 
+type IntegrationDeliveryCheckpoint = {
+  signature: string
+  jiraCommentPosted: boolean
+  jiraAttachments: Array<{ id: string; filename: string }>
+  jiraStatusUpdated: boolean
+  jiraTransitionId: string | null
+  slackMessagePosted: boolean
+}
+
 type IntegrationMention = {
   key: string
   label: string
@@ -2449,6 +2458,8 @@ export default function App() {
   const [integrationTransitionId, setIntegrationTransitionId] = useState<string | null>(null)
   const [integrationTransitionLoading, setIntegrationTransitionLoading] = useState(false)
   const [integrationSending, setIntegrationSending] = useState(false)
+  const [integrationDeliveryCheckpoint, setIntegrationDeliveryCheckpoint] =
+    useState<IntegrationDeliveryCheckpoint | null>(null)
   const [integrationAttachmentLoading, setIntegrationAttachmentLoading] = useState(false)
   const [integrationAttachments, setIntegrationAttachments] = useState<IntegrationAttachment[]>([])
   const [integrationRecentMessages, setIntegrationRecentMessages] = useState<
@@ -5784,6 +5795,7 @@ export default function App() {
   }
 
   function startIntegrationNewMessage() {
+    setIntegrationDeliveryCheckpoint(null)
     setIntegrationReplyTarget(null)
     setIntegrationMessageText('')
     setIntegrationMentions([])
@@ -5795,6 +5807,7 @@ export default function App() {
   }
 
   function startIntegrationReply(message: IntegrationRecentMessage) {
+    setIntegrationDeliveryCheckpoint(null)
     const label = message.authorName.trim() || (message.source === 'jira' ? 'Jira user' : 'Slack user')
     const mention: IntegrationMention | null = message.authorId
       ? {
@@ -6177,28 +6190,60 @@ export default function App() {
     setIntegrationSuccess(null)
     const successes: string[] = []
     const failures: string[] = []
-    const sendToJira = integrationReplyTarget
+    const wantsJira = integrationReplyTarget
       ? integrationReplyTarget.source === 'jira'
       : integrationUsesJira()
-    const sendToSlack = integrationReplyTarget
+    const wantsSlack = integrationReplyTarget
       ? integrationReplyTarget.source === 'slack'
       : integrationUsesSlack()
     const liveMentions = integrationMentions.filter(mention =>
       rawText.includes(`@[${mention.label}]`)
     )
+    const deliverySignature = JSON.stringify({
+      text,
+      customer: integrationCustomer,
+      destination: integrationReplyTarget?.source ?? integrationDestination,
+      replyId: integrationReplyTarget?.id ?? null,
+      jiraIssueKey: integrationJiraIssueKey.trim().toUpperCase(),
+      slackChannelId: integrationSlackChannelId,
+      attachmentIds: integrationAttachments.map(attachment => attachment.id),
+      mentions: liveMentions.map(mention => ({
+        label: mention.label,
+        jiraAccountId: mention.jiraAccountId ?? null,
+        slackUserId: mention.slackUserId ?? null
+      }))
+    })
+    const previousDelivery =
+      integrationDeliveryCheckpoint?.signature === deliverySignature
+        ? integrationDeliveryCheckpoint
+        : null
+    let jiraCommentPosted = previousDelivery?.jiraCommentPosted ?? false
+    let jiraCommentAttachments = previousDelivery?.jiraAttachments ?? []
+    let jiraStatusUpdated =
+      !integrationTransitionId ||
+      (previousDelivery?.jiraStatusUpdated === true &&
+        previousDelivery.jiraTransitionId === integrationTransitionId)
+    let slackMessagePosted = previousDelivery?.slackMessagePosted ?? false
+    const jiraDeliveryWasComplete =
+      jiraCommentPosted &&
+      (integrationAttachments.length === 0 ||
+        jiraCommentAttachments.length === integrationAttachments.length) &&
+      jiraStatusUpdated
 
-    if (sendToJira) {
+    if (wantsJira && jiraDeliveryWasComplete) {
+      successes.push('Jira already posted')
+    } else if (wantsJira) {
       const issueKey = integrationJiraIssueKey.trim().toUpperCase()
       if (!jiraConfigured) {
         failures.push('Jira is not connected.')
       } else if (!/^[A-Z][A-Z0-9_]{0,14}-\d+$/.test(issueKey)) {
         failures.push('Choose a valid Jira issue.')
       } else {
-        let commentPosted = false
-        let attachmentsPosted = integrationAttachments.length === 0
-        let statusUpdated = !integrationTransitionId
-        let jiraCommentAttachments: Array<{ id: string; filename: string }> = []
-        if (integrationAttachments.length) {
+        let attachmentsPosted =
+          integrationAttachments.length === 0 ||
+          jiraCommentAttachments.length === integrationAttachments.length
+        const jiraCommentWasAlreadyPosted = jiraCommentPosted
+        if (integrationAttachments.length && !attachmentsPosted) {
           try {
             const uploadedAttachments = await window.hrs.uploadJiraAttachments({
               issueKey,
@@ -6217,38 +6262,44 @@ export default function App() {
             failures.push(`Jira files: ${error instanceof Error ? error.message : String(error)}`)
           }
         }
-        try {
-          await window.hrs.addJiraComment({
-            issueKey,
-            text,
-            mentions: liveMentions
-              .filter(mention => mention.jiraAccountId)
-              .map(mention => ({
-                accountId: mention.jiraAccountId as string,
-                label: mention.label
-              })),
-            attachments: jiraCommentAttachments
-          })
-          commentPosted = true
-        } catch (error) {
-          failures.push(`Jira comment: ${error instanceof Error ? error.message : String(error)}`)
+        if (!jiraCommentPosted && attachmentsPosted) {
+          try {
+            await window.hrs.addJiraComment({
+              issueKey,
+              text,
+              mentions: liveMentions
+                .filter(mention => mention.jiraAccountId)
+                .map(mention => ({
+                  accountId: mention.jiraAccountId as string,
+                  label: mention.label
+                })),
+              attachments: jiraCommentAttachments
+            })
+            jiraCommentPosted = true
+          } catch (error) {
+            failures.push(`Jira comment: ${error instanceof Error ? error.message : String(error)}`)
+          }
         }
-        if (commentPosted && integrationTransitionId) {
+        if (jiraCommentPosted && integrationTransitionId && !jiraStatusUpdated) {
           try {
             await window.hrs.transitionJiraIssue({
               issueKey,
               transitionId: integrationTransitionId
             })
-            statusUpdated = true
+            jiraStatusUpdated = true
           } catch (error) {
             failures.push(`Jira status: ${error instanceof Error ? error.message : String(error)}`)
           }
         }
-        if (commentPosted) {
+        if (jiraCommentPosted) {
           const jiraResults = [
-            integrationReplyTarget?.source === 'jira' ? 'Jira reply posted' : 'Jira comment posted'
+            jiraCommentWasAlreadyPosted
+              ? 'Jira comment already posted'
+              : integrationReplyTarget?.source === 'jira'
+                ? 'Jira reply posted'
+                : 'Jira comment posted'
           ]
-          if (integrationTransitionId && statusUpdated) jiraResults.push('status updated')
+          if (integrationTransitionId && jiraStatusUpdated) jiraResults.push('status updated')
           if (attachmentsPosted && integrationAttachments.length) {
             jiraResults.push(
               `${integrationAttachments.length} file${integrationAttachments.length === 1 ? '' : 's'} uploaded`
@@ -6259,7 +6310,9 @@ export default function App() {
       }
     }
 
-    if (sendToSlack) {
+    if (wantsSlack && slackMessagePosted) {
+      successes.push('Slack already posted')
+    } else if (wantsSlack) {
       if (!slackStatus?.configured) {
         failures.push('Slack is not connected.')
       } else if (!integrationSlackChannelId) {
@@ -6281,6 +6334,7 @@ export default function App() {
                 ? integrationReplyTarget.id
                 : null
           })
+          slackMessagePosted = true
           successes.push(
             integrationAttachments.length
               ? `Slack ${integrationReplyTarget?.source === 'slack' ? 'reply' : 'message'} and ${integrationAttachments.length} file${integrationAttachments.length === 1 ? '' : 's'} posted`
@@ -6294,9 +6348,36 @@ export default function App() {
       }
     }
 
+    const jiraDeliveryComplete =
+      !wantsJira ||
+      (jiraCommentPosted &&
+        (integrationAttachments.length === 0 ||
+          jiraCommentAttachments.length === integrationAttachments.length) &&
+        jiraStatusUpdated)
+    const slackDeliveryComplete = !wantsSlack || slackMessagePosted
+    const allRequestedDeliveriesComplete = jiraDeliveryComplete && slackDeliveryComplete
+    if (!allRequestedDeliveriesComplete) {
+      setIntegrationDeliveryCheckpoint({
+        signature: deliverySignature,
+        jiraCommentPosted,
+        jiraAttachments: jiraCommentAttachments,
+        jiraStatusUpdated,
+        jiraTransitionId: integrationTransitionId,
+        slackMessagePosted
+      })
+      const retryDestinations = [
+        wantsJira && !jiraDeliveryComplete ? 'Jira' : null,
+        wantsSlack && !slackDeliveryComplete ? 'Slack' : null
+      ].filter((destination): destination is string => Boolean(destination))
+      if (retryDestinations.length) {
+        failures.push(`Retry will send only to ${retryDestinations.join(' and ')}.`)
+      }
+    } else {
+      setIntegrationDeliveryCheckpoint(null)
+    }
     if (successes.length) setIntegrationSuccess(`${successes.join(' · ')}.`)
     if (failures.length) setIntegrationError(failures.join(' '))
-    if (!failures.length) {
+    if (allRequestedDeliveriesComplete) {
       setIntegrationMessageText('')
       setIntegrationMentions([])
       setIntegrationAttachments([])
@@ -6314,6 +6395,7 @@ export default function App() {
   }) {
     const nextCustomer = context?.customer?.trim() || customerName?.trim() || null
     const nextIssueKey = context?.issueKey?.trim().toUpperCase() || null
+    setIntegrationDeliveryCheckpoint(null)
     setIntegrationError(null)
     setIntegrationSuccess(null)
     setIntegrationReplyTarget(null)

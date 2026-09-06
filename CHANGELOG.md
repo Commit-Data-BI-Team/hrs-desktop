@@ -8,9 +8,9 @@
 
 - Added a compact **Update Jira & Slack** workspace directly inside Quick Log, with independent collapsible Jira and Slack sections.
 - Added recent Jira comments and Slack messages with inline replies, refresh controls, correct service names and icons, and downloadable Jira attachments.
-- Added Jira status changes, automatic Jira issue selection from the selected shared task with customer-parent fallback, and Jira file or image uploads linked to comments.
+- Added Jira status changes, automatic Jira issue selection from the selected shared task with customer-parent fallback, Jira file or image uploads linked to comments, and retry-safe delivery that never reposts a successful destination.
 - Added Jira and Slack `@` people search with profile details, shared favorites that appear first, and fast favorite toggles.
-- Added message formatting controls, automatic and manual RTL/LTR support, inline images, and adjacent image/file attachment actions.
+- Added message formatting controls, automatic and manual RTL/LTR support, inline images, adjacent image/file attachment actions, and reliable splitting of long Slack messages.
 
 ### Project and calendar usability
 
@@ -22,7 +22,7 @@
 
 ### Reporting and reliability
 
-- Prevented historical work reports from counting toward a shared task or global project budget created later in the month.
+- Prevented historical work reports from counting toward a shared task or global project budget created later in the month, while securely returning complete coworker totals to every authenticated team member.
 - Improved shared report identity handling so real employee names are displayed instead of automated-test labels.
 - Hardened headless Chrome startup and Microsoft Graph token capture for Windows meeting synchronization without opening an unnecessary browser window.
 - Removed the experimental missing-customer email request while a fast, administrator-free delivery method is evaluated.

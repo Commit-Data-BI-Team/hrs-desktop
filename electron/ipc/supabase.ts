@@ -49,15 +49,13 @@ type ProjectUsageReportRow = Pick<
   'employee_id' | 'employee_name' | 'seconds' | 'report_date'
 >
 
-type SharedTaskUsageReportRow = Pick<
-  WorkReportRow,
-  | 'employee_id'
-  | 'employee_name'
-  | 'seconds'
-  | 'report_date'
-  | 'shared_fictive_task_id'
-  | 'updated_at'
->
+type SharedFictiveTaskUsageRow = {
+  task_id: string
+  used_seconds: number
+  contributor_count: number
+  last_reported_at: string | null
+  employees?: unknown
+}
 
 type MissionStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived'
 
@@ -205,6 +203,44 @@ function isSharedProjectBudgetSchemaMissing(
 ) {
   const message = error?.message?.toLowerCase() ?? ''
   return error?.code === '42P01' || message.includes('shared_project_hour_budgets')
+}
+
+function normalizeUsageEmployees(value: unknown) {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(item => {
+      const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+      const employeeId = cleanNumber(record.employeeId ?? record.employee_id)
+      const employeeName = cleanString(record.employeeName ?? record.employee_name, 250)
+      const seconds = cleanNumber(record.seconds)
+      if (employeeId === null || !employeeName || seconds === null) return null
+      return {
+        employeeId,
+        employeeName,
+        seconds: Math.max(0, seconds)
+      }
+    })
+    .filter(
+      (
+        employee
+      ): employee is { employeeId: number; employeeName: string; seconds: number } =>
+        Boolean(employee)
+    )
+    .sort((a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName))
+}
+
+function isSharedUsageFunctionMissing(
+  error: { code?: string; message?: string } | null | undefined
+) {
+  const message = error?.message?.toLowerCase() ?? ''
+  return (
+    error?.code === '42883' ||
+    error?.code === 'PGRST202' ||
+    (message.includes('get_shared_fictive_task_usage') &&
+      (message.includes('could not find') ||
+        message.includes('does not exist') ||
+        message.includes('schema cache')))
+  )
 }
 
 function isSharedSchemaMissing(error: { code?: string; message?: string } | null | undefined) {
@@ -763,72 +799,27 @@ export function registerSupabaseIpc() {
     if (!user) return []
     if (!ids.length) return []
 
-    const { data: taskData, error: taskError } = await client
-      .from('shared_fictive_tasks')
-      .select('id,created_at')
-      .in('id', ids)
-    if (taskError) {
-      if (isSharedSchemaMissing(taskError)) return []
-      throw new Error(taskError.message)
-    }
-    const activeFromByTask = new Map(
-      ((taskData ?? []) as Array<Pick<SharedFictiveTaskRow, 'id' | 'created_at'>>).map(task => [
-        task.id,
-        laterDate(startDate, dateInIsrael(task.created_at))
-      ])
-    )
-    const earliestActiveFrom = Array.from(activeFromByTask.values()).sort()[0] ?? startDate
-    const rows: SharedTaskUsageReportRow[] = []
-    const pageSize = 1000
-    for (let offset = 0; ; offset += pageSize) {
-      const { data, error } = await client
-        .from('work_reports')
-        .select('employee_id,employee_name,seconds,report_date,shared_fictive_task_id,updated_at')
-        .in('shared_fictive_task_id', ids)
-        .gte('report_date', earliestActiveFrom)
-        .lte('report_date', endDate)
-        .order('id', { ascending: true })
-        .range(offset, offset + pageSize - 1)
-      if (error) {
-        if (isSharedSchemaMissing(error)) return []
-        throw new Error(error.message)
-      }
-      const page = (data ?? []) as SharedTaskUsageReportRow[]
-      rows.push(...page)
-      if (page.length < pageSize) break
-    }
-
-    return ids.map(taskId => {
-      const employeeMap = new Map<
-        number,
-        { employeeId: number; employeeName: string; seconds: number }
-      >()
-      let lastReportedAt: string | null = null
-      const activeFrom = activeFromByTask.get(taskId) ?? startDate
-      for (const row of rows) {
-        if (row.shared_fictive_task_id !== taskId || row.report_date < activeFrom) continue
-        const current = employeeMap.get(row.employee_id) ?? {
-          employeeId: row.employee_id,
-          employeeName: row.employee_name,
-          seconds: 0
-        }
-        current.seconds += Math.max(0, Number(row.seconds) || 0)
-        employeeMap.set(row.employee_id, current)
-        if (row.updated_at && (!lastReportedAt || row.updated_at > lastReportedAt)) {
-          lastReportedAt = row.updated_at
-        }
-      }
-      const employees = Array.from(employeeMap.values()).sort(
-        (a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName)
-      )
-      return {
-        taskId,
-        usedSeconds: employees.reduce((sum, employee) => sum + employee.seconds, 0),
-        contributorCount: employees.length,
-        lastReportedAt,
-        employees
-      }
+    const { data, error } = await client.rpc('get_shared_fictive_task_usage', {
+      task_ids: ids,
+      start_date_input: startDate,
+      end_date_input: endDate
     })
+    if (error) {
+      if (isSharedUsageFunctionMissing(error)) {
+        throw new Error(
+          'Shared task date-aware usage is not installed. Apply Supabase migration 004_usage_date_boundaries.sql.'
+        )
+      }
+      if (isSharedSchemaMissing(error)) return []
+      throw new Error(error.message)
+    }
+    return ((data ?? []) as SharedFictiveTaskUsageRow[]).map(row => ({
+      taskId: row.task_id,
+      usedSeconds: Math.max(0, Number(row.used_seconds) || 0),
+      contributorCount: Math.max(0, Number(row.contributor_count) || 0),
+      lastReportedAt: row.last_reported_at ?? null,
+      employees: normalizeUsageEmployees(row.employees)
+    }))
   })
 
   ipcMain.handle('supabase:syncWorkReports', async (_event, payload: unknown) => {

@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Detailed report exports
+
+- Added an **Export XLSX** action directly to the Reports tab for the displayed month.
+- Added whole-month and single-customer export scopes with a workbook summary and detailed hour rows.
+- Included employee, customer, project, task, start/end times, duration, decimal hours, comments, reporting location, and data source in every available detailed row.
+- Added Windows-safe and macOS-safe filenames, customer totals, employee totals, and spreadsheet filters.
+
 ## 1.0.17
 
 ### Jira and Slack workspace

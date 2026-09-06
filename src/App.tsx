@@ -68,7 +68,8 @@ import {
   IconEyeOff,
   IconEye,
   IconTicket,
-  IconBrandSlack
+  IconBrandSlack,
+  IconFileSpreadsheet
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -94,6 +95,11 @@ import {
   detectIntegrationTextDirection,
   formatIntegrationMessage
 } from './integrationEditor'
+import {
+  buildDetailedReportWorkbookBase64,
+  sanitizeReportFilePart,
+  type DetailedReportEntry
+} from './reportExport'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -341,6 +347,11 @@ type EmployeeHoursEntry = {
   rawValue: string
   taskId: string | null
 }
+
+type EmployeeWorkloadEntry = EmployeeHoursEntry &
+  DetailedReportEntry & {
+    employeeId: string | null
+  }
 
 type EmployeeHoursDay = {
   date: string
@@ -3648,6 +3659,11 @@ export default function App() {
   const [exportClientOpen, setExportClientOpen] = useState(false)
   const [exportClient, setExportClient] = useState<string | null>(null)
   const [exportClientFormat, setExportClientFormat] = useState<'pdf' | 'xlsx'>('pdf')
+  const [reportsExportOpen, setReportsExportOpen] = useState(false)
+  const [reportsExportScope, setReportsExportScope] = useState<'month' | 'customer'>('month')
+  const [reportsExportCustomer, setReportsExportCustomer] = useState<string | null>(null)
+  const [reportsExporting, setReportsExporting] = useState(false)
+  const [reportsExportError, setReportsExportError] = useState<string | null>(null)
   const [bridgeError, setBridgeError] = useState<string | null>(null)
   const [jiraSectionOpen, setJiraSectionOpen] = useState(false)
   const [jiraPrefetchDone, setJiraPrefetchDone] = useState(true)
@@ -16094,15 +16110,15 @@ export default function App() {
       supabaseStatus.profile?.employee_id
   )
 
-  const ownLiveHrsWorkloadEntries = useMemo(() => {
+  const ownLiveHrsWorkloadEntries = useMemo<EmployeeWorkloadEntry[]>(() => {
     const employeeId = supabaseStatus?.profile?.employee_id
-    if (reportSource !== 'hrs' || !monthlyReport || !employeeId) return []
-    const normalizedEmployeeId = String(employeeId)
+    if (reportSource !== 'hrs' || !monthlyReport) return []
+    const normalizedEmployeeId = employeeId ? String(employeeId) : null
     const employee =
-      supabaseStatus.profile?.display_name?.trim() ||
-      supabaseStatus.email?.trim() ||
+      supabaseStatus?.profile?.display_name?.trim() ||
+      supabaseStatus?.email?.trim() ||
       storedUsername?.trim() ||
-      `Employee ${normalizedEmployeeId}`
+      getCurrentReporterName()
 
     return monthlyReport.days.flatMap(day =>
       day.reports.flatMap(report => {
@@ -16133,7 +16149,12 @@ export default function App() {
             hoursHHMM: report.hours_HHMM,
             minutes,
             rawValue: report.hours_HHMM,
-            taskId: String(report.taskId)
+            taskId: String(report.taskId),
+            fromTime: report.from?.trim() || '',
+            toTime: report.to?.trim() || '',
+            comment: stripMissionCommentMarkers(report.comment),
+            reportingFrom: report.reporting_from?.trim() || '',
+            source: 'Live HRS'
           }
         ]
       })
@@ -16149,7 +16170,7 @@ export default function App() {
     taskMetaById
   ])
 
-  const employeeWorkloadBaseEntries = useMemo(() => {
+  const employeeWorkloadBaseEntries = useMemo<EmployeeWorkloadEntry[]>(() => {
     if (employeeWorkloadUsesSupabase) {
       const sourceRows = reportSource === 'supabase' ? supabaseReportRows : automaticSharedProjectRows
       const rows = sourceRows
@@ -16169,7 +16190,12 @@ export default function App() {
             hoursHHMM: secondsToHHMM(row.seconds),
             minutes: Math.round(row.seconds / 60),
             rawValue: secondsToHHMM(row.seconds),
-            taskId: row.task_id === null ? null : String(row.task_id)
+            taskId: row.task_id === null ? null : String(row.task_id),
+            fromTime: row.from_time?.trim() || '',
+            toTime: row.to_time?.trim() || '',
+            comment: row.comment?.trim() || '',
+            reportingFrom: row.reporting_from?.trim() || '',
+            source: row.source?.trim() || 'Supabase'
           }
         })
 
@@ -16210,7 +16236,12 @@ export default function App() {
         employeeId: null,
         customer: getReportCustomerDisplayName(rawCustomer),
         rawCustomer,
-        project: entry.milestone?.trim() || rawCustomer
+        project: entry.milestone?.trim() || rawCustomer,
+        fromTime: '',
+        toTime: '',
+        comment: '',
+        reportingFrom: '',
+        source: 'Live HRS summary'
       }
     })
   }, [
@@ -16338,6 +16369,99 @@ export default function App() {
     employeeWorkloadCustomerFilter,
     employeeWorkloadTaskFilter
   ])
+
+  const detailedReportExportEntries = useMemo<EmployeeWorkloadEntry[]>(() => {
+    if (employeeWorkloadBaseEntries.length) return employeeWorkloadBaseEntries
+    return ownLiveHrsWorkloadEntries
+  }, [employeeWorkloadBaseEntries, ownLiveHrsWorkloadEntries])
+
+  const detailedReportCustomerOptions = useMemo(() => {
+    const totals = new Map<string, { label: string; minutes: number }>()
+    for (const entry of detailedReportExportEntries) {
+      const rawCustomer = entry.rawCustomer?.trim() || entry.customer?.trim() || 'No customer'
+      const current = totals.get(rawCustomer) ?? {
+        label: entry.customer?.trim() || getReportCustomerDisplayName(rawCustomer),
+        minutes: 0
+      }
+      current.minutes += Math.max(0, entry.minutes)
+      totals.set(rawCustomer, current)
+    }
+    return Array.from(totals, ([value, item]) => ({
+      value,
+      label: `${item.label} · ${minutesToHHMM(item.minutes)}`
+    })).sort((a, b) => a.label.localeCompare(b.label))
+  }, [detailedReportExportEntries, getReportCustomerDisplayName])
+
+  const detailedReportSelectedRows = useMemo(() => {
+    if (reportsExportScope === 'month') return detailedReportExportEntries
+    if (!reportsExportCustomer) return []
+    return detailedReportExportEntries.filter(entry => {
+      const rawCustomer = entry.rawCustomer?.trim() || entry.customer?.trim() || 'No customer'
+      return rawCustomer === reportsExportCustomer
+    })
+  }, [detailedReportExportEntries, reportsExportCustomer, reportsExportScope])
+
+  const detailedReportSelectedMinutes = useMemo(
+    () =>
+      detailedReportSelectedRows.reduce(
+        (total, entry) => total + Math.max(0, entry.minutes),
+        0
+      ),
+    [detailedReportSelectedRows]
+  )
+
+  async function handleDetailedReportExport() {
+    if (!window.hrs?.saveExport) {
+      setReportsExportError('Export is unavailable. Please restart the app.')
+      return
+    }
+    if (reportsExportScope === 'customer' && !reportsExportCustomer) {
+      setReportsExportError('Select a customer to export.')
+      return
+    }
+    if (!detailedReportSelectedRows.length) {
+      setReportsExportError('No report rows are available for this selection.')
+      return
+    }
+
+    setReportsExporting(true)
+    setReportsExportError(null)
+    try {
+      const monthKey = dayjs(reportMonth).format('YYYY-MM')
+      const monthLabel = dayjs(reportMonth).format('MMMM YYYY')
+      const customerLabel = reportsExportCustomer
+        ? detailedReportSelectedRows[0]?.customer || reportsExportCustomer
+        : null
+      const content = buildDetailedReportWorkbookBase64(
+        detailedReportSelectedRows as DetailedReportEntry[],
+        {
+          monthKey,
+          monthLabel,
+          customer: customerLabel
+        }
+      )
+      const scopePart = customerLabel
+        ? `customer-${sanitizeReportFilePart(customerLabel)}`
+        : 'all-customers'
+      const savedPath = await window.hrs.saveExport({
+        defaultPath: `hrs-detailed-${scopePart}-${monthKey}.xlsx`,
+        content,
+        format: 'xlsx',
+        encoding: 'base64'
+      })
+      if (!savedPath) return
+      setReportsExportOpen(false)
+      const fileName = savedPath.split(/[\\/]/).pop() ?? savedPath
+      void window.hrs.notify?.({
+        title: 'Detailed report exported',
+        body: `XLSX saved: ${fileName}`
+      })
+    } catch (error) {
+      setReportsExportError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReportsExporting(false)
+    }
+  }
 
   const employeeProjectWorkload = useMemo(
     () => aggregateEmployeeProjects(employeeWorkloadEntries as SharedProjectSourceEntry[]),
@@ -16507,11 +16631,26 @@ export default function App() {
                 and project for {dayjs(reportMonth).format('MMMM YYYY')}.
               </Text>
             </Stack>
-            {employeeProjectWorkload.length > 1 ? (
-              <Badge size="xs" variant="light" color="teal">
-                {employeeProjectWorkload.length} people
-              </Badge>
-            ) : null}
+            <Group gap={6} wrap="nowrap">
+              {employeeProjectWorkload.length > 1 ? (
+                <Badge size="xs" variant="light" color="teal">
+                  {employeeProjectWorkload.length} people
+                </Badge>
+              ) : null}
+              <Button
+                size="compact-xs"
+                variant="light"
+                leftSection={<IconFileSpreadsheet size={14} />}
+                onClick={() => {
+                  setReportsExportError(null)
+                  setReportsExportOpen(true)
+                }}
+                disabled={workloadLoading}
+                aria-label="Export detailed XLSX report"
+              >
+                Export XLSX
+              </Button>
+            </Group>
           </Group>
 
           <SimpleGrid cols={3} spacing="xs" className="tray-employee-workload-filters">
@@ -18214,6 +18353,125 @@ export default function App() {
     }
   }
 
+  const reportsDetailedExportModal = (
+    <Modal
+      opened={reportsExportOpen}
+      onClose={() => {
+        if (reportsExporting) return
+        setReportsExportOpen(false)
+        setReportsExportError(null)
+      }}
+      title="Export detailed XLSX report"
+      centered
+      radius="md"
+      closeOnClickOutside={!reportsExporting}
+      closeOnEscape={!reportsExporting}
+    >
+      <Stack gap="md">
+        <Text size="sm" c="dimmed">
+          Exporting {dayjs(reportMonth).format('MMMM YYYY')}. The workbook includes a summary
+          sheet and detailed rows with employee, customer, project, task, start and end times,
+          duration, comments, reporting location, and source.
+        </Text>
+
+        <SegmentedControl
+          fullWidth
+          value={reportsExportScope}
+          onChange={value => {
+            setReportsExportScope(value as 'month' | 'customer')
+            setReportsExportError(null)
+          }}
+          data={[
+            { value: 'month', label: 'All customers' },
+            { value: 'customer', label: 'One customer' }
+          ]}
+        />
+
+        {reportsExportScope === 'customer' ? (
+          <Select
+            label="Customer"
+            placeholder="Choose a customer"
+            data={detailedReportCustomerOptions}
+            value={reportsExportCustomer}
+            onChange={value => {
+              setReportsExportCustomer(value)
+              setReportsExportError(null)
+            }}
+            searchable
+            clearable
+            nothingFoundMessage="No customers found for this month"
+          />
+        ) : null}
+
+        <Card radius="md" withBorder p="sm">
+          <SimpleGrid cols={3} spacing="xs">
+            <Stack gap={2}>
+              <Text size="xs" c="dimmed">
+                Rows
+              </Text>
+              <Text size="sm" fw={800}>
+                {detailedReportSelectedRows.length}
+              </Text>
+            </Stack>
+            <Stack gap={2}>
+              <Text size="xs" c="dimmed">
+                Employees
+              </Text>
+              <Text size="sm" fw={800}>
+                {new Set(detailedReportSelectedRows.map(row => row.employee)).size}
+              </Text>
+            </Stack>
+            <Stack gap={2}>
+              <Text size="xs" c="dimmed">
+                Hours
+              </Text>
+              <Text size="sm" fw={800}>
+                {minutesToHHMM(detailedReportSelectedMinutes)}
+              </Text>
+            </Stack>
+          </SimpleGrid>
+        </Card>
+
+        {detailedReportSelectedRows.some(row => row.source === 'Live HRS summary') ? (
+          <Text size="xs" c="dimmed">
+            Some team rows come from the HRS summary view, which does not provide comments or
+            start/end times. Syncing the month to Supabase includes those detailed fields.
+          </Text>
+        ) : null}
+
+        {reportsExportError ? (
+          <Alert color="red" variant="light" radius="md">
+            {reportsExportError}
+          </Alert>
+        ) : null}
+
+        <Group justify="space-between" align="center">
+          <Button
+            variant="subtle"
+            onClick={() => {
+              setReportsExportOpen(false)
+              setReportsExportError(null)
+            }}
+            disabled={reportsExporting}
+          >
+            Cancel
+          </Button>
+          <Button
+            leftSection={<IconFileSpreadsheet size={16} />}
+            onClick={() => void handleDetailedReportExport()}
+            loading={reportsExporting}
+            disabled={
+              !detailedReportSelectedRows.length ||
+              (reportsExportScope === 'customer' && !reportsExportCustomer)
+            }
+          >
+            Export XLSX
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   const meetingMappingModal = (
     <Modal
       opened={meetingMappingOpen}
@@ -18837,6 +19095,7 @@ export default function App() {
         }`}
       >
         {quickFictiveTaskModal}
+        {reportsDetailedExportModal}
         <Stack gap="sm" className="tray-content">
           {window.hrs && (
             <Group gap={4} justify="flex-end" className="tray-window-controls">

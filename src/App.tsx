@@ -15317,49 +15317,44 @@ export default function App() {
               className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
               key={gauge.kind}
             >
-              <Group
-                justify="space-between"
-                align="flex-start"
-                wrap="nowrap"
-                gap="xs"
-                className="quick-fictive-usage-header"
-              >
-                <div className="quick-fictive-usage-title">
-                  <span className="quick-fictive-usage-kind">
-                    {gauge.kind === 'project' ? 'Overall project' : 'Shared task'}
-                  </span>
-                  <Text size={compact ? 'xs' : 'sm'} fw={700} truncate>
-                    {gauge.title}
-                  </Text>
-                </div>
-                <Group gap={4} wrap="nowrap" className="quick-fictive-usage-metrics">
-                  <Text
-                    size={compact ? 'xs' : 'sm'}
-                    c="dimmed"
-                    className="quick-fictive-usage-hours"
+              <div className="quick-fictive-usage-header">
+                <span className="quick-fictive-usage-kind">
+                  {gauge.kind === 'project' ? 'Overall project' : 'Shared task'}
+                </span>
+                <Text
+                  size={compact ? 'xs' : 'sm'}
+                  fw={700}
+                  className="quick-fictive-usage-title"
+                >
+                  {gauge.title}
+                </Text>
+                <Text
+                  size={compact ? 'xs' : 'sm'}
+                  c="dimmed"
+                  className="quick-fictive-usage-hours"
+                >
+                  {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
+                  {percentLabel}
+                </Text>
+                <Tooltip label="Send project update" withArrow withinPortal>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    className="quick-fictive-usage-action"
+                    aria-label="Send project update"
+                    onClick={() =>
+                      openIntegrationUpdate({
+                        customer: selectedQuickLogUsageCustomer,
+                        issueKey: selectedQuickLogJiraTarget,
+                        message: `${gauge.title}: `,
+                        followQuickLog: true
+                      })
+                    }
                   >
-                    {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
-                    {percentLabel}
-                  </Text>
-                  <Tooltip label="Send project update" withArrow withinPortal>
-                    <ActionIcon
-                      size="sm"
-                      variant="subtle"
-                      aria-label="Send project update"
-                      onClick={() =>
-                        openIntegrationUpdate({
-                          customer: selectedQuickLogUsageCustomer,
-                          issueKey: selectedQuickLogJiraTarget,
-                          message: `${gauge.title}: `,
-                          followQuickLog: true
-                        })
-                      }
-                    >
-                      <IconMessageCircle size={14} />
-                    </ActionIcon>
-                  </Tooltip>
-                </Group>
-              </Group>
+                    <IconMessageCircle size={14} />
+                  </ActionIcon>
+                </Tooltip>
+              </div>
               <div
                 className="quick-fictive-usage-track"
                 aria-label={`${gauge.kind === 'project' ? 'Project' : 'Task'} utilization`}

@@ -3082,37 +3082,44 @@ body.floating-mode {
 }
 
 .quick-fictive-usage-hours {
-  overflow: hidden;
-  max-width: 100%;
-  text-overflow: ellipsis;
+  grid-area: hours;
+  min-width: max-content;
+  align-self: end;
+  justify-self: end;
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 
 .quick-fictive-usage-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, max-content) 28px;
+  grid-template-areas:
+    'kind kind action'
+    'title hours hours';
+  column-gap: 8px;
+  row-gap: 2px;
+  align-items: start;
   width: 100%;
   max-width: 100%;
   min-width: 0;
 }
 
-.quick-fictive-usage-metrics {
-  max-width: min(48%, 250px);
-  min-width: 0;
+.quick-fictive-usage-action {
+  grid-area: action;
+  justify-self: end;
 }
 
 .quick-fictive-usage-title {
+  grid-area: title;
   min-width: 0;
-  overflow: hidden;
-}
-
-.quick-fictive-usage-title .mantine-Text-root {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  align-self: end;
+  line-height: 1.2;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .quick-fictive-usage-kind {
+  grid-area: kind;
   display: block;
   margin-bottom: 1px;
   color: color-mix(in srgb, var(--accent) 78%, white);
@@ -3224,6 +3231,11 @@ body.floating-mode {
   flex: 1 1 210px;
   padding-top: 2px;
   padding-bottom: 2px;
+}
+
+.quick-fictive-usage.is-compact .quick-fictive-usage-header {
+  grid-template-columns: minmax(0, 1fr) minmax(132px, max-content) 26px;
+  column-gap: 6px;
 }
 
 .quick-fictive-usage-fill.is-yellow {

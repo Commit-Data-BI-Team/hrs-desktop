@@ -8,6 +8,7 @@
 - Reconciles shared-task contributors without double-counting employees already returned by project usage, and refreshes both project and shared-task totals when the Log panel refreshes.
 - Keeps each **Shared task** gauge isolated to that task while deriving **Overall project** from the combined hours of every shared task in the project, so later refreshes cannot replace it with an incomplete total.
 - Constrained Quick Log fields, gauges, totals, and employee chips to the available tray width on Windows and macOS without horizontal scrolling.
+- Moved each gauge's update bubble to the top-right, reserved a dedicated area for the complete hours value, and allowed long project and task names to wrap without truncation.
 
 ### Detailed report exports
 

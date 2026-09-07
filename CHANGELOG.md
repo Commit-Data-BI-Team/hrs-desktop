@@ -6,6 +6,8 @@
 
 - Fixed the **Overall project** gauge so it includes every employee reporting to any shared task in the same customer/project, even when an older report contains mismatched project metadata.
 - Reconciles shared-task contributors without double-counting employees already returned by project usage, and refreshes both project and shared-task totals when the Log panel refreshes.
+- Keeps each **Shared task** gauge isolated to that task while deriving **Overall project** from the combined hours of every shared task in the project, so later refreshes cannot replace it with an incomplete total.
+- Constrained Quick Log fields, gauges, totals, and employee chips to the available tray width on Windows and macOS without horizontal scrolling.
 
 ### Detailed report exports
 

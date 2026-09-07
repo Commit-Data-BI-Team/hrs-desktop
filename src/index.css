@@ -3035,6 +3035,10 @@ body.floating-mode {
 .quick-fictive-usage-stack {
   display: grid;
   gap: 9px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .quick-fictive-usage-stack.is-compact {
@@ -3044,6 +3048,11 @@ body.floating-mode {
 .quick-fictive-usage {
   display: grid;
   gap: 7px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+  overflow: hidden;
   margin-top: -4px;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
@@ -3073,11 +3082,34 @@ body.floating-mode {
 }
 
 .quick-fictive-usage-hours {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.quick-fictive-usage-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.quick-fictive-usage-metrics {
+  max-width: min(48%, 250px);
+  min-width: 0;
 }
 
 .quick-fictive-usage-title {
   min-width: 0;
+  overflow: hidden;
+}
+
+.quick-fictive-usage-title .mantine-Text-root {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .quick-fictive-usage-kind {
@@ -3133,6 +3165,10 @@ body.floating-mode {
   display: flex;
   flex-wrap: wrap;
   gap: 5px;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow: hidden;
 }
 
 .quick-fictive-usage-employee {
@@ -3140,6 +3176,7 @@ body.floating-mode {
   grid-template-columns: 17px minmax(0, 1fr) auto;
   align-items: center;
   gap: 5px;
+  max-width: 100%;
   min-width: 0;
   padding: 3px 6px 3px 3px;
   border: 1px solid color-mix(in srgb, var(--stroke) 62%, transparent);
@@ -3184,6 +3221,7 @@ body.floating-mode {
 }
 
 .quick-fictive-usage.is-compact .quick-fictive-usage-employee {
+  flex: 1 1 210px;
   padding-top: 2px;
   padding-bottom: 2px;
 }
@@ -3321,9 +3359,13 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-content {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   height: auto;
   max-height: calc(100vh - 6px);
   overflow-y: auto;
+  overflow-x: hidden;
   overscroll-behavior: contain;
   padding-right: 2px;
   padding-bottom: 0;
@@ -4908,6 +4950,15 @@ html[data-platform='windows'] .tray-calendar {
 
 .tray-filters .mantine-Select-label {
   font-size: 0.7rem;
+}
+
+.tray-filters,
+.tray-filters > *,
+.tray-filters .mantine-Select-root,
+.tray-filters .mantine-Select-wrapper {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
 }
 
 .tray-filters .mantine-Select-input {

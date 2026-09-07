@@ -87,6 +87,7 @@ import {
   getGlobalProjectCapMinutes,
   getSharedProjectCapMinutes,
   getSharedProjectKey,
+  mergeProjectUsageContributors,
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from './sharedProjects'
@@ -13869,6 +13870,40 @@ export default function App() {
     ? supabaseProjectUsageByKey[selectedQuickLogProjectKey] ?? null
     : null
 
+  const selectedQuickLogCombinedSharedProjectUsage = useMemo(() => {
+    if (!selectedQuickLogUsageCustomer || !selectedQuickLogUsageProject) {
+      return { ready: false, usedSeconds: 0, employees: [] }
+    }
+    const projectKey = getSharedProjectKey(
+      selectedQuickLogUsageCustomer,
+      selectedQuickLogUsageProject
+    )
+    const projectTasks = allProjectMissions.filter(
+      mission =>
+        mission.shared &&
+        getSharedProjectKey(mission.customerName, mission.projectName) === projectKey
+    )
+    const ready =
+      projectTasks.length > 0 &&
+      projectTasks.every(mission => Boolean(sharedFictiveTaskUsage[mission.id]))
+    if (!ready) return { ready: false, usedSeconds: 0, employees: [] }
+
+    const employees = mergeProjectUsageContributors(
+      [],
+      projectTasks.map(mission => sharedFictiveTaskUsage[mission.id].employees)
+    )
+    return {
+      ready: true,
+      usedSeconds: employees.reduce((sum, employee) => sum + employee.seconds, 0),
+      employees
+    }
+  }, [
+    selectedQuickLogUsageCustomer,
+    selectedQuickLogUsageProject,
+    allProjectMissions,
+    sharedFictiveTaskUsage
+  ])
+
   useEffect(() => {
     if (!selectedQuickLogUsageCustomer || !selectedQuickLogUsageProject) return
     if (!supabaseStatus?.email || !supabaseStatus.profile?.employee_id) return
@@ -13894,22 +13929,30 @@ export default function App() {
       Math.max(0, selectedQuickLogMission.projectCappedHours ?? 0) * 60
     )
     if (projectCapMinutes > 0) {
-      const usedMinutes = selectedQuickLogProjectUsage
-        ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
-        : getProjectUsedMinutesFromReports(
-            selectedQuickLogUsageCustomer,
-            selectedQuickLogUsageProject,
-            allReportItems
-          )
-      const employees = selectedQuickLogProjectUsage
-        ? selectedQuickLogProjectUsage.employees.map(employee => ({
+      const usedMinutes = selectedQuickLogCombinedSharedProjectUsage.ready
+        ? Math.round(selectedQuickLogCombinedSharedProjectUsage.usedSeconds / 60)
+        : selectedQuickLogProjectUsage
+          ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
+          : getProjectUsedMinutesFromReports(
+              selectedQuickLogUsageCustomer,
+              selectedQuickLogUsageProject,
+              allReportItems
+            )
+      const employees = selectedQuickLogCombinedSharedProjectUsage.ready
+        ? selectedQuickLogCombinedSharedProjectUsage.employees.map(employee => ({
             employeeId: employee.employeeId,
             employeeName: employee.employeeName,
             minutes: Math.round(employee.seconds / 60)
           }))
-        : usedMinutes > 0
-          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-          : []
+        : selectedQuickLogProjectUsage
+          ? selectedQuickLogProjectUsage.employees.map(employee => ({
+              employeeId: employee.employeeId,
+              employeeName: employee.employeeName,
+              minutes: Math.round(employee.seconds / 60)
+            }))
+          : usedMinutes > 0
+            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+            : []
       const percent = (usedMinutes / projectCapMinutes) * 100
       gauges.push({
         kind: 'project',
@@ -13956,6 +13999,7 @@ export default function App() {
   }, [
     selectedQuickLogMission,
     selectedQuickLogProjectUsage,
+    selectedQuickLogCombinedSharedProjectUsage,
     selectedQuickLogUsageCustomer,
     selectedQuickLogUsageProject,
     allReportItems,
@@ -15273,7 +15317,13 @@ export default function App() {
               className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
               key={gauge.kind}
             >
-              <Group justify="space-between" align="flex-start" wrap="nowrap" gap="xs">
+              <Group
+                justify="space-between"
+                align="flex-start"
+                wrap="nowrap"
+                gap="xs"
+                className="quick-fictive-usage-header"
+              >
                 <div className="quick-fictive-usage-title">
                   <span className="quick-fictive-usage-kind">
                     {gauge.kind === 'project' ? 'Overall project' : 'Shared task'}
@@ -15282,7 +15332,7 @@ export default function App() {
                     {gauge.title}
                   </Text>
                 </div>
-                <Group gap={4} wrap="nowrap">
+                <Group gap={4} wrap="nowrap" className="quick-fictive-usage-metrics">
                   <Text
                     size={compact ? 'xs' : 'sm'}
                     c="dimmed"

@@ -71,6 +71,11 @@ test('renders the tray reports KPIs and employee projects', async () => {
     await window.getByRole('textbox', { name: 'Project' }).fill('Website revamp')
     await window.getByRole('option', { name: /Website revamp/ }).click()
     await expect(window.getByRole('textbox', { name: 'Customer', exact: true })).toHaveValue('Acme Labs')
+    await expect.poll(() =>
+      window.locator('.tray-content').evaluate(element =>
+        element.scrollWidth <= element.clientWidth + 1
+      )
+    ).toBe(true)
     await window.getByRole('button', { name: 'Update Jira & Slack' }).click()
     const updatePanel = window.locator('.tray-communicate-panel')
     await expect(updatePanel.locator('p').filter({ hasText: /^Send update$/ })).toBeVisible()

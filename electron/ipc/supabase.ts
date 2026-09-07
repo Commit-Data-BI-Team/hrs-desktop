@@ -11,6 +11,7 @@ import {
   ensureSupabaseConfirmationServer,
   SUPABASE_CONFIRMATION_REDIRECT_URL
 } from '../supabase/confirmationServer'
+import { mergeProjectUsageContributors } from '../../src/sharedProjects'
 
 type SupabaseProfile = {
   id: string
@@ -568,16 +569,51 @@ export function registerSupabaseIpc() {
       employees.set(row.employee_id, current)
     }
 
+    const directEmployees = Array.from(employees.values())
+    let sharedTaskEmployeeGroups: ReturnType<typeof normalizeUsageEmployees>[] = []
+    const { data: sharedTaskData, error: sharedTaskError } = await client
+      .from('shared_fictive_tasks')
+      .select('id,customer,project')
+    if (sharedTaskError && !isSharedSchemaMissing(sharedTaskError)) {
+      throw new Error(sharedTaskError.message)
+    }
+    if (!sharedTaskError) {
+      const taskIds = ((sharedTaskData ?? []) as Array<
+        Pick<SharedFictiveTaskRow, 'id' | 'customer' | 'project'>
+      >)
+        .filter(task => getSharedProjectScopeKey(task.customer, task.project) === scopeKey)
+        .map(task => task.id)
+      if (taskIds.length) {
+        const { data: sharedUsageData, error: sharedUsageError } = await client.rpc(
+          'get_shared_fictive_task_usage',
+          {
+            task_ids: taskIds,
+            start_date_input: activeFrom,
+            end_date_input: endDate
+          }
+        )
+        if (sharedUsageError && !isSharedUsageFunctionMissing(sharedUsageError)) {
+          throw new Error(sharedUsageError.message)
+        }
+        if (!sharedUsageError) {
+          sharedTaskEmployeeGroups = ((sharedUsageData ?? []) as SharedFictiveTaskUsageRow[])
+            .map(row => normalizeUsageEmployees(row.employees))
+        }
+      }
+    }
+    const mergedEmployees = mergeProjectUsageContributors(
+      directEmployees,
+      sharedTaskEmployeeGroups
+    )
+
     return {
       customer,
       project,
       startDate: activeFrom,
       endDate,
-      usedSeconds: Array.from(employees.values()).reduce((sum, employee) => sum + employee.seconds, 0),
-      contributorCount: employees.size,
-      employees: Array.from(employees.values()).sort(
-        (a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName)
-      )
+      usedSeconds: mergedEmployees.reduce((sum, employee) => sum + employee.seconds, 0),
+      contributorCount: mergedEmployees.length,
+      employees: mergedEmployees
     }
   })
 

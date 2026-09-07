@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Shared project gauges
+
+- Fixed the **Overall project** gauge so it includes every employee reporting to any shared task in the same customer/project, even when an older report contains mismatched project metadata.
+- Reconciles shared-task contributors without double-counting employees already returned by project usage, and refreshes both project and shared-task totals when the Log panel refreshes.
+
 ### Detailed report exports
 
 - Added an **Export XLSX** action directly to the Reports tab for the displayed month.

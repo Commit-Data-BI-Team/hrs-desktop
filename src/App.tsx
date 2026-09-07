@@ -4279,6 +4279,9 @@ export default function App() {
         loadReportsForMonth(reportMonth, { force: true }),
         loadSharedProjectReports(reportMonth, { force: true })
       ]
+      if (sharedFictiveTasks.length) {
+        refreshes.push(refreshSharedFictiveTaskUsage(sharedFictiveTasks))
+      }
       if (quickLogScope) {
         refreshes.push(loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project))
       }

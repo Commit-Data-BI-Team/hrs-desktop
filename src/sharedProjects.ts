@@ -50,6 +50,61 @@ export type SharedProjectCapSource = {
   projectCappedHours?: number | null
 }
 
+export type ProjectUsageContributor = {
+  employeeId: number
+  employeeName: string
+  seconds: number
+}
+
+export function mergeProjectUsageContributors(
+  projectEmployees: ProjectUsageContributor[],
+  sharedTaskEmployeeGroups: ProjectUsageContributor[][]
+) {
+  const projectTotals = new Map<number, ProjectUsageContributor>()
+  const sharedTaskTotals = new Map<number, ProjectUsageContributor>()
+
+  for (const employee of projectEmployees) {
+    const seconds = Number.isFinite(employee.seconds) ? Math.max(0, employee.seconds) : 0
+    if (!seconds) continue
+    const current = projectTotals.get(employee.employeeId)
+    projectTotals.set(employee.employeeId, {
+      employeeId: employee.employeeId,
+      employeeName: employee.employeeName,
+      seconds: (current?.seconds ?? 0) + seconds
+    })
+  }
+
+  for (const group of sharedTaskEmployeeGroups) {
+    for (const employee of group) {
+      const seconds = Number.isFinite(employee.seconds) ? Math.max(0, employee.seconds) : 0
+      if (!seconds) continue
+      const current = sharedTaskTotals.get(employee.employeeId)
+      sharedTaskTotals.set(employee.employeeId, {
+        employeeId: employee.employeeId,
+        employeeName: employee.employeeName,
+        seconds: (current?.seconds ?? 0) + seconds
+      })
+    }
+  }
+
+  const keys = new Set([...projectTotals.keys(), ...sharedTaskTotals.keys()])
+  return Array.from(keys, key => {
+    const projectEmployee = projectTotals.get(key)
+    const sharedTaskEmployee = sharedTaskTotals.get(key)
+    const employee = projectEmployee ?? sharedTaskEmployee!
+    return {
+      employeeId: employee.employeeId,
+      employeeName: employee.employeeName,
+      // Shared-task usage can recover coworkers hidden by an older or mismatched project value.
+      // Taking the larger canonical total prevents rows already present in project usage from
+      // being counted twice.
+      seconds: Math.max(projectEmployee?.seconds ?? 0, sharedTaskEmployee?.seconds ?? 0)
+    }
+  }).sort(
+    (a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName)
+  )
+}
+
 export function replaceEmployeeEntriesWithLive<
   T extends { employeeId: string | null | undefined }
 >(sharedEntries: T[], employeeId: string, liveEntries: T[]) {

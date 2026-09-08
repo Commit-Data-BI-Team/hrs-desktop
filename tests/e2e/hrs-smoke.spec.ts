@@ -36,6 +36,20 @@ test('renders the tray reports KPIs and employee projects', async () => {
     const employeeProjects = window.locator('.tray-employee-workload-card')
     await expect(employeeProjects.getByText('Employee projects')).toBeVisible()
     await expect(employeeProjects).not.toContainText('1 people')
+    const detailedExportButton = employeeProjects.getByRole('button', {
+      name: 'Export detailed XLSX report'
+    })
+    await expect(detailedExportButton).toBeVisible()
+    await detailedExportButton.click()
+    const detailedExportDialog = window.getByRole('dialog', {
+      name: 'Export detailed XLSX report'
+    })
+    await expect(detailedExportDialog).toBeVisible()
+    await expect(detailedExportDialog.getByText('All customers', { exact: true })).toBeVisible()
+    await expect(detailedExportDialog.getByText('One customer', { exact: true })).toBeVisible()
+    await expect(detailedExportDialog.getByText(/start and end times/)).toBeVisible()
+    await detailedExportDialog.getByRole('button', { name: 'Cancel' }).click()
+    await expect(detailedExportDialog).toBeHidden()
 
     await browserWindow.evaluate(current => {
       current.webContents.send('app:updateState', {
@@ -57,6 +71,11 @@ test('renders the tray reports KPIs and employee projects', async () => {
     await window.getByRole('textbox', { name: 'Project' }).fill('Website revamp')
     await window.getByRole('option', { name: /Website revamp/ }).click()
     await expect(window.getByRole('textbox', { name: 'Customer', exact: true })).toHaveValue('Acme Labs')
+    await expect.poll(() =>
+      window.locator('.tray-content').evaluate(element =>
+        element.scrollWidth <= element.clientWidth + 1
+      )
+    ).toBe(true)
     await window.getByRole('button', { name: 'Update Jira & Slack' }).click()
     const updatePanel = window.locator('.tray-communicate-panel')
     await expect(updatePanel.locator('p').filter({ hasText: /^Send update$/ })).toBeVisible()

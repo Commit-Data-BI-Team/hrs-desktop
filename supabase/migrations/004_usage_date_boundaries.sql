@@ -2,6 +2,7 @@ create index if not exists work_reports_project_usage_idx
   on public.work_reports (customer, project, report_date);
 
 drop function if exists public.get_shared_fictive_task_usage(uuid[]);
+drop function if exists public.get_shared_fictive_task_usage(uuid[], date, date);
 create function public.get_shared_fictive_task_usage(
   task_ids uuid[] default null,
   start_date_input date default null,

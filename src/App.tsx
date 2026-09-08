@@ -68,7 +68,8 @@ import {
   IconEyeOff,
   IconEye,
   IconTicket,
-  IconBrandSlack
+  IconBrandSlack,
+  IconFileSpreadsheet
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -86,6 +87,7 @@ import {
   getGlobalProjectCapMinutes,
   getSharedProjectCapMinutes,
   getSharedProjectKey,
+  mergeProjectUsageContributors,
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from './sharedProjects'
@@ -94,6 +96,11 @@ import {
   detectIntegrationTextDirection,
   formatIntegrationMessage
 } from './integrationEditor'
+import {
+  buildDetailedReportWorkbookBase64,
+  sanitizeReportFilePart,
+  type DetailedReportEntry
+} from './reportExport'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -342,6 +349,11 @@ type EmployeeHoursEntry = {
   taskId: string | null
 }
 
+type EmployeeWorkloadEntry = EmployeeHoursEntry &
+  DetailedReportEntry & {
+    employeeId: string | null
+  }
+
 type EmployeeHoursDay = {
   date: string
   totalMinutes: number
@@ -398,6 +410,15 @@ type JiraTransition = {
 }
 
 type IntegrationDestination = 'jira' | 'slack' | 'both'
+
+type IntegrationDeliveryCheckpoint = {
+  signature: string
+  jiraCommentPosted: boolean
+  jiraAttachments: Array<{ id: string; filename: string }>
+  jiraStatusUpdated: boolean
+  jiraTransitionId: string | null
+  slackMessagePosted: boolean
+}
 
 type IntegrationMention = {
   key: string
@@ -1208,7 +1229,8 @@ function createEmptyMonthlyReport(startDate: string, endDate: string): MonthlyRe
 function monthlyReportFromSupabaseRows(
   rows: SupabaseWorkReportRow[],
   startDate: string,
-  endDate: string
+  endDate: string,
+  sharedTaskNames: ReadonlyMap<string, string> = new Map()
 ): MonthlyReport {
   const report = createEmptyMonthlyReport(startDate, endDate)
   const dayMap = new Map(report.days.map(day => [day.date, day]))
@@ -1218,7 +1240,10 @@ function monthlyReportFromSupabaseRows(
     if (!day) continue
     day.reports.push({
       taskId: row.task_id ?? 0,
-      taskName: row.task_name,
+      taskName:
+        (row.shared_fictive_task_id
+          ? sharedTaskNames.get(row.shared_fictive_task_id)
+          : null) || row.task_name,
       projectInstance: row.project || row.customer,
       hours_HHMM: secondsToHHMM(row.seconds),
       comment: row.comment || '',
@@ -2449,6 +2474,8 @@ export default function App() {
   const [integrationTransitionId, setIntegrationTransitionId] = useState<string | null>(null)
   const [integrationTransitionLoading, setIntegrationTransitionLoading] = useState(false)
   const [integrationSending, setIntegrationSending] = useState(false)
+  const [integrationDeliveryCheckpoint, setIntegrationDeliveryCheckpoint] =
+    useState<IntegrationDeliveryCheckpoint | null>(null)
   const [integrationAttachmentLoading, setIntegrationAttachmentLoading] = useState(false)
   const [integrationAttachments, setIntegrationAttachments] = useState<IntegrationAttachment[]>([])
   const [integrationRecentMessages, setIntegrationRecentMessages] = useState<
@@ -2495,6 +2522,11 @@ export default function App() {
   const [quickFictiveNotes, setQuickFictiveNotes] = useState('')
   const [quickFictiveError, setQuickFictiveError] = useState<string | null>(null)
   const [quickFictiveJiraParentKey, setQuickFictiveJiraParentKey] = useState<string | null>(null)
+  const [recentQuickLogContextId, setRecentQuickLogContextId] = useState<string | null>(null)
+  const [sharedTaskRenameId, setSharedTaskRenameId] = useState<string | null>(null)
+  const [sharedTaskRenameDraft, setSharedTaskRenameDraft] = useState('')
+  const [sharedTaskRenameSaving, setSharedTaskRenameSaving] = useState(false)
+  const [sharedTaskRenameError, setSharedTaskRenameError] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
   const [jiraLoggedEntries, setJiraLoggedEntries] = useState<JiraLoggedEntries>({})
   const [jiraLogModalOpen, setJiraLogModalOpen] = useState(false)
@@ -2766,6 +2798,14 @@ export default function App() {
       a.name.localeCompare(b.name)
     )
   }, [projectManagementConfig?.missions, sharedFictiveTasks])
+  const sharedFictiveTaskNameSignature = useMemo(
+    () =>
+      sharedFictiveTasks
+        .map(task => `${task.id}:${task.updatedAt}:${task.name}`)
+        .sort()
+        .join('|'),
+    [sharedFictiveTasks]
+  )
   useEffect(() => {
     try {
       localStorage.setItem('hrs-kpi-collapsed', kpiCollapsed ? '1' : '0')
@@ -3637,6 +3677,11 @@ export default function App() {
   const [exportClientOpen, setExportClientOpen] = useState(false)
   const [exportClient, setExportClient] = useState<string | null>(null)
   const [exportClientFormat, setExportClientFormat] = useState<'pdf' | 'xlsx'>('pdf')
+  const [reportsExportOpen, setReportsExportOpen] = useState(false)
+  const [reportsExportScope, setReportsExportScope] = useState<'month' | 'customer'>('month')
+  const [reportsExportCustomer, setReportsExportCustomer] = useState<string | null>(null)
+  const [reportsExporting, setReportsExporting] = useState(false)
+  const [reportsExportError, setReportsExportError] = useState<string | null>(null)
   const [bridgeError, setBridgeError] = useState<string | null>(null)
   const [jiraSectionOpen, setJiraSectionOpen] = useState(false)
   const [jiraPrefetchDone, setJiraPrefetchDone] = useState(true)
@@ -4252,6 +4297,9 @@ export default function App() {
         loadReportsForMonth(reportMonth, { force: true }),
         loadSharedProjectReports(reportMonth, { force: true })
       ]
+      if (sharedFictiveTasks.length) {
+        refreshes.push(refreshSharedFictiveTaskUsage(sharedFictiveTasks))
+      }
       if (quickLogScope) {
         refreshes.push(loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project))
       }
@@ -4429,7 +4477,10 @@ export default function App() {
     }
   }
 
-  async function loadReportsForMonth(month: Date, options: { force?: boolean } = {}) {
+  async function loadReportsForMonth(
+    month: Date,
+    options: { force?: boolean; sharedTaskNames?: ReadonlyMap<string, string> } = {}
+  ) {
     const requestId = ++reportsRequestId.current
     const monthKey = dayjs(month).format('YYYY-MM')
     const isCurrentMonth = dayjs(month).isSame(dayjs(), 'month')
@@ -4454,7 +4505,12 @@ export default function App() {
           'Loading Supabase reports'
         )
         setSupabaseReportRows(rows)
-        data = monthlyReportFromSupabaseRows(rows, start, end)
+        data = monthlyReportFromSupabaseRows(
+          rows,
+          start,
+          end,
+          options.sharedTaskNames ?? new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+        )
       } else {
         setSupabaseReportRows([])
         data = await withTimeout(window.hrs.getReports(start, end), BOOT_TIMEOUT_MS, 'Loading reports')
@@ -5784,6 +5840,7 @@ export default function App() {
   }
 
   function startIntegrationNewMessage() {
+    setIntegrationDeliveryCheckpoint(null)
     setIntegrationReplyTarget(null)
     setIntegrationMessageText('')
     setIntegrationMentions([])
@@ -5795,6 +5852,7 @@ export default function App() {
   }
 
   function startIntegrationReply(message: IntegrationRecentMessage) {
+    setIntegrationDeliveryCheckpoint(null)
     const label = message.authorName.trim() || (message.source === 'jira' ? 'Jira user' : 'Slack user')
     const mention: IntegrationMention | null = message.authorId
       ? {
@@ -6177,28 +6235,60 @@ export default function App() {
     setIntegrationSuccess(null)
     const successes: string[] = []
     const failures: string[] = []
-    const sendToJira = integrationReplyTarget
+    const wantsJira = integrationReplyTarget
       ? integrationReplyTarget.source === 'jira'
       : integrationUsesJira()
-    const sendToSlack = integrationReplyTarget
+    const wantsSlack = integrationReplyTarget
       ? integrationReplyTarget.source === 'slack'
       : integrationUsesSlack()
     const liveMentions = integrationMentions.filter(mention =>
       rawText.includes(`@[${mention.label}]`)
     )
+    const deliverySignature = JSON.stringify({
+      text,
+      customer: integrationCustomer,
+      destination: integrationReplyTarget?.source ?? integrationDestination,
+      replyId: integrationReplyTarget?.id ?? null,
+      jiraIssueKey: integrationJiraIssueKey.trim().toUpperCase(),
+      slackChannelId: integrationSlackChannelId,
+      attachmentIds: integrationAttachments.map(attachment => attachment.id),
+      mentions: liveMentions.map(mention => ({
+        label: mention.label,
+        jiraAccountId: mention.jiraAccountId ?? null,
+        slackUserId: mention.slackUserId ?? null
+      }))
+    })
+    const previousDelivery =
+      integrationDeliveryCheckpoint?.signature === deliverySignature
+        ? integrationDeliveryCheckpoint
+        : null
+    let jiraCommentPosted = previousDelivery?.jiraCommentPosted ?? false
+    let jiraCommentAttachments = previousDelivery?.jiraAttachments ?? []
+    let jiraStatusUpdated =
+      !integrationTransitionId ||
+      (previousDelivery?.jiraStatusUpdated === true &&
+        previousDelivery.jiraTransitionId === integrationTransitionId)
+    let slackMessagePosted = previousDelivery?.slackMessagePosted ?? false
+    const jiraDeliveryWasComplete =
+      jiraCommentPosted &&
+      (integrationAttachments.length === 0 ||
+        jiraCommentAttachments.length === integrationAttachments.length) &&
+      jiraStatusUpdated
 
-    if (sendToJira) {
+    if (wantsJira && jiraDeliveryWasComplete) {
+      successes.push('Jira already posted')
+    } else if (wantsJira) {
       const issueKey = integrationJiraIssueKey.trim().toUpperCase()
       if (!jiraConfigured) {
         failures.push('Jira is not connected.')
       } else if (!/^[A-Z][A-Z0-9_]{0,14}-\d+$/.test(issueKey)) {
         failures.push('Choose a valid Jira issue.')
       } else {
-        let commentPosted = false
-        let attachmentsPosted = integrationAttachments.length === 0
-        let statusUpdated = !integrationTransitionId
-        let jiraCommentAttachments: Array<{ id: string; filename: string }> = []
-        if (integrationAttachments.length) {
+        let attachmentsPosted =
+          integrationAttachments.length === 0 ||
+          jiraCommentAttachments.length === integrationAttachments.length
+        const jiraCommentWasAlreadyPosted = jiraCommentPosted
+        if (integrationAttachments.length && !attachmentsPosted) {
           try {
             const uploadedAttachments = await window.hrs.uploadJiraAttachments({
               issueKey,
@@ -6217,38 +6307,44 @@ export default function App() {
             failures.push(`Jira files: ${error instanceof Error ? error.message : String(error)}`)
           }
         }
-        try {
-          await window.hrs.addJiraComment({
-            issueKey,
-            text,
-            mentions: liveMentions
-              .filter(mention => mention.jiraAccountId)
-              .map(mention => ({
-                accountId: mention.jiraAccountId as string,
-                label: mention.label
-              })),
-            attachments: jiraCommentAttachments
-          })
-          commentPosted = true
-        } catch (error) {
-          failures.push(`Jira comment: ${error instanceof Error ? error.message : String(error)}`)
+        if (!jiraCommentPosted && attachmentsPosted) {
+          try {
+            await window.hrs.addJiraComment({
+              issueKey,
+              text,
+              mentions: liveMentions
+                .filter(mention => mention.jiraAccountId)
+                .map(mention => ({
+                  accountId: mention.jiraAccountId as string,
+                  label: mention.label
+                })),
+              attachments: jiraCommentAttachments
+            })
+            jiraCommentPosted = true
+          } catch (error) {
+            failures.push(`Jira comment: ${error instanceof Error ? error.message : String(error)}`)
+          }
         }
-        if (commentPosted && integrationTransitionId) {
+        if (jiraCommentPosted && integrationTransitionId && !jiraStatusUpdated) {
           try {
             await window.hrs.transitionJiraIssue({
               issueKey,
               transitionId: integrationTransitionId
             })
-            statusUpdated = true
+            jiraStatusUpdated = true
           } catch (error) {
             failures.push(`Jira status: ${error instanceof Error ? error.message : String(error)}`)
           }
         }
-        if (commentPosted) {
+        if (jiraCommentPosted) {
           const jiraResults = [
-            integrationReplyTarget?.source === 'jira' ? 'Jira reply posted' : 'Jira comment posted'
+            jiraCommentWasAlreadyPosted
+              ? 'Jira comment already posted'
+              : integrationReplyTarget?.source === 'jira'
+                ? 'Jira reply posted'
+                : 'Jira comment posted'
           ]
-          if (integrationTransitionId && statusUpdated) jiraResults.push('status updated')
+          if (integrationTransitionId && jiraStatusUpdated) jiraResults.push('status updated')
           if (attachmentsPosted && integrationAttachments.length) {
             jiraResults.push(
               `${integrationAttachments.length} file${integrationAttachments.length === 1 ? '' : 's'} uploaded`
@@ -6259,7 +6355,9 @@ export default function App() {
       }
     }
 
-    if (sendToSlack) {
+    if (wantsSlack && slackMessagePosted) {
+      successes.push('Slack already posted')
+    } else if (wantsSlack) {
       if (!slackStatus?.configured) {
         failures.push('Slack is not connected.')
       } else if (!integrationSlackChannelId) {
@@ -6281,6 +6379,7 @@ export default function App() {
                 ? integrationReplyTarget.id
                 : null
           })
+          slackMessagePosted = true
           successes.push(
             integrationAttachments.length
               ? `Slack ${integrationReplyTarget?.source === 'slack' ? 'reply' : 'message'} and ${integrationAttachments.length} file${integrationAttachments.length === 1 ? '' : 's'} posted`
@@ -6294,9 +6393,36 @@ export default function App() {
       }
     }
 
+    const jiraDeliveryComplete =
+      !wantsJira ||
+      (jiraCommentPosted &&
+        (integrationAttachments.length === 0 ||
+          jiraCommentAttachments.length === integrationAttachments.length) &&
+        jiraStatusUpdated)
+    const slackDeliveryComplete = !wantsSlack || slackMessagePosted
+    const allRequestedDeliveriesComplete = jiraDeliveryComplete && slackDeliveryComplete
+    if (!allRequestedDeliveriesComplete) {
+      setIntegrationDeliveryCheckpoint({
+        signature: deliverySignature,
+        jiraCommentPosted,
+        jiraAttachments: jiraCommentAttachments,
+        jiraStatusUpdated,
+        jiraTransitionId: integrationTransitionId,
+        slackMessagePosted
+      })
+      const retryDestinations = [
+        wantsJira && !jiraDeliveryComplete ? 'Jira' : null,
+        wantsSlack && !slackDeliveryComplete ? 'Slack' : null
+      ].filter((destination): destination is string => Boolean(destination))
+      if (retryDestinations.length) {
+        failures.push(`Retry will send only to ${retryDestinations.join(' and ')}.`)
+      }
+    } else {
+      setIntegrationDeliveryCheckpoint(null)
+    }
     if (successes.length) setIntegrationSuccess(`${successes.join(' · ')}.`)
     if (failures.length) setIntegrationError(failures.join(' '))
-    if (!failures.length) {
+    if (allRequestedDeliveriesComplete) {
       setIntegrationMessageText('')
       setIntegrationMentions([])
       setIntegrationAttachments([])
@@ -6314,6 +6440,7 @@ export default function App() {
   }) {
     const nextCustomer = context?.customer?.trim() || customerName?.trim() || null
     const nextIssueKey = context?.issueKey?.trim().toUpperCase() || null
+    setIntegrationDeliveryCheckpoint(null)
     setIntegrationError(null)
     setIntegrationSuccess(null)
     setIntegrationReplyTarget(null)
@@ -12819,6 +12946,22 @@ export default function App() {
   }, [loggedIn, shouldLoadLogData, reportMonth, reportSource])
 
   useEffect(() => {
+    if (!loggedIn || !shouldLoadLogData || reportSource !== 'supabase') return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    reportsCacheRef.current.delete(`supabase:${monthKey}`)
+    void loadReportsForMonth(reportMonth, {
+      force: true,
+      sharedTaskNames: new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+    })
+  }, [
+    loggedIn,
+    shouldLoadLogData,
+    reportMonth,
+    reportSource,
+    sharedFictiveTaskNameSignature
+  ])
+
+  useEffect(() => {
     if (!loggedIn || !shouldLoadLogData) return
     if (!supabaseStatus?.email || !supabaseStatus.profile?.employee_id) {
       setSharedProjectReportRows([])
@@ -13179,7 +13322,14 @@ export default function App() {
         reportSource === 'supabase'
           ? window.hrs
               .getSupabaseWorkReports(range.start, range.end)
-              .then(rows => monthlyReportFromSupabaseRows(rows, range.start, range.end))
+              .then(rows =>
+                monthlyReportFromSupabaseRows(
+                  rows,
+                  range.start,
+                  range.end,
+                  new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+                )
+              )
           : window.hrs.getReports(range.start, range.end)
       void request
         .then(data => {
@@ -13197,7 +13347,14 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [loggedIn, shouldLoadLogData, reportMonth, monthlyReport, reportSource])
+  }, [
+    loggedIn,
+    shouldLoadLogData,
+    reportMonth,
+    monthlyReport,
+    reportSource,
+    sharedFictiveTasks
+  ])
 
   useEffect(() => {
     const key = dayjs().format('YYYY-MM')
@@ -13768,6 +13925,40 @@ export default function App() {
     ? supabaseProjectUsageByKey[selectedQuickLogProjectKey] ?? null
     : null
 
+  const selectedQuickLogCombinedSharedProjectUsage = useMemo(() => {
+    if (!selectedQuickLogUsageCustomer || !selectedQuickLogUsageProject) {
+      return { ready: false, usedSeconds: 0, employees: [] }
+    }
+    const projectKey = getSharedProjectKey(
+      selectedQuickLogUsageCustomer,
+      selectedQuickLogUsageProject
+    )
+    const projectTasks = allProjectMissions.filter(
+      mission =>
+        mission.shared &&
+        getSharedProjectKey(mission.customerName, mission.projectName) === projectKey
+    )
+    const ready =
+      projectTasks.length > 0 &&
+      projectTasks.every(mission => Boolean(sharedFictiveTaskUsage[mission.id]))
+    if (!ready) return { ready: false, usedSeconds: 0, employees: [] }
+
+    const employees = mergeProjectUsageContributors(
+      [],
+      projectTasks.map(mission => sharedFictiveTaskUsage[mission.id].employees)
+    )
+    return {
+      ready: true,
+      usedSeconds: employees.reduce((sum, employee) => sum + employee.seconds, 0),
+      employees
+    }
+  }, [
+    selectedQuickLogUsageCustomer,
+    selectedQuickLogUsageProject,
+    allProjectMissions,
+    sharedFictiveTaskUsage
+  ])
+
   useEffect(() => {
     if (!selectedQuickLogUsageCustomer || !selectedQuickLogUsageProject) return
     if (!supabaseStatus?.email || !supabaseStatus.profile?.employee_id) return
@@ -13793,22 +13984,30 @@ export default function App() {
       Math.max(0, selectedQuickLogMission.projectCappedHours ?? 0) * 60
     )
     if (projectCapMinutes > 0) {
-      const usedMinutes = selectedQuickLogProjectUsage
-        ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
-        : getProjectUsedMinutesFromReports(
-            selectedQuickLogUsageCustomer,
-            selectedQuickLogUsageProject,
-            allReportItems
-          )
-      const employees = selectedQuickLogProjectUsage
-        ? selectedQuickLogProjectUsage.employees.map(employee => ({
+      const usedMinutes = selectedQuickLogCombinedSharedProjectUsage.ready
+        ? Math.round(selectedQuickLogCombinedSharedProjectUsage.usedSeconds / 60)
+        : selectedQuickLogProjectUsage
+          ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
+          : getProjectUsedMinutesFromReports(
+              selectedQuickLogUsageCustomer,
+              selectedQuickLogUsageProject,
+              allReportItems
+            )
+      const employees = selectedQuickLogCombinedSharedProjectUsage.ready
+        ? selectedQuickLogCombinedSharedProjectUsage.employees.map(employee => ({
             employeeId: employee.employeeId,
             employeeName: employee.employeeName,
             minutes: Math.round(employee.seconds / 60)
           }))
-        : usedMinutes > 0
-          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-          : []
+        : selectedQuickLogProjectUsage
+          ? selectedQuickLogProjectUsage.employees.map(employee => ({
+              employeeId: employee.employeeId,
+              employeeName: employee.employeeName,
+              minutes: Math.round(employee.seconds / 60)
+            }))
+          : usedMinutes > 0
+            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+            : []
       const percent = (usedMinutes / projectCapMinutes) * 100
       gauges.push({
         kind: 'project',
@@ -13855,6 +14054,7 @@ export default function App() {
   }, [
     selectedQuickLogMission,
     selectedQuickLogProjectUsage,
+    selectedQuickLogCombinedSharedProjectUsage,
     selectedQuickLogUsageCustomer,
     selectedQuickLogUsageProject,
     allReportItems,
@@ -15088,6 +15288,98 @@ export default function App() {
     }
   }
 
+  function openSharedTaskRename(missionId: string) {
+    const mission = allProjectMissions.find(item => item.id === missionId && item.shared)
+    if (!mission) return
+    setRecentQuickLogContextId(null)
+    setSharedTaskRenameId(mission.id)
+    setSharedTaskRenameDraft(mission.name)
+    setSharedTaskRenameError(null)
+  }
+
+  function closeSharedTaskRename() {
+    if (sharedTaskRenameSaving) return
+    setSharedTaskRenameId(null)
+    setSharedTaskRenameDraft('')
+    setSharedTaskRenameError(null)
+  }
+
+  async function saveSharedTaskRename() {
+    const mission = allProjectMissions.find(
+      item => item.id === sharedTaskRenameId && item.shared
+    )
+    if (!mission || !window.hrs?.upsertSharedFictiveTask) {
+      setSharedTaskRenameError('This shared task is no longer available.')
+      return
+    }
+    const safeName = sharedTaskRenameDraft.trim()
+    if (!safeName) {
+      setSharedTaskRenameError('Enter a task name.')
+      return
+    }
+    if (safeName === mission.name.trim()) {
+      closeSharedTaskRename()
+      return
+    }
+    const originalHrsTaskId = mission.hrsTaskIds[0]
+    if (!originalHrsTaskId) {
+      setSharedTaskRenameError('The original HRS task is missing.')
+      return
+    }
+
+    setSharedTaskRenameSaving(true)
+    setSharedTaskRenameError(null)
+    try {
+      const updated = await window.hrs.upsertSharedFictiveTask({
+        id: mission.id,
+        customerName: mission.customerName,
+        projectName: mission.projectName,
+        originalHrsTaskId,
+        originalHrsTaskName: mission.originalHrsTaskName,
+        jiraIssueKey: mission.jiraIssueKey,
+        name: safeName,
+        plannedHours: mission.plannedHours,
+        cappedHours: mission.cappedHours,
+        projectCappedHours: mission.projectCappedHours,
+        status: mission.status,
+        notes: mission.notes,
+        assignedEmployeeIds: mission.assignedEmployees
+      })
+      if (updated.name.trim() !== safeName) {
+        throw new Error('Only the employee who created this shared task or a manager can rename it.')
+      }
+
+      setSharedFictiveTasks(previous =>
+        previous
+          .map(task => (task.id === updated.id ? updated : task))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      )
+      const updatedTaskNames = new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+      updatedTaskNames.set(updated.id, updated.name)
+      for (const cacheKey of reportsCacheRef.current.keys()) {
+        if (cacheKey.startsWith('supabase:')) reportsCacheRef.current.delete(cacheKey)
+      }
+      sharedProjectReportsCacheRef.current.clear()
+      await Promise.all([
+        loadSharedFictiveTasks(),
+        loadSharedProjectReports(reportMonth, { force: true })
+      ])
+      if (reportSource === 'supabase') {
+        await loadReportsForMonth(reportMonth, {
+          force: true,
+          sharedTaskNames: updatedTaskNames
+        })
+      }
+      setSharedTaskRenameId(null)
+      setSharedTaskRenameDraft('')
+      setLogSuccess(`Shared task renamed to ${safeName}.`)
+    } catch (error) {
+      setSharedTaskRenameError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSharedTaskRenameSaving(false)
+    }
+  }
+
   const resetMissionForm = () => {
     setMissionName('')
     setMissionHrsTaskId(null)
@@ -15172,43 +15464,44 @@ export default function App() {
               className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
               key={gauge.kind}
             >
-              <Group justify="space-between" align="flex-start" wrap="nowrap" gap="xs">
-                <div className="quick-fictive-usage-title">
-                  <span className="quick-fictive-usage-kind">
-                    {gauge.kind === 'project' ? 'Overall project' : 'Shared task'}
-                  </span>
-                  <Text size={compact ? 'xs' : 'sm'} fw={700} truncate>
-                    {gauge.title}
-                  </Text>
-                </div>
-                <Group gap={4} wrap="nowrap">
-                  <Text
-                    size={compact ? 'xs' : 'sm'}
-                    c="dimmed"
-                    className="quick-fictive-usage-hours"
+              <div className="quick-fictive-usage-header">
+                <span className="quick-fictive-usage-kind">
+                  {gauge.kind === 'project' ? 'Overall project' : 'Shared task'}
+                </span>
+                <Text
+                  size={compact ? 'xs' : 'sm'}
+                  fw={700}
+                  className="quick-fictive-usage-title"
+                >
+                  {gauge.title}
+                </Text>
+                <Text
+                  size={compact ? 'xs' : 'sm'}
+                  c="dimmed"
+                  className="quick-fictive-usage-hours"
+                >
+                  {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
+                  {percentLabel}
+                </Text>
+                <Tooltip label="Send project update" withArrow withinPortal>
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    className="quick-fictive-usage-action"
+                    aria-label="Send project update"
+                    onClick={() =>
+                      openIntegrationUpdate({
+                        customer: selectedQuickLogUsageCustomer,
+                        issueKey: selectedQuickLogJiraTarget,
+                        message: `${gauge.title}: `,
+                        followQuickLog: true
+                      })
+                    }
                   >
-                    {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
-                    {percentLabel}
-                  </Text>
-                  <Tooltip label="Send project update" withArrow withinPortal>
-                    <ActionIcon
-                      size="sm"
-                      variant="subtle"
-                      aria-label="Send project update"
-                      onClick={() =>
-                        openIntegrationUpdate({
-                          customer: selectedQuickLogUsageCustomer,
-                          issueKey: selectedQuickLogJiraTarget,
-                          message: `${gauge.title}: `,
-                          followQuickLog: true
-                        })
-                      }
-                    >
-                      <IconMessageCircle size={14} />
-                    </ActionIcon>
-                  </Tooltip>
-                </Group>
-              </Group>
+                    <IconMessageCircle size={14} />
+                  </ActionIcon>
+                </Tooltip>
+              </div>
               <div
                 className="quick-fictive-usage-track"
                 aria-label={`${gauge.kind === 'project' ? 'Project' : 'Task'} utilization`}
@@ -15256,17 +15549,51 @@ export default function App() {
     return (
       <div className={`quicklog-recent-shortcuts${compact ? ' is-compact' : ''}`}>
         {recentQuickLogItems.map(item => (
-          <button
+          <Popover
             key={item.id}
-            type="button"
-            className="quicklog-recent-shortcut"
-            onClick={() => applyRecentQuickLogFilters(item)}
-            title={`${item.customerLabel} -> ${item.taskLabel}`}
+            opened={recentQuickLogContextId === item.id}
+            onChange={opened => setRecentQuickLogContextId(opened ? item.id : null)}
+            position="bottom-start"
+            shadow="md"
+            withinPortal
           >
-            <span className="quicklog-recent-route">
-              {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
-            </span>
-          </button>
+            <Popover.Target>
+              <button
+                type="button"
+                className="quicklog-recent-shortcut"
+                onClick={() => {
+                  setRecentQuickLogContextId(null)
+                  applyRecentQuickLogFilters(item)
+                }}
+                onContextMenu={event => {
+                  if (!item.sharedMissionId) return
+                  event.preventDefault()
+                  setRecentQuickLogContextId(item.id)
+                }}
+                title={
+                  item.sharedMissionId
+                    ? `${item.customerLabel} -> ${item.taskLabel}. Right click to rename.`
+                    : `${item.customerLabel} -> ${item.taskLabel}`
+                }
+              >
+                <span className="quicklog-recent-route">
+                  {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
+                </span>
+              </button>
+            </Popover.Target>
+            {item.sharedMissionId && (
+              <Popover.Dropdown className="quicklog-recent-context-menu">
+                <button
+                  type="button"
+                  className="quicklog-recent-context-action"
+                  onClick={() => openSharedTaskRename(item.sharedMissionId!)}
+                >
+                  <IconPencil size={15} />
+                  <span>Rename shared task</span>
+                </button>
+              </Popover.Dropdown>
+            )}
+          </Popover>
         ))}
       </div>
     )
@@ -15681,6 +16008,7 @@ export default function App() {
       taskValue: string
       taskLabel: string
       isVirtual: boolean
+      sharedMissionId: string | null
     }> = []
     const seenRoutes = new Set<string>()
     for (const item of [...allReportItems]
@@ -15717,7 +16045,8 @@ export default function App() {
         customerLabel: getCustomerDisplayName(rawCustomer),
         taskValue,
         taskLabel,
-        isVirtual: Boolean(mission)
+        isVirtual: Boolean(mission),
+        sharedMissionId: mission?.shared ? mission.id : null
       })
       if (distinctItems.length >= 4) break
     }
@@ -16012,15 +16341,15 @@ export default function App() {
       supabaseStatus.profile?.employee_id
   )
 
-  const ownLiveHrsWorkloadEntries = useMemo(() => {
+  const ownLiveHrsWorkloadEntries = useMemo<EmployeeWorkloadEntry[]>(() => {
     const employeeId = supabaseStatus?.profile?.employee_id
-    if (reportSource !== 'hrs' || !monthlyReport || !employeeId) return []
-    const normalizedEmployeeId = String(employeeId)
+    if (reportSource !== 'hrs' || !monthlyReport) return []
+    const normalizedEmployeeId = employeeId ? String(employeeId) : null
     const employee =
-      supabaseStatus.profile?.display_name?.trim() ||
-      supabaseStatus.email?.trim() ||
+      supabaseStatus?.profile?.display_name?.trim() ||
+      supabaseStatus?.email?.trim() ||
       storedUsername?.trim() ||
-      `Employee ${normalizedEmployeeId}`
+      getCurrentReporterName()
 
     return monthlyReport.days.flatMap(day =>
       day.reports.flatMap(report => {
@@ -16051,7 +16380,12 @@ export default function App() {
             hoursHHMM: report.hours_HHMM,
             minutes,
             rawValue: report.hours_HHMM,
-            taskId: String(report.taskId)
+            taskId: String(report.taskId),
+            fromTime: report.from?.trim() || '',
+            toTime: report.to?.trim() || '',
+            comment: stripMissionCommentMarkers(report.comment),
+            reportingFrom: report.reporting_from?.trim() || '',
+            source: 'Live HRS'
           }
         ]
       })
@@ -16067,7 +16401,7 @@ export default function App() {
     taskMetaById
   ])
 
-  const employeeWorkloadBaseEntries = useMemo(() => {
+  const employeeWorkloadBaseEntries = useMemo<EmployeeWorkloadEntry[]>(() => {
     if (employeeWorkloadUsesSupabase) {
       const sourceRows = reportSource === 'supabase' ? supabaseReportRows : automaticSharedProjectRows
       const rows = sourceRows
@@ -16081,13 +16415,26 @@ export default function App() {
             employee: row.employee_name?.trim() || `Employee ${row.employee_id}`,
             customer: getReportCustomerDisplayName(rawCustomer),
             rawCustomer,
-            task: row.task_name?.trim() || row.project?.trim() || 'No task',
+            task:
+              (row.shared_fictive_task_id
+                ? allProjectMissions.find(
+                    mission => mission.shared && mission.id === row.shared_fictive_task_id
+                  )?.name
+                : null) ||
+              row.task_name?.trim() ||
+              row.project?.trim() ||
+              'No task',
             project,
             milestone: project,
             hoursHHMM: secondsToHHMM(row.seconds),
             minutes: Math.round(row.seconds / 60),
             rawValue: secondsToHHMM(row.seconds),
-            taskId: row.task_id === null ? null : String(row.task_id)
+            taskId: row.task_id === null ? null : String(row.task_id),
+            fromTime: row.from_time?.trim() || '',
+            toTime: row.to_time?.trim() || '',
+            comment: row.comment?.trim() || '',
+            reportingFrom: row.reporting_from?.trim() || '',
+            source: row.source?.trim() || 'Supabase'
           }
         })
 
@@ -16128,11 +16475,17 @@ export default function App() {
         employeeId: null,
         customer: getReportCustomerDisplayName(rawCustomer),
         rawCustomer,
-        project: entry.milestone?.trim() || rawCustomer
+        project: entry.milestone?.trim() || rawCustomer,
+        fromTime: '',
+        toTime: '',
+        comment: '',
+        reportingFrom: '',
+        source: 'Live HRS summary'
       }
     })
   }, [
     automaticSharedProjectRows,
+    allProjectMissions,
     employeeReport,
     employeeWorkloadUsesSupabase,
     getReportCustomerDisplayName,
@@ -16256,6 +16609,99 @@ export default function App() {
     employeeWorkloadCustomerFilter,
     employeeWorkloadTaskFilter
   ])
+
+  const detailedReportExportEntries = useMemo<EmployeeWorkloadEntry[]>(() => {
+    if (employeeWorkloadBaseEntries.length) return employeeWorkloadBaseEntries
+    return ownLiveHrsWorkloadEntries
+  }, [employeeWorkloadBaseEntries, ownLiveHrsWorkloadEntries])
+
+  const detailedReportCustomerOptions = useMemo(() => {
+    const totals = new Map<string, { label: string; minutes: number }>()
+    for (const entry of detailedReportExportEntries) {
+      const rawCustomer = entry.rawCustomer?.trim() || entry.customer?.trim() || 'No customer'
+      const current = totals.get(rawCustomer) ?? {
+        label: entry.customer?.trim() || getReportCustomerDisplayName(rawCustomer),
+        minutes: 0
+      }
+      current.minutes += Math.max(0, entry.minutes)
+      totals.set(rawCustomer, current)
+    }
+    return Array.from(totals, ([value, item]) => ({
+      value,
+      label: `${item.label} · ${minutesToHHMM(item.minutes)}`
+    })).sort((a, b) => a.label.localeCompare(b.label))
+  }, [detailedReportExportEntries, getReportCustomerDisplayName])
+
+  const detailedReportSelectedRows = useMemo(() => {
+    if (reportsExportScope === 'month') return detailedReportExportEntries
+    if (!reportsExportCustomer) return []
+    return detailedReportExportEntries.filter(entry => {
+      const rawCustomer = entry.rawCustomer?.trim() || entry.customer?.trim() || 'No customer'
+      return rawCustomer === reportsExportCustomer
+    })
+  }, [detailedReportExportEntries, reportsExportCustomer, reportsExportScope])
+
+  const detailedReportSelectedMinutes = useMemo(
+    () =>
+      detailedReportSelectedRows.reduce(
+        (total, entry) => total + Math.max(0, entry.minutes),
+        0
+      ),
+    [detailedReportSelectedRows]
+  )
+
+  async function handleDetailedReportExport() {
+    if (!window.hrs?.saveExport) {
+      setReportsExportError('Export is unavailable. Please restart the app.')
+      return
+    }
+    if (reportsExportScope === 'customer' && !reportsExportCustomer) {
+      setReportsExportError('Select a customer to export.')
+      return
+    }
+    if (!detailedReportSelectedRows.length) {
+      setReportsExportError('No report rows are available for this selection.')
+      return
+    }
+
+    setReportsExporting(true)
+    setReportsExportError(null)
+    try {
+      const monthKey = dayjs(reportMonth).format('YYYY-MM')
+      const monthLabel = dayjs(reportMonth).format('MMMM YYYY')
+      const customerLabel = reportsExportCustomer
+        ? detailedReportSelectedRows[0]?.customer || reportsExportCustomer
+        : null
+      const content = buildDetailedReportWorkbookBase64(
+        detailedReportSelectedRows as DetailedReportEntry[],
+        {
+          monthKey,
+          monthLabel,
+          customer: customerLabel
+        }
+      )
+      const scopePart = customerLabel
+        ? `customer-${sanitizeReportFilePart(customerLabel)}`
+        : 'all-customers'
+      const savedPath = await window.hrs.saveExport({
+        defaultPath: `hrs-detailed-${scopePart}-${monthKey}.xlsx`,
+        content,
+        format: 'xlsx',
+        encoding: 'base64'
+      })
+      if (!savedPath) return
+      setReportsExportOpen(false)
+      const fileName = savedPath.split(/[\\/]/).pop() ?? savedPath
+      void window.hrs.notify?.({
+        title: 'Detailed report exported',
+        body: `XLSX saved: ${fileName}`
+      })
+    } catch (error) {
+      setReportsExportError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setReportsExporting(false)
+    }
+  }
 
   const employeeProjectWorkload = useMemo(
     () => aggregateEmployeeProjects(employeeWorkloadEntries as SharedProjectSourceEntry[]),
@@ -16425,11 +16871,26 @@ export default function App() {
                 and project for {dayjs(reportMonth).format('MMMM YYYY')}.
               </Text>
             </Stack>
-            {employeeProjectWorkload.length > 1 ? (
-              <Badge size="xs" variant="light" color="teal">
-                {employeeProjectWorkload.length} people
-              </Badge>
-            ) : null}
+            <Group gap={6} wrap="nowrap">
+              {employeeProjectWorkload.length > 1 ? (
+                <Badge size="xs" variant="light" color="teal">
+                  {employeeProjectWorkload.length} people
+                </Badge>
+              ) : null}
+              <Button
+                size="compact-xs"
+                variant="light"
+                leftSection={<IconFileSpreadsheet size={14} />}
+                onClick={() => {
+                  setReportsExportError(null)
+                  setReportsExportOpen(true)
+                }}
+                disabled={workloadLoading}
+                aria-label="Export detailed XLSX report"
+              >
+                Export XLSX
+              </Button>
+            </Group>
           </Group>
 
           <SimpleGrid cols={3} spacing="xs" className="tray-employee-workload-filters">
@@ -18132,6 +18593,125 @@ export default function App() {
     }
   }
 
+  const reportsDetailedExportModal = (
+    <Modal
+      opened={reportsExportOpen}
+      onClose={() => {
+        if (reportsExporting) return
+        setReportsExportOpen(false)
+        setReportsExportError(null)
+      }}
+      title="Export detailed XLSX report"
+      centered
+      radius="md"
+      closeOnClickOutside={!reportsExporting}
+      closeOnEscape={!reportsExporting}
+    >
+      <Stack gap="md">
+        <Text size="sm" c="dimmed">
+          Exporting {dayjs(reportMonth).format('MMMM YYYY')}. The workbook includes a summary
+          sheet and detailed rows with employee, customer, project, task, start and end times,
+          duration, comments, reporting location, and source.
+        </Text>
+
+        <SegmentedControl
+          fullWidth
+          value={reportsExportScope}
+          onChange={value => {
+            setReportsExportScope(value as 'month' | 'customer')
+            setReportsExportError(null)
+          }}
+          data={[
+            { value: 'month', label: 'All customers' },
+            { value: 'customer', label: 'One customer' }
+          ]}
+        />
+
+        {reportsExportScope === 'customer' ? (
+          <Select
+            label="Customer"
+            placeholder="Choose a customer"
+            data={detailedReportCustomerOptions}
+            value={reportsExportCustomer}
+            onChange={value => {
+              setReportsExportCustomer(value)
+              setReportsExportError(null)
+            }}
+            searchable
+            clearable
+            nothingFoundMessage="No customers found for this month"
+          />
+        ) : null}
+
+        <Card radius="md" withBorder p="sm">
+          <SimpleGrid cols={3} spacing="xs">
+            <Stack gap={2}>
+              <Text size="xs" c="dimmed">
+                Rows
+              </Text>
+              <Text size="sm" fw={800}>
+                {detailedReportSelectedRows.length}
+              </Text>
+            </Stack>
+            <Stack gap={2}>
+              <Text size="xs" c="dimmed">
+                Employees
+              </Text>
+              <Text size="sm" fw={800}>
+                {new Set(detailedReportSelectedRows.map(row => row.employee)).size}
+              </Text>
+            </Stack>
+            <Stack gap={2}>
+              <Text size="xs" c="dimmed">
+                Hours
+              </Text>
+              <Text size="sm" fw={800}>
+                {minutesToHHMM(detailedReportSelectedMinutes)}
+              </Text>
+            </Stack>
+          </SimpleGrid>
+        </Card>
+
+        {detailedReportSelectedRows.some(row => row.source === 'Live HRS summary') ? (
+          <Text size="xs" c="dimmed">
+            Some team rows come from the HRS summary view, which does not provide comments or
+            start/end times. Syncing the month to Supabase includes those detailed fields.
+          </Text>
+        ) : null}
+
+        {reportsExportError ? (
+          <Alert color="red" variant="light" radius="md">
+            {reportsExportError}
+          </Alert>
+        ) : null}
+
+        <Group justify="space-between" align="center">
+          <Button
+            variant="subtle"
+            onClick={() => {
+              setReportsExportOpen(false)
+              setReportsExportError(null)
+            }}
+            disabled={reportsExporting}
+          >
+            Cancel
+          </Button>
+          <Button
+            leftSection={<IconFileSpreadsheet size={16} />}
+            onClick={() => void handleDetailedReportExport()}
+            loading={reportsExporting}
+            disabled={
+              !detailedReportSelectedRows.length ||
+              (reportsExportScope === 'customer' && !reportsExportCustomer)
+            }
+          >
+            Export XLSX
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   const meetingMappingModal = (
     <Modal
       opened={meetingMappingOpen}
@@ -18512,10 +19092,71 @@ export default function App() {
     </Modal>
   )
 
+  const sharedTaskRenameTarget = allProjectMissions.find(
+    mission => mission.id === sharedTaskRenameId && mission.shared
+  )
+  const sharedTaskRenameModal = (
+    <Modal
+      opened={Boolean(sharedTaskRenameId)}
+      onClose={closeSharedTaskRename}
+      title="Rename shared task"
+      centered
+      size="sm"
+      closeOnClickOutside={!sharedTaskRenameSaving}
+      closeOnEscape={!sharedTaskRenameSaving}
+      classNames={isFloating ? { content: 'floating-modal' } : undefined}
+    >
+      <Stack gap="sm">
+        {sharedTaskRenameTarget && (
+          <Text size="sm" c="dimmed">
+            {getCustomerDisplayName(sharedTaskRenameTarget.customerName)}
+            {sharedTaskRenameTarget.projectName
+              ? ` · ${sharedTaskRenameTarget.projectName}`
+              : ''}
+          </Text>
+        )}
+        <TextInput
+          label="Shared task name"
+          value={sharedTaskRenameDraft}
+          onChange={event => {
+            setSharedTaskRenameDraft(event.currentTarget.value)
+            if (sharedTaskRenameError) setSharedTaskRenameError(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') void saveSharedTaskRename()
+          }}
+          autoFocus
+          disabled={sharedTaskRenameSaving}
+        />
+        <Text size="xs" c="dimmed">
+          The new name is shared with the team and used in Quick Log, gauges, Reports, and exports.
+        </Text>
+        {sharedTaskRenameError && (
+          <Alert color="red" variant="light" radius="md">
+            {sharedTaskRenameError}
+          </Alert>
+        )}
+        <Group justify="space-between" align="center">
+          <Button variant="subtle" onClick={closeSharedTaskRename} disabled={sharedTaskRenameSaving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void saveSharedTaskRename()}
+            loading={sharedTaskRenameSaving}
+            disabled={!sharedTaskRenameDraft.trim()}
+          >
+            Save name
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   if (isFloating) {
     return (
       <Box className="floating-shell">
         {quickFictiveTaskModal}
+        {sharedTaskRenameModal}
         <Modal
           opened={floatingStartOpen}
           onClose={closeFloatingStart}
@@ -18755,6 +19396,8 @@ export default function App() {
         }`}
       >
         {quickFictiveTaskModal}
+        {sharedTaskRenameModal}
+        {reportsDetailedExportModal}
         <Stack gap="sm" className="tray-content">
           {window.hrs && (
             <Group gap={4} justify="flex-end" className="tray-window-controls">
@@ -22271,6 +22914,7 @@ export default function App() {
   return renderLiquidGlassFrame(
     <Box className="app-shell">
       {quickFictiveTaskModal}
+      {sharedTaskRenameModal}
       <Container size="lg" className="app-container">
         <Stack gap="xl">
           <Stack gap="sm" className="page-header">

@@ -229,6 +229,40 @@ function buildSlackMentionText(text: string, mentions: SlackMentionInput[]) {
   return result
 }
 
+function splitSlackSectionText(text: string, maxLength = 3000) {
+  const chunks: string[] = []
+  let cursor = 0
+  while (cursor < text.length) {
+    let end = Math.min(cursor + maxLength, text.length)
+    if (end < text.length) {
+      const candidate = text.slice(cursor, end)
+      const newlineBoundary = candidate.lastIndexOf('\n') + 1
+      const spaceBoundary = candidate.lastIndexOf(' ') + 1
+      const readableBoundary = Math.max(newlineBoundary, spaceBoundary)
+      if (readableBoundary >= Math.floor(maxLength * 0.6)) {
+        end = cursor + readableBoundary
+      }
+      const partial = text.slice(cursor, end)
+      const lastOpenTag = partial.lastIndexOf('<')
+      const lastCloseTag = partial.lastIndexOf('>')
+      if (lastOpenTag > lastCloseTag && lastOpenTag > 0) {
+        end = cursor + lastOpenTag
+      }
+    }
+    const chunk = text.slice(cursor, end).trim()
+    if (chunk) chunks.push(chunk)
+    cursor = end
+  }
+  return chunks
+}
+
+function buildSlackMessageSectionBlocks(text: string) {
+  return splitSlackSectionText(text).map(chunk => ({
+    type: 'section',
+    text: { type: 'mrkdwn', text: chunk }
+  }))
+}
+
 async function postSlackMessageWithAttachments(payload: {
   token: string
   channelId: string
@@ -788,13 +822,8 @@ export function registerSlackIpc() {
     }
     const result = await callSlackApi<SlackPostMessageResponse>('chat.postMessage', token, {
       channel: channelId,
-      text: mrkdwnText,
-      blocks: [
-        {
-          type: 'section',
-          text: { type: 'mrkdwn', text: mrkdwnText }
-        }
-      ],
+      text: mrkdwnText.slice(0, 40_000),
+      blocks: buildSlackMessageSectionBlocks(mrkdwnText),
       mrkdwn: true,
       unfurl_links: false,
       unfurl_media: false,

@@ -1,6 +1,28 @@
 # HRS Desktop Changelog
 
-## Unreleased
+## 1.0.18
+
+### Shared project gauges
+
+- Fixed the **Overall project** gauge so it includes every employee reporting to any shared task in the same customer/project, even when an older report contains mismatched project metadata.
+- Reconciles shared-task contributors without double-counting employees already returned by project usage, and refreshes both project and shared-task totals when the Log panel refreshes.
+- Keeps each **Shared task** gauge isolated to that task while deriving **Overall project** from the combined hours of every shared task in the project, so later refreshes cannot replace it with an incomplete total.
+- Constrained Quick Log fields, gauges, totals, and employee chips to the available tray width on Windows and macOS without horizontal scrolling.
+- Moved each gauge's update bubble to the top-right, reserved a dedicated area for the complete hours value, and allowed long project and task names to wrap without truncation.
+
+### Shared task naming
+
+- Added a right-click **Rename shared task** action to recent Quick Log shortcuts.
+- Saves the new task name to Supabase and applies it consistently in Quick Log, task selectors, project and task gauges, Reports, and detailed XLSX exports.
+- Refreshes historical report labels and connected teammates automatically, while preventing stale cached rows from restoring the previous name.
+
+### Detailed report exports
+
+- Added an **Export XLSX** action directly to the Reports tab for the displayed month.
+- Added whole-month and single-customer export scopes with a workbook summary and detailed hour rows.
+- Included employee, customer, project, task, start/end times, duration, decimal hours, comments, reporting location, and data source in every available detailed row.
+- Shows the actual day-by-day report entries beneath the summary instead of providing aggregate totals alone.
+- Added Windows-safe and macOS-safe filenames, customer totals, employee totals, and spreadsheet filters.
 
 ## 1.0.17
 
@@ -8,9 +30,9 @@
 
 - Added a compact **Update Jira & Slack** workspace directly inside Quick Log, with independent collapsible Jira and Slack sections.
 - Added recent Jira comments and Slack messages with inline replies, refresh controls, correct service names and icons, and downloadable Jira attachments.
-- Added Jira status changes, automatic Jira issue selection from the selected shared task with customer-parent fallback, and Jira file or image uploads linked to comments.
+- Added Jira status changes, automatic Jira issue selection from the selected shared task with customer-parent fallback, Jira file or image uploads linked to comments, and retry-safe delivery that never reposts a successful destination.
 - Added Jira and Slack `@` people search with profile details, shared favorites that appear first, and fast favorite toggles.
-- Added message formatting controls, automatic and manual RTL/LTR support, inline images, and adjacent image/file attachment actions.
+- Added message formatting controls, automatic and manual RTL/LTR support, inline images, adjacent image/file attachment actions, and reliable splitting of long Slack messages.
 
 ### Project and calendar usability
 
@@ -22,7 +44,7 @@
 
 ### Reporting and reliability
 
-- Prevented historical work reports from counting toward a shared task or global project budget created later in the month.
+- Prevented historical work reports from counting toward a shared task or global project budget created later in the month, while securely returning complete coworker totals to every authenticated team member.
 - Improved shared report identity handling so real employee names are displayed instead of automated-test labels.
 - Hardened headless Chrome startup and Microsoft Graph token capture for Windows meeting synchronization without opening an unnecessary browser window.
 - Removed the experimental missing-customer email request while a fast, administrator-free delivery method is evaluated.

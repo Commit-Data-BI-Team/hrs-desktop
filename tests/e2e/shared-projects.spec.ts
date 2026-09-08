@@ -5,6 +5,7 @@ import {
   getGlobalProjectCapMinutes,
   getSharedProjectCapMinutes,
   getSharedProjectKey,
+  mergeProjectUsageContributors,
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from '../../src/sharedProjects'
@@ -140,5 +141,34 @@ test('keeps peer rows but replaces the signed-in employee with authoritative liv
   ])
   expect(replaceEmployeeEntriesWithLive(shared, '1527', [])).toEqual([
     { employeeId: '135', task: 'Dror shared row' }
+  ])
+})
+
+test('recovers every shared-task contributor in the overall project gauge without double counting', () => {
+  const employees = mergeProjectUsageContributors(
+    [{ employeeId: 135, employeeName: 'Dror Rahamim', seconds: 3600 }],
+    [
+      [
+        { employeeId: 1527, employeeName: 'Chen Aharon', seconds: 3600 },
+        { employeeId: 135, employeeName: 'Dror Rahamim', seconds: 3600 }
+      ]
+    ]
+  )
+
+  expect(employees).toEqual([
+    { employeeId: 1527, employeeName: 'Chen Aharon', seconds: 3600 },
+    { employeeId: 135, employeeName: 'Dror Rahamim', seconds: 3600 }
+  ])
+  expect(employees.reduce((sum, employee) => sum + employee.seconds, 0)).toBe(7200)
+})
+
+test('adds an employee across all shared tasks in the same overall project', () => {
+  const employees = mergeProjectUsageContributors([], [
+    [{ employeeId: 1527, employeeName: 'Chen Aharon', seconds: 3600 }],
+    [{ employeeId: 1527, employeeName: 'Chen Aharon', seconds: 5400 }]
+  ])
+
+  expect(employees).toEqual([
+    { employeeId: 1527, employeeName: 'Chen Aharon', seconds: 9000 }
   ])
 })

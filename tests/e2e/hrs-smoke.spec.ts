@@ -59,6 +59,17 @@ test('renders the tray reports KPIs and employee projects', async () => {
       })
     })
     await expect(window.getByText('Update Available', { exact: true })).toBeVisible()
+    await browserWindow.evaluate(current => {
+      current.webContents.send('app:updateState', {
+        state: 'error',
+        version: '9.9.9',
+        currentVersion: '1.0.0',
+        manualInstallRequired: true,
+        manualInstallUrl: 'https://example.invalid/HRS-Desktop-9.9.9-arm64.dmg',
+        message: 'A full macOS installer is required.'
+      })
+    })
+    await expect(window.getByText('Update Available', { exact: true })).toBeVisible()
 
     await window.getByRole('button', { name: 'Quick Log' }).click()
     const quickLogFilters = window.locator('.tray-filters')

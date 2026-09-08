@@ -338,6 +338,7 @@ contextBridge.exposeInMainWorld('hrs', {
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  openManualUpdateInstaller: () => ipcRenderer.invoke('app:openManualUpdateInstaller'),
   onUpdateState: (
     handler: (state: {
       state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
@@ -347,6 +348,8 @@ contextBridge.exposeInMainWorld('hrs', {
       releaseDate?: string
       changelog?: string[]
       percent?: number
+      manualInstallRequired?: boolean
+      manualInstallUrl?: string
     }) => void
   ) => {
     const listener = (
@@ -366,6 +369,8 @@ contextBridge.exposeInMainWorld('hrs', {
         releaseDate?: string
         changelog?: string[]
         percent?: number
+        manualInstallRequired?: boolean
+        manualInstallUrl?: string
       }
     ) => handler(state)
     ipcRenderer.on('app:updateState', listener)

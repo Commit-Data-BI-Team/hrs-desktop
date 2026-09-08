@@ -586,6 +586,8 @@ type AppUpdateState = {
   releaseDate?: string
   changelog?: string[]
   percent?: number
+  manualInstallRequired?: boolean
+  manualInstallUrl?: string
 }
 
 type HrsApi = {
@@ -940,6 +942,7 @@ type HrsApi = {
   checkForUpdates: () => Promise<boolean>
   downloadUpdate: () => Promise<boolean>
   installUpdate: () => Promise<boolean>
+  openManualUpdateInstaller: () => Promise<boolean>
   onUpdateState: (handler: (state: AppUpdateState) => void) => () => void
   onTrayOpened: (handler: () => void) => () => void
   onTrayClosing: (

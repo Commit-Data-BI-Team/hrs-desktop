@@ -1,5 +1,14 @@
 # HRS Desktop Changelog
 
+## Unreleased
+
+### Update reliability
+
+- Checks for updates automatically at every app launch and whenever the tray, Reports, Settings, or Meetings window is opened.
+- Keeps the **Update Available** bubble visible without requiring users to press **Check now**, while deduplicating simultaneous background checks.
+- Detects incompatible legacy macOS signatures, preserves the release changelog, and offers the correct full Mac installer for the required one-time replacement.
+- Requires production macOS releases to use a consistent Developer ID certificate so a broken ad-hoc-signed automatic update cannot be published again.
+
 ## 1.0.18
 
 ### Shared project gauges

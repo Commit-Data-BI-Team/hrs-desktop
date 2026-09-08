@@ -596,6 +596,8 @@ type AppUpdateState = {
   releaseDate?: string
   changelog?: string[]
   percent?: number
+  manualInstallRequired?: boolean
+  manualInstallUrl?: string
 }
 
 type MeetingsFetchPhase = 'idle' | 'init' | 'auth' | 'query' | 'finalize' | 'done' | 'error'
@@ -9155,7 +9157,7 @@ export default function App() {
     }
   }
 
-  async function runUpdateAction(action: 'check' | 'download' | 'install') {
+  async function runUpdateAction(action: 'check' | 'download' | 'install' | 'manual-install') {
     if (!window?.hrs) return
     setAppUpdateActionLoading(true)
     try {
@@ -9163,8 +9165,10 @@ export default function App() {
         await window.hrs.checkForUpdates()
       } else if (action === 'download') {
         await window.hrs.downloadUpdate()
-      } else {
+      } else if (action === 'install') {
         await window.hrs.installUpdate()
+      } else {
+        await window.hrs.openManualUpdateInstaller()
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -9183,7 +9187,7 @@ export default function App() {
       case 'checking':
         return 'blue'
       case 'error':
-        return 'red'
+        return appUpdateState.manualInstallRequired ? 'orange' : 'red'
       case 'disabled':
         return 'gray'
       default:
@@ -9204,7 +9208,7 @@ export default function App() {
       case 'ready':
         return appUpdateState.version ? `Ready v${appUpdateState.version}` : 'Ready'
       case 'error':
-        return 'Update error'
+        return appUpdateState.manualInstallRequired ? 'Full installer required' : 'Update error'
       case 'disabled':
         return 'Disabled'
       default:
@@ -9214,6 +9218,10 @@ export default function App() {
 
   const currentVersionLabel = appUpdateState.currentVersion || appVersion || 'Unknown'
   const updateVersionLabel = appUpdateState.version || null
+  const shouldShowUpdateBubble =
+    (['available', 'downloading', 'ready'] as AppUpdateState['state'][]).includes(
+      appUpdateState.state
+    ) || Boolean(appUpdateState.manualInstallRequired)
   const updateChangelogItems = useMemo(
     () =>
       (appUpdateState.changelog ?? [])
@@ -9222,6 +9230,25 @@ export default function App() {
         .slice(0, 8),
     [appUpdateState.changelog]
   )
+  const manualMacUpdateAction = appUpdateState.manualInstallRequired ? (
+    <Alert color="orange" variant="light" radius="md" title="One-time macOS installation">
+      <Stack gap="xs">
+        <Text size="xs">
+          This installed copy has an incompatible legacy signature. Download and replace the app
+          once with the full macOS installer; your saved settings and credentials are preserved.
+        </Text>
+        <Button
+          size="xs"
+          color="orange"
+          variant="light"
+          onClick={() => void runUpdateAction('manual-install')}
+          loading={appUpdateActionLoading}
+        >
+          Download full Mac installer
+        </Button>
+      </Stack>
+    </Alert>
+  ) : null
 
   async function updateJiraMapping(customer: string, epicKey: string | null) {
     try {
@@ -19591,9 +19618,7 @@ export default function App() {
                   </ActionIcon>
                 </Tooltip>
                 <div className="tray-settings-update-anchor">
-                  {(['available', 'downloading', 'ready'] as AppUpdateState['state'][]).includes(
-                    appUpdateState.state
-                  ) ? (
+                  {shouldShowUpdateBubble ? (
                     <span className="tray-update-available-bubble" role="status">
                       Update Available
                     </span>
@@ -21839,6 +21864,7 @@ export default function App() {
                                 Changelog will appear here when release notes are available.
                               </Text>
                             )}
+                            {manualMacUpdateAction}
                             <Group justify="space-between" align="center">
                               <Button
                                 size="xs"
@@ -21846,6 +21872,7 @@ export default function App() {
                                 onClick={() => {
                                   void runUpdateAction('check')
                                 }}
+                                disabled={appUpdateState.manualInstallRequired}
                                 loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
                               >
                                 Check now
@@ -22418,12 +22445,14 @@ export default function App() {
                       Changelog will appear here when release notes are available.
                     </Text>
                   )}
+                  {manualMacUpdateAction}
                   <Group justify="space-between" align="center">
                     <Button
                       variant="light"
                       onClick={() => {
                         void runUpdateAction('check')
                       }}
+                      disabled={appUpdateState.manualInstallRequired}
                       loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
                     >
                       Check now

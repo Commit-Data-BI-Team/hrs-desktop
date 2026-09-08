@@ -79,6 +79,7 @@
       "output": "dist"
     },
     "afterPack": "scripts/adhoc-sign-mac.mjs",
+    "afterSign": "scripts/verify-mac-signature.mjs",
     "files": [
       "dist-renderer/**",
       "dist-electron/**",
@@ -119,7 +120,6 @@
           ]
         }
       ],
-      "identity": null,
       "icon": "build/icon.icns",
       "category": "public.app-category.productivity",
       "extendInfo": {

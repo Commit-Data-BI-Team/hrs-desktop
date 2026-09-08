@@ -795,7 +795,15 @@ export function registerSupabaseIpc() {
       }
       throw new Error(error.message)
     }
-    return normalizeSharedFictiveTask(data as SharedFictiveTaskRow, projectBudget)
+    const savedTask = data as SharedFictiveTaskRow
+    const { error: reportRenameError } = await client
+      .from('work_reports')
+      .update({ task_name: name })
+      .eq('shared_fictive_task_id', savedTask.id)
+    if (reportRenameError) {
+      console.warn('[SUPABASE SHARED TASK RENAME]', reportRenameError.message)
+    }
+    return normalizeSharedFictiveTask(savedTask, projectBudget)
   })
 
   ipcMain.handle('supabase:archiveSharedFictiveTask', async (_event, taskId: unknown) => {

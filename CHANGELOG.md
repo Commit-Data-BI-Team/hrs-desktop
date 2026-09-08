@@ -1,6 +1,6 @@
 # HRS Desktop Changelog
 
-## Unreleased
+## 1.0.18
 
 ### Shared project gauges
 
@@ -10,11 +10,18 @@
 - Constrained Quick Log fields, gauges, totals, and employee chips to the available tray width on Windows and macOS without horizontal scrolling.
 - Moved each gauge's update bubble to the top-right, reserved a dedicated area for the complete hours value, and allowed long project and task names to wrap without truncation.
 
+### Shared task naming
+
+- Added a right-click **Rename shared task** action to recent Quick Log shortcuts.
+- Saves the new task name to Supabase and applies it consistently in Quick Log, task selectors, project and task gauges, Reports, and detailed XLSX exports.
+- Refreshes historical report labels and connected teammates automatically, while preventing stale cached rows from restoring the previous name.
+
 ### Detailed report exports
 
 - Added an **Export XLSX** action directly to the Reports tab for the displayed month.
 - Added whole-month and single-customer export scopes with a workbook summary and detailed hour rows.
 - Included employee, customer, project, task, start/end times, duration, decimal hours, comments, reporting location, and data source in every available detailed row.
+- Shows the actual day-by-day report entries beneath the summary instead of providing aggregate totals alone.
 - Added Windows-safe and macOS-safe filenames, customer totals, employee totals, and spreadsheet filters.
 
 ## 1.0.17

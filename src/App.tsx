@@ -1229,7 +1229,8 @@ function createEmptyMonthlyReport(startDate: string, endDate: string): MonthlyRe
 function monthlyReportFromSupabaseRows(
   rows: SupabaseWorkReportRow[],
   startDate: string,
-  endDate: string
+  endDate: string,
+  sharedTaskNames: ReadonlyMap<string, string> = new Map()
 ): MonthlyReport {
   const report = createEmptyMonthlyReport(startDate, endDate)
   const dayMap = new Map(report.days.map(day => [day.date, day]))
@@ -1239,7 +1240,10 @@ function monthlyReportFromSupabaseRows(
     if (!day) continue
     day.reports.push({
       taskId: row.task_id ?? 0,
-      taskName: row.task_name,
+      taskName:
+        (row.shared_fictive_task_id
+          ? sharedTaskNames.get(row.shared_fictive_task_id)
+          : null) || row.task_name,
       projectInstance: row.project || row.customer,
       hours_HHMM: secondsToHHMM(row.seconds),
       comment: row.comment || '',
@@ -2518,6 +2522,11 @@ export default function App() {
   const [quickFictiveNotes, setQuickFictiveNotes] = useState('')
   const [quickFictiveError, setQuickFictiveError] = useState<string | null>(null)
   const [quickFictiveJiraParentKey, setQuickFictiveJiraParentKey] = useState<string | null>(null)
+  const [recentQuickLogContextId, setRecentQuickLogContextId] = useState<string | null>(null)
+  const [sharedTaskRenameId, setSharedTaskRenameId] = useState<string | null>(null)
+  const [sharedTaskRenameDraft, setSharedTaskRenameDraft] = useState('')
+  const [sharedTaskRenameSaving, setSharedTaskRenameSaving] = useState(false)
+  const [sharedTaskRenameError, setSharedTaskRenameError] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
   const [jiraLoggedEntries, setJiraLoggedEntries] = useState<JiraLoggedEntries>({})
   const [jiraLogModalOpen, setJiraLogModalOpen] = useState(false)
@@ -2789,6 +2798,14 @@ export default function App() {
       a.name.localeCompare(b.name)
     )
   }, [projectManagementConfig?.missions, sharedFictiveTasks])
+  const sharedFictiveTaskNameSignature = useMemo(
+    () =>
+      sharedFictiveTasks
+        .map(task => `${task.id}:${task.updatedAt}:${task.name}`)
+        .sort()
+        .join('|'),
+    [sharedFictiveTasks]
+  )
   useEffect(() => {
     try {
       localStorage.setItem('hrs-kpi-collapsed', kpiCollapsed ? '1' : '0')
@@ -4460,7 +4477,10 @@ export default function App() {
     }
   }
 
-  async function loadReportsForMonth(month: Date, options: { force?: boolean } = {}) {
+  async function loadReportsForMonth(
+    month: Date,
+    options: { force?: boolean; sharedTaskNames?: ReadonlyMap<string, string> } = {}
+  ) {
     const requestId = ++reportsRequestId.current
     const monthKey = dayjs(month).format('YYYY-MM')
     const isCurrentMonth = dayjs(month).isSame(dayjs(), 'month')
@@ -4485,7 +4505,12 @@ export default function App() {
           'Loading Supabase reports'
         )
         setSupabaseReportRows(rows)
-        data = monthlyReportFromSupabaseRows(rows, start, end)
+        data = monthlyReportFromSupabaseRows(
+          rows,
+          start,
+          end,
+          options.sharedTaskNames ?? new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+        )
       } else {
         setSupabaseReportRows([])
         data = await withTimeout(window.hrs.getReports(start, end), BOOT_TIMEOUT_MS, 'Loading reports')
@@ -12921,6 +12946,22 @@ export default function App() {
   }, [loggedIn, shouldLoadLogData, reportMonth, reportSource])
 
   useEffect(() => {
+    if (!loggedIn || !shouldLoadLogData || reportSource !== 'supabase') return
+    const monthKey = dayjs(reportMonth).format('YYYY-MM')
+    reportsCacheRef.current.delete(`supabase:${monthKey}`)
+    void loadReportsForMonth(reportMonth, {
+      force: true,
+      sharedTaskNames: new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+    })
+  }, [
+    loggedIn,
+    shouldLoadLogData,
+    reportMonth,
+    reportSource,
+    sharedFictiveTaskNameSignature
+  ])
+
+  useEffect(() => {
     if (!loggedIn || !shouldLoadLogData) return
     if (!supabaseStatus?.email || !supabaseStatus.profile?.employee_id) {
       setSharedProjectReportRows([])
@@ -13281,7 +13322,14 @@ export default function App() {
         reportSource === 'supabase'
           ? window.hrs
               .getSupabaseWorkReports(range.start, range.end)
-              .then(rows => monthlyReportFromSupabaseRows(rows, range.start, range.end))
+              .then(rows =>
+                monthlyReportFromSupabaseRows(
+                  rows,
+                  range.start,
+                  range.end,
+                  new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+                )
+              )
           : window.hrs.getReports(range.start, range.end)
       void request
         .then(data => {
@@ -13299,7 +13347,14 @@ export default function App() {
     return () => {
       cancelled = true
     }
-  }, [loggedIn, shouldLoadLogData, reportMonth, monthlyReport, reportSource])
+  }, [
+    loggedIn,
+    shouldLoadLogData,
+    reportMonth,
+    monthlyReport,
+    reportSource,
+    sharedFictiveTasks
+  ])
 
   useEffect(() => {
     const key = dayjs().format('YYYY-MM')
@@ -15233,6 +15288,98 @@ export default function App() {
     }
   }
 
+  function openSharedTaskRename(missionId: string) {
+    const mission = allProjectMissions.find(item => item.id === missionId && item.shared)
+    if (!mission) return
+    setRecentQuickLogContextId(null)
+    setSharedTaskRenameId(mission.id)
+    setSharedTaskRenameDraft(mission.name)
+    setSharedTaskRenameError(null)
+  }
+
+  function closeSharedTaskRename() {
+    if (sharedTaskRenameSaving) return
+    setSharedTaskRenameId(null)
+    setSharedTaskRenameDraft('')
+    setSharedTaskRenameError(null)
+  }
+
+  async function saveSharedTaskRename() {
+    const mission = allProjectMissions.find(
+      item => item.id === sharedTaskRenameId && item.shared
+    )
+    if (!mission || !window.hrs?.upsertSharedFictiveTask) {
+      setSharedTaskRenameError('This shared task is no longer available.')
+      return
+    }
+    const safeName = sharedTaskRenameDraft.trim()
+    if (!safeName) {
+      setSharedTaskRenameError('Enter a task name.')
+      return
+    }
+    if (safeName === mission.name.trim()) {
+      closeSharedTaskRename()
+      return
+    }
+    const originalHrsTaskId = mission.hrsTaskIds[0]
+    if (!originalHrsTaskId) {
+      setSharedTaskRenameError('The original HRS task is missing.')
+      return
+    }
+
+    setSharedTaskRenameSaving(true)
+    setSharedTaskRenameError(null)
+    try {
+      const updated = await window.hrs.upsertSharedFictiveTask({
+        id: mission.id,
+        customerName: mission.customerName,
+        projectName: mission.projectName,
+        originalHrsTaskId,
+        originalHrsTaskName: mission.originalHrsTaskName,
+        jiraIssueKey: mission.jiraIssueKey,
+        name: safeName,
+        plannedHours: mission.plannedHours,
+        cappedHours: mission.cappedHours,
+        projectCappedHours: mission.projectCappedHours,
+        status: mission.status,
+        notes: mission.notes,
+        assignedEmployeeIds: mission.assignedEmployees
+      })
+      if (updated.name.trim() !== safeName) {
+        throw new Error('Only the employee who created this shared task or a manager can rename it.')
+      }
+
+      setSharedFictiveTasks(previous =>
+        previous
+          .map(task => (task.id === updated.id ? updated : task))
+          .sort((a, b) => a.name.localeCompare(b.name))
+      )
+      const updatedTaskNames = new Map(sharedFictiveTasks.map(task => [task.id, task.name]))
+      updatedTaskNames.set(updated.id, updated.name)
+      for (const cacheKey of reportsCacheRef.current.keys()) {
+        if (cacheKey.startsWith('supabase:')) reportsCacheRef.current.delete(cacheKey)
+      }
+      sharedProjectReportsCacheRef.current.clear()
+      await Promise.all([
+        loadSharedFictiveTasks(),
+        loadSharedProjectReports(reportMonth, { force: true })
+      ])
+      if (reportSource === 'supabase') {
+        await loadReportsForMonth(reportMonth, {
+          force: true,
+          sharedTaskNames: updatedTaskNames
+        })
+      }
+      setSharedTaskRenameId(null)
+      setSharedTaskRenameDraft('')
+      setLogSuccess(`Shared task renamed to ${safeName}.`)
+    } catch (error) {
+      setSharedTaskRenameError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setSharedTaskRenameSaving(false)
+    }
+  }
+
   const resetMissionForm = () => {
     setMissionName('')
     setMissionHrsTaskId(null)
@@ -15402,17 +15549,51 @@ export default function App() {
     return (
       <div className={`quicklog-recent-shortcuts${compact ? ' is-compact' : ''}`}>
         {recentQuickLogItems.map(item => (
-          <button
+          <Popover
             key={item.id}
-            type="button"
-            className="quicklog-recent-shortcut"
-            onClick={() => applyRecentQuickLogFilters(item)}
-            title={`${item.customerLabel} -> ${item.taskLabel}`}
+            opened={recentQuickLogContextId === item.id}
+            onChange={opened => setRecentQuickLogContextId(opened ? item.id : null)}
+            position="bottom-start"
+            shadow="md"
+            withinPortal
           >
-            <span className="quicklog-recent-route">
-              {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
-            </span>
-          </button>
+            <Popover.Target>
+              <button
+                type="button"
+                className="quicklog-recent-shortcut"
+                onClick={() => {
+                  setRecentQuickLogContextId(null)
+                  applyRecentQuickLogFilters(item)
+                }}
+                onContextMenu={event => {
+                  if (!item.sharedMissionId) return
+                  event.preventDefault()
+                  setRecentQuickLogContextId(item.id)
+                }}
+                title={
+                  item.sharedMissionId
+                    ? `${item.customerLabel} -> ${item.taskLabel}. Right click to rename.`
+                    : `${item.customerLabel} -> ${item.taskLabel}`
+                }
+              >
+                <span className="quicklog-recent-route">
+                  {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
+                </span>
+              </button>
+            </Popover.Target>
+            {item.sharedMissionId && (
+              <Popover.Dropdown className="quicklog-recent-context-menu">
+                <button
+                  type="button"
+                  className="quicklog-recent-context-action"
+                  onClick={() => openSharedTaskRename(item.sharedMissionId!)}
+                >
+                  <IconPencil size={15} />
+                  <span>Rename shared task</span>
+                </button>
+              </Popover.Dropdown>
+            )}
+          </Popover>
         ))}
       </div>
     )
@@ -15827,6 +16008,7 @@ export default function App() {
       taskValue: string
       taskLabel: string
       isVirtual: boolean
+      sharedMissionId: string | null
     }> = []
     const seenRoutes = new Set<string>()
     for (const item of [...allReportItems]
@@ -15863,7 +16045,8 @@ export default function App() {
         customerLabel: getCustomerDisplayName(rawCustomer),
         taskValue,
         taskLabel,
-        isVirtual: Boolean(mission)
+        isVirtual: Boolean(mission),
+        sharedMissionId: mission?.shared ? mission.id : null
       })
       if (distinctItems.length >= 4) break
     }
@@ -16232,7 +16415,15 @@ export default function App() {
             employee: row.employee_name?.trim() || `Employee ${row.employee_id}`,
             customer: getReportCustomerDisplayName(rawCustomer),
             rawCustomer,
-            task: row.task_name?.trim() || row.project?.trim() || 'No task',
+            task:
+              (row.shared_fictive_task_id
+                ? allProjectMissions.find(
+                    mission => mission.shared && mission.id === row.shared_fictive_task_id
+                  )?.name
+                : null) ||
+              row.task_name?.trim() ||
+              row.project?.trim() ||
+              'No task',
             project,
             milestone: project,
             hoursHHMM: secondsToHHMM(row.seconds),
@@ -16294,6 +16485,7 @@ export default function App() {
     })
   }, [
     automaticSharedProjectRows,
+    allProjectMissions,
     employeeReport,
     employeeWorkloadUsesSupabase,
     getReportCustomerDisplayName,
@@ -18900,10 +19092,71 @@ export default function App() {
     </Modal>
   )
 
+  const sharedTaskRenameTarget = allProjectMissions.find(
+    mission => mission.id === sharedTaskRenameId && mission.shared
+  )
+  const sharedTaskRenameModal = (
+    <Modal
+      opened={Boolean(sharedTaskRenameId)}
+      onClose={closeSharedTaskRename}
+      title="Rename shared task"
+      centered
+      size="sm"
+      closeOnClickOutside={!sharedTaskRenameSaving}
+      closeOnEscape={!sharedTaskRenameSaving}
+      classNames={isFloating ? { content: 'floating-modal' } : undefined}
+    >
+      <Stack gap="sm">
+        {sharedTaskRenameTarget && (
+          <Text size="sm" c="dimmed">
+            {getCustomerDisplayName(sharedTaskRenameTarget.customerName)}
+            {sharedTaskRenameTarget.projectName
+              ? ` · ${sharedTaskRenameTarget.projectName}`
+              : ''}
+          </Text>
+        )}
+        <TextInput
+          label="Shared task name"
+          value={sharedTaskRenameDraft}
+          onChange={event => {
+            setSharedTaskRenameDraft(event.currentTarget.value)
+            if (sharedTaskRenameError) setSharedTaskRenameError(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') void saveSharedTaskRename()
+          }}
+          autoFocus
+          disabled={sharedTaskRenameSaving}
+        />
+        <Text size="xs" c="dimmed">
+          The new name is shared with the team and used in Quick Log, gauges, Reports, and exports.
+        </Text>
+        {sharedTaskRenameError && (
+          <Alert color="red" variant="light" radius="md">
+            {sharedTaskRenameError}
+          </Alert>
+        )}
+        <Group justify="space-between" align="center">
+          <Button variant="subtle" onClick={closeSharedTaskRename} disabled={sharedTaskRenameSaving}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => void saveSharedTaskRename()}
+            loading={sharedTaskRenameSaving}
+            disabled={!sharedTaskRenameDraft.trim()}
+          >
+            Save name
+          </Button>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   if (isFloating) {
     return (
       <Box className="floating-shell">
         {quickFictiveTaskModal}
+        {sharedTaskRenameModal}
         <Modal
           opened={floatingStartOpen}
           onClose={closeFloatingStart}
@@ -19143,6 +19396,7 @@ export default function App() {
         }`}
       >
         {quickFictiveTaskModal}
+        {sharedTaskRenameModal}
         {reportsDetailedExportModal}
         <Stack gap="sm" className="tray-content">
           {window.hrs && (
@@ -22660,6 +22914,7 @@ export default function App() {
   return renderLiquidGlassFrame(
     <Box className="app-shell">
       {quickFictiveTaskModal}
+      {sharedTaskRenameModal}
       <Container size="lg" className="app-container">
         <Stack gap="xl">
           <Stack gap="sm" className="page-header">

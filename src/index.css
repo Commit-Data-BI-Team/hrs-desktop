@@ -2513,6 +2513,35 @@ html[data-theme-mode='h4c37'] body::after {
   font-size: 0.66rem;
 }
 
+.quicklog-recent-context-menu {
+  min-width: 188px;
+  padding: 5px;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--stroke));
+  background: color-mix(in srgb, var(--panel-bg) 96%, #05080c);
+}
+
+.quicklog-recent-context-action {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.quicklog-recent-context-action:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
 @media (max-width: 1100px) {
   .quicklog-recent-shortcuts {
     grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -3294,10 +3294,12 @@ export default function App() {
       })
       const normalized = message.toLowerCase()
       const isActualDuoPrompt =
-        normalized.includes('sent duo push request') ||
-        normalized.includes('requested duo phone call') ||
+        normalized.includes('duo push request confirmed') ||
+        normalized.includes('duo phone call request confirmed') ||
         normalized.includes("waiting for duo approval on user's phone") ||
         normalized.includes('waiting for duo approval on your phone') ||
+        normalized.includes('waiting for duo approval in duo mobile') ||
+        normalized.includes('open duo mobile manually') ||
         normalized.includes('waiting for duo phone call approval')
       const hasMovedPastDuo =
         normalized.includes('after duo approval') ||
@@ -3314,13 +3316,14 @@ export default function App() {
         setMeetingsDuoActionRequired(false)
         setMeetingsDuoActionSending(null)
         if (
-          normalized.includes('requested duo phone call') ||
+          normalized.includes('duo phone call request confirmed') ||
           normalized.includes('waiting for duo phone call approval')
         ) {
           setMeetingsDuoSelectedAction('call')
         } else if (
-          normalized.includes('sent duo push request') ||
-          normalized.includes('waiting for duo approval')
+          normalized.includes('duo push request confirmed') ||
+          normalized.includes('waiting for duo approval') ||
+          normalized.includes('open duo mobile manually')
         ) {
           setMeetingsDuoSelectedAction('push')
         }
@@ -14660,7 +14663,7 @@ export default function App() {
     if (meetingsDuoWaiting) {
       return meetingsDuoSelectedAction === 'call'
         ? '2/4 Answer DUO phone call'
-        : '2/4 Approve DUO on phone'
+        : '2/4 Approve in DUO Mobile'
     }
     if (meetingsLoading) {
       if (meetingsFetchPhase === 'init') return '1/4 Start browser'
@@ -14682,7 +14685,7 @@ export default function App() {
 
   const quickMeetingButtonSubline = useMemo(() => {
     if (meetingsDuoWaiting) {
-      return meetingsDuoSelectedAction === 'call' ? 'Answer the call' : 'Check your phone'
+      return meetingsDuoSelectedAction === 'call' ? 'Answer the call' : 'Open DUO Mobile now'
     }
     if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) {
       return dayjs(meetingsUpdatedAt).format('DD/MM HH:mm')

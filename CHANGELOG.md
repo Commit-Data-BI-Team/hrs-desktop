@@ -16,6 +16,7 @@
 - Added explicit macOS Python discovery for Apple, Homebrew, and python.org installations when the bundled runtime is unavailable.
 - Made architecture-specific macOS packages embed the complete calendar runtime, matching the Windows installer behavior.
 - Detects rejected Microsoft usernames or passwords immediately, shows the real recovery action instead of waiting for a token timeout, and reopens the meeting credentials for correction.
+- Verifies DUO server delivery before displaying a push/call success state, detects expired or denied DUO prompts, and tells users to open Duo Mobile manually when phone notifications do not appear.
 
 ## 1.0.18
 

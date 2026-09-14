@@ -890,11 +890,101 @@ def raise_for_microsoft_sign_in_error(driver) -> None:
         raise RuntimeError(message)
 
 
+def duo_request_state(driver, action: str) -> tuple[str, str | None]:
+    """Inspect the DUO prompt after clicking Push/Call without exposing account data."""
+    try:
+        body_text = " ".join(
+            (driver.find_element(By.TAG_NAME, "body").text or "").lower().split()
+        )
+    except (NoSuchElementException, NoSuchWindowException, WebDriverException):
+        return "pending", None
+
+    if any(
+        marker in body_text
+        for marker in ("login timed out", "session timed out", "session has expired")
+    ):
+        return (
+            "error",
+            "The DUO login window expired before verification completed. Start meeting sync again and choose Push or Call promptly.",
+        )
+    if any(
+        marker in body_text
+        for marker in (
+            "request was denied",
+            "login request denied",
+            "authentication denied",
+        )
+    ):
+        return "error", "The DUO verification request was denied. Start meeting sync again."
+    if any(
+        marker in body_text
+        for marker in (
+            "error sending",
+            "could not send",
+            "unable to send",
+            "an error was encountered",
+        )
+    ):
+        return "error", "DUO could not deliver the verification request. Try the phone-call option."
+
+    if action == "push" and any(
+        marker in body_text
+        for marker in (
+            "pushed a login request to your device",
+            "check for a duo push",
+            "push request sent",
+        )
+    ):
+        if "check for duo push requests manually" in body_text:
+            return "manual", None
+        return "sent", None
+    if action == "call" and any(
+        marker in body_text
+        for marker in (
+            "calling your phone",
+            "phone call initiated",
+            "call request sent",
+        )
+    ):
+        return "sent", None
+    return "pending", None
+
+
+def raise_for_duo_error(driver) -> None:
+    state, message = duo_request_state(driver, "push")
+    if state == "error" and message:
+        raise RuntimeError(message)
+
+
+def wait_for_duo_request_confirmation(
+    driver, action: str, timeout_seconds: int = 12
+) -> str:
+    deadline = time.time() + timeout_seconds
+    while time.time() < deadline:
+        state, message = duo_request_state(driver, action)
+        if state == "error" and message:
+            raise RuntimeError(message)
+        if state in {"sent", "manual"}:
+            return state
+        try:
+            host = (urlparse(driver.current_url or "").hostname or "").lower()
+            if host and not host.endswith("duosecurity.com"):
+                # A very fast approval can redirect before the confirmation text is rendered.
+                return "redirected"
+        except (NoSuchWindowException, WebDriverException):
+            return "redirected"
+        time.sleep(0.25)
+    raise RuntimeError(
+        "DUO did not confirm that the verification request was delivered. Try meeting sync again or choose the phone-call option."
+    )
+
+
 def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 90) -> str | None:
     deadline = time.time() + timeout_seconds
     last_log = 0.0
     while time.time() < deadline:
         raise_for_microsoft_sign_in_error(driver)
+        raise_for_duo_error(driver)
         token = wait_for_access_token_in_current_url(driver, 1)
         if token:
             return token
@@ -1619,14 +1709,26 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                             raise RuntimeError(
                                 f"The DUO {action_label} button is not available on the sign-in page."
                             ) from exc
+                        state_before_click, duo_error = duo_request_state(driver, duo_action)
+                        if state_before_click == "error" and duo_error:
+                            raise RuntimeError(duo_error)
+                        action_label = "phone call" if duo_action == "call" else "push"
+                        log(f"Requesting DUO {action_label}.")
                         duo_action_button.click()
+                        delivery_state = wait_for_duo_request_confirmation(
+                            driver, duo_action
+                        )
                         duo_clicked = True
                         if duo_action == "call":
-                            log("Requested DUO phone call.")
+                            log("DUO phone call request confirmed by DUO.")
                             log("Waiting for DUO phone call approval.")
                         else:
-                            log("Sent DUO push request.")
-                            log("Waiting for DUO approval on user's phone.")
+                            log("DUO push request confirmed by DUO.")
+                            if delivery_state == "manual":
+                                log(
+                                    "Open Duo Mobile manually if no notification appears."
+                                )
+                            log("Waiting for DUO approval in Duo Mobile.")
                         driver.switch_to.default_content()
                         time.sleep(10)
                     except TimeoutException:

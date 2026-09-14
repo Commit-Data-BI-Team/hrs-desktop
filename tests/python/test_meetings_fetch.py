@@ -20,6 +20,7 @@ from meetings_fetch import (
     extract_access_token_from_oauth_capture,
     find_duo_action_button,
     chrome_binary_version,
+    duo_request_state,
     looks_like_graph_access_token,
     microsoft_sign_in_error_message,
 )
@@ -124,6 +125,23 @@ class FakeSignInDriver:
 
 
 class MeetingsTokenCaptureTests(unittest.TestCase):
+    def test_confirms_duo_push_delivery_and_manual_open_hint(self):
+        state, message = duo_request_state(
+            FakeSignInDriver(
+                "Pushed a login request to your device. Please open Duo Mobile and check for Duo Push requests manually."
+            ),
+            "push",
+        )
+
+        self.assertEqual(state, "manual")
+        self.assertIsNone(message)
+
+    def test_reports_expired_duo_prompt_instead_of_claiming_delivery(self):
+        state, message = duo_request_state(FakeSignInDriver("Login timed out."), "push")
+
+        self.assertEqual(state, "error")
+        self.assertIn("DUO login window expired", message)
+
     def test_reports_incorrect_microsoft_credentials_immediately(self):
         message = microsoft_sign_in_error_message(
             FakeSignInDriver(

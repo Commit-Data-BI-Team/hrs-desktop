@@ -19,16 +19,13 @@ type PythonInfo = {
 }
 
 const MINIMUM_PYTHON = { major: 3, minor: 9 }
-const PYTHON_PROBE = [
-  'import json,platform,sys',
-  'print(json.dumps({',
-  '"executable": sys.executable,',
-  '"version": platform.python_version(),',
-  '"major": sys.version_info.major,',
-  '"minor": sys.version_info.minor,',
-  '"architecture": platform.machine()',
-  '}))'
-].join(';')
+const PYTHON_PROBE =
+  'import json,platform,sys; print(json.dumps({' +
+  '"executable":sys.executable,' +
+  '"version":platform.python_version(),' +
+  '"major":sys.version_info.major,' +
+  '"minor":sys.version_info.minor,' +
+  '"architecture":platform.machine()}))'
 
 function commandOutput(result: ReturnType<typeof spawnSync>) {
   return `${result.stderr ?? ''}\n${result.stdout ?? ''}`.trim()
@@ -126,28 +123,57 @@ export function resolvePythonBin() {
       return command
     }
   }
-  const candidates: PythonCommand[] =
-    process.platform === 'win32'
-      ? [
-          { bin: 'py', args: ['-3.13'] },
-          { bin: 'py', args: ['-3.12'] },
-          { bin: 'py', args: ['-3.11'] },
-          { bin: 'py', args: ['-3.10'] },
-          { bin: 'py', args: ['-3.9'] },
-          { bin: 'py', args: ['-3'] },
-          { bin: 'python', args: [] },
-          { bin: 'python3', args: [] }
-        ]
-      : [
-          { bin: 'python3', args: [] },
-          { bin: 'python', args: [] }
-        ]
+  const candidates: PythonCommand[] = (() => {
+    if (process.platform === 'win32') {
+      return [
+        { bin: 'py', args: ['-3.13'] },
+        { bin: 'py', args: ['-3.12'] },
+        { bin: 'py', args: ['-3.11'] },
+        { bin: 'py', args: ['-3.10'] },
+        { bin: 'py', args: ['-3.9'] },
+        { bin: 'py', args: ['-3'] },
+        { bin: 'python', args: [] },
+        { bin: 'python3', args: [] }
+      ]
+    }
+    if (process.platform === 'darwin') {
+      // Finder/tray applications receive a much smaller PATH than Terminal. Probe the
+      // standard Apple, Homebrew (Apple Silicon + Intel), and python.org locations too.
+      return [
+        { bin: 'python3', args: [] },
+        { bin: '/opt/homebrew/bin/python3', args: [] },
+        { bin: '/usr/local/bin/python3', args: [] },
+        { bin: '/usr/bin/python3', args: [] },
+        {
+          bin: '/Library/Frameworks/Python.framework/Versions/Current/bin/python3',
+          args: []
+        },
+        { bin: 'python', args: [] }
+      ]
+    }
+    return [
+      { bin: 'python3', args: [] },
+      { bin: '/usr/local/bin/python3', args: [] },
+      { bin: '/usr/bin/python3', args: [] },
+      { bin: 'python', args: [] }
+    ]
+  })()
   const found = candidates.find(candidate => Boolean(inspectPython(candidate)))
   if (found) {
     return found
   }
+  if (process.platform === 'darwin') {
+    throw new Error(
+      'The macOS calendar runtime is missing or could not start. Reinstall the macOS build of HRS Desktop. As a fallback, install Python 3.9 or newer, or set PYTHON_BIN to its full path.'
+    )
+  }
+  if (process.platform === 'win32') {
+    throw new Error(
+      'The Windows calendar runtime is missing or could not start. Reinstall the Windows build of HRS Desktop. As a fallback, install Python 3.9 or newer, disable a broken Windows Store python.exe alias, or set PYTHON_BIN to its full path.'
+    )
+  }
   throw new Error(
-    'A compatible Python runtime was not found. Install Python 3.9 or newer, disable the Windows Store python.exe alias if it is broken, or set PYTHON_BIN to the full Python path.'
+    'The calendar runtime is missing or could not start. Reinstall HRS Desktop, install Python 3.9 or newer, or set PYTHON_BIN to its full path.'
   )
 }
 

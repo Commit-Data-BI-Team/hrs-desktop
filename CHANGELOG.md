@@ -9,6 +9,13 @@
 - Detects incompatible legacy macOS signatures, preserves the release changelog, and offers the correct full Mac installer for the required one-time replacement.
 - Requires production macOS releases to use a consistent Developer ID certificate so a broken ad-hoc-signed automatic update cannot be published again.
 
+### Cross-platform meeting runtime
+
+- Fixed meeting sync incorrectly showing Windows Python instructions on macOS.
+- Fixed the Python compatibility probe so an installed macOS Python runtime is detected correctly.
+- Added explicit macOS Python discovery for Apple, Homebrew, and python.org installations when the bundled runtime is unavailable.
+- Made architecture-specific macOS packages embed the complete calendar runtime, matching the Windows installer behavior.
+
 ## 1.0.18
 
 ### Shared project gauges

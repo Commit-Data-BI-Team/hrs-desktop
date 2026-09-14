@@ -17,9 +17,9 @@
     "icon:mac": "node scripts/generate-icon.mjs",
     "release:notes": "node scripts/prepare-release-notes.mjs",
     "python:bundle": "node scripts/build-python-runtime.mjs",
-    "dist:mac": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac",
-    "dist:mac:arm64": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --arm64",
-    "dist:mac:x64": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --x64",
+    "dist:mac": "node scripts/dist-mac-native.mjs",
+    "dist:mac:arm64": "npm run release:notes && HRS_PYTHON_RUNTIME_ARCH=arm64 npm run python:bundle && npm run icon:tray && npm run build && electron-builder --mac --arm64",
+    "dist:mac:x64": "npm run release:notes && HRS_PYTHON_RUNTIME_ARCH=x64 npm run python:bundle && npm run icon:tray && npm run build && electron-builder --mac --x64",
     "dist:mac:universal": "npm run release:notes && npm run icon:tray && npm run build && electron-builder --mac --universal",
     "install:mac:dmg": "bash scripts/install-mac-app-from-dmg.sh",
     "dist:mac:install": "npm run dist:mac && npm run install:mac:dmg",
@@ -106,18 +106,10 @@
     "mac": {
       "target": [
         {
-          "target": "dmg",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
+          "target": "dmg"
         },
         {
-          "target": "zip",
-          "arch": [
-            "x64",
-            "arm64"
-          ]
+          "target": "zip"
         }
       ],
       "icon": "build/icon.icns",

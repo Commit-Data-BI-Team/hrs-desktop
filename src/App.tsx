@@ -52,6 +52,7 @@ import {
   IconInfoCircle,
   IconBellRinging,
   IconPhoneCall,
+  IconKey,
   IconPin,
   IconMessageCircle,
   IconSend,
@@ -2566,11 +2567,13 @@ export default function App() {
   const [meetingsDuoPromptActive, setMeetingsDuoPromptActive] = useState(false)
   const [meetingsDuoActionRequired, setMeetingsDuoActionRequired] = useState(false)
   const [meetingsDuoActionSending, setMeetingsDuoActionSending] = useState<
-    'push' | 'call' | null
+    'push' | 'call' | 'passcode' | null
   >(null)
   const [meetingsDuoSelectedAction, setMeetingsDuoSelectedAction] = useState<
-    'push' | 'call' | null
+    'push' | 'call' | 'passcode' | null
   >(null)
+  const [meetingsDuoPasscodeOpen, setMeetingsDuoPasscodeOpen] = useState(false)
+  const [meetingsDuoPasscode, setMeetingsDuoPasscode] = useState('')
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [trayMeetingsProgressOpen, setTrayMeetingsProgressOpen] = useState(false)
@@ -3275,6 +3278,8 @@ export default function App() {
       setMeetingsDuoActionRequired(true)
       setMeetingsDuoActionSending(null)
       setMeetingsDuoSelectedAction(null)
+      setMeetingsDuoPasscodeOpen(false)
+      setMeetingsDuoPasscode('')
       setMeetingsDuoPromptActive(false)
       setMeetingsProgress('Choose a DUO verification method.')
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
@@ -3300,7 +3305,8 @@ export default function App() {
         normalized.includes('waiting for duo approval on your phone') ||
         normalized.includes('waiting for duo approval in duo mobile') ||
         normalized.includes('open duo mobile manually') ||
-        normalized.includes('waiting for duo phone call approval')
+        normalized.includes('waiting for duo phone call approval') ||
+        normalized.includes('duo passcode accepted')
       const hasMovedPastDuo =
         normalized.includes('after duo approval') ||
         normalized.includes('after duo redirect') ||
@@ -3315,7 +3321,9 @@ export default function App() {
       if (isActualDuoPrompt) {
         setMeetingsDuoActionRequired(false)
         setMeetingsDuoActionSending(null)
-        if (
+        if (normalized.includes('duo passcode accepted')) {
+          setMeetingsDuoSelectedAction('passcode')
+        } else if (
           normalized.includes('duo phone call request confirmed') ||
           normalized.includes('waiting for duo phone call approval')
         ) {
@@ -3328,6 +3336,8 @@ export default function App() {
           setMeetingsDuoSelectedAction('push')
         }
         setMeetingsDuoPromptActive(true)
+        setMeetingsDuoPasscodeOpen(false)
+        setMeetingsDuoPasscode('')
       } else if (hasMovedPastDuo) {
         setMeetingsDuoActionRequired(false)
         setMeetingsDuoActionSending(null)
@@ -8039,16 +8049,30 @@ export default function App() {
     } catch {}
   }
 
-  async function selectMeetingsDuoAction(action: 'push' | 'call') {
+  async function selectMeetingsDuoAction(
+    action: 'push' | 'call' | 'passcode',
+    passcode?: string
+  ) {
     if (!meetingsDuoActionRequired || meetingsDuoActionSending) return
+    if (action === 'passcode' && !/^\d{4,10}$/.test(passcode ?? '')) {
+      setMeetingsError('Enter the numeric passcode shown in Duo Mobile.')
+      return
+    }
     setMeetingsDuoActionSending(action)
     setMeetingsDuoSelectedAction(action)
     setMeetingsError(null)
     setMeetingsProgress(
-      action === 'call' ? 'Requesting a DUO phone call…' : 'Sending a DUO push…'
+      action === 'call'
+        ? 'Requesting a DUO phone call…'
+        : action === 'passcode'
+          ? 'Verifying DUO passcode…'
+          : 'Sending a DUO push…'
     )
     try {
-      await window.hrs.selectMeetingsDuoAction(action)
+      await window.hrs.selectMeetingsDuoAction(action, passcode ?? null)
+      if (action === 'passcode') {
+        setMeetingsDuoPasscode('')
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setMeetingsDuoActionSending(null)
@@ -14661,6 +14685,7 @@ export default function App() {
 
   const quickMeetingButtonStep = useMemo(() => {
     if (meetingsDuoWaiting) {
+      if (meetingsDuoSelectedAction === 'passcode') return '2/4 DUO passcode accepted'
       return meetingsDuoSelectedAction === 'call'
         ? '2/4 Answer DUO phone call'
         : '2/4 Approve in DUO Mobile'
@@ -14685,6 +14710,7 @@ export default function App() {
 
   const quickMeetingButtonSubline = useMemo(() => {
     if (meetingsDuoWaiting) {
+      if (meetingsDuoSelectedAction === 'passcode') return 'Completing Microsoft login'
       return meetingsDuoSelectedAction === 'call' ? 'Answer the call' : 'Open DUO Mobile now'
     }
     if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) {
@@ -14698,7 +14724,50 @@ export default function App() {
     meetingsUpdatedAt
   ])
 
-  const meetingsDuoActionButtons = (
+  const meetingsDuoActionButtons = meetingsDuoPasscodeOpen ? (
+    <span className="quick-duo-passcode" role="group" aria-label="Enter DUO passcode">
+      <TextInput
+        size="xs"
+        value={meetingsDuoPasscode}
+        onChange={event =>
+          setMeetingsDuoPasscode(event.currentTarget.value.replace(/\D/g, '').slice(0, 10))
+        }
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            void selectMeetingsDuoAction('passcode', meetingsDuoPasscode)
+          }
+        }}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        placeholder="Duo passcode"
+        aria-label="DUO passcode"
+        disabled={meetingsDuoActionSending !== null}
+      />
+      <Button
+        size="xs"
+        variant="light"
+        leftSection={
+          meetingsDuoActionSending === 'passcode' ? <Loader size={12} /> : <IconKey size={14} />
+        }
+        disabled={!/^\d{4,10}$/.test(meetingsDuoPasscode) || meetingsDuoActionSending !== null}
+        onClick={() => void selectMeetingsDuoAction('passcode', meetingsDuoPasscode)}
+      >
+        Verify
+      </Button>
+      <Button
+        size="xs"
+        variant="subtle"
+        disabled={meetingsDuoActionSending !== null}
+        onClick={() => {
+          setMeetingsDuoPasscodeOpen(false)
+          setMeetingsDuoPasscode('')
+          setMeetingsError(null)
+        }}
+      >
+        Back
+      </Button>
+    </span>
+  ) : (
     <span
       className="quick-duo-actions"
       role="group"
@@ -14735,6 +14804,19 @@ export default function App() {
         onClick={() => void selectMeetingsDuoAction('call')}
       >
         Make a call
+      </Button>
+      <Button
+        size="xs"
+        variant="subtle"
+        className="quick-duo-action-button is-passcode"
+        leftSection={<IconKey size={14} />}
+        disabled={meetingsDuoActionSending !== null}
+        onClick={() => {
+          setMeetingsDuoPasscodeOpen(true)
+          setMeetingsError(null)
+        }}
+      >
+        Use Duo passcode
       </Button>
     </span>
   )

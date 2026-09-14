@@ -3546,7 +3546,7 @@ html[data-platform='windows'] .tray-shell-enter {
   gap: 6px;
   width: 100%;
   min-width: 0;
-  height: 48px;
+  height: auto;
 }
 
 .quick-duo-action-button {
@@ -3576,6 +3576,30 @@ html[data-platform='windows'] .tray-shell-enter {
   color: #bde9ff;
   border-color: rgba(87, 190, 255, 0.42);
   background: linear-gradient(135deg, rgba(14, 64, 94, 0.86), rgba(9, 31, 48, 0.9));
+}
+
+.quick-duo-action-button.is-passcode {
+  grid-column: 1 / -1;
+  height: 32px;
+  min-height: 32px;
+  color: #d8c8ff;
+  border-color: rgba(170, 130, 255, 0.35);
+  background: rgba(76, 47, 119, 0.34);
+}
+
+.quick-duo-passcode {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  min-width: 0;
+}
+
+.quick-duo-passcode .mantine-Input-input {
+  min-width: 0;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.08em;
 }
 
 .quick-duo-action-button:disabled,

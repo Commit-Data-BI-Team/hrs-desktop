@@ -1,4 +1,5 @@
 import base64
+import io
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ from meetings_fetch import (
     duo_request_state,
     looks_like_graph_access_token,
     microsoft_sign_in_error_message,
+    request_duo_action,
 )
 
 
@@ -125,6 +127,25 @@ class FakeSignInDriver:
 
 
 class MeetingsTokenCaptureTests(unittest.TestCase):
+    @patch(
+        "meetings_fetch.sys.stdin",
+        new_callable=lambda: io.StringIO(
+            '{"action":"passcode","passcode":"123456"}\n'
+        ),
+    )
+    def test_reads_duo_passcode_without_logging_or_storing_it(self, _stdin):
+        self.assertEqual(request_duo_action(), ("passcode", "123456"))
+
+    @patch(
+        "meetings_fetch.sys.stdin",
+        new_callable=lambda: io.StringIO(
+            '{"action":"passcode","passcode":"not-a-code"}\n'
+        ),
+    )
+    def test_rejects_invalid_duo_passcode(self, _stdin):
+        with self.assertRaisesRegex(RuntimeError, "valid numeric DUO passcode"):
+            request_duo_action()
+
     def test_confirms_duo_push_delivery_and_manual_open_hint(self):
         state, message = duo_request_state(
             FakeSignInDriver(

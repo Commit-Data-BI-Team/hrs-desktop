@@ -62,21 +62,41 @@ def log(message: str) -> None:
     print(message, file=sys.stderr, flush=True)
 
 
-def request_duo_action() -> str:
+def request_duo_action() -> tuple[str, str | None]:
     log(DUO_ACTION_REQUIRED_SIGNAL)
-    selected = sys.stdin.readline().strip().lower()
-    if selected not in {"push", "call"}:
+    raw = sys.stdin.readline().strip()
+    if not raw:
+        raise RuntimeError("DUO verification choice was not received from HRS Desktop.")
+    passcode = None
+    try:
+        payload = json.loads(raw)
+    except json.JSONDecodeError:
+        payload = raw
+    if isinstance(payload, dict):
+        selected = str(payload.get("action") or "").strip().lower()
+        passcode_value = str(payload.get("passcode") or "").strip()
+        passcode = passcode_value or None
+    else:
+        selected = str(payload).strip().lower()
+    if selected not in {"push", "call", "passcode"}:
         if not selected:
             raise RuntimeError("DUO verification choice was not received from HRS Desktop.")
         raise RuntimeError(f"Unsupported DUO verification choice: {selected[:40]}")
-    return selected
+    if selected == "passcode":
+        if not passcode or not passcode.isdigit() or not 4 <= len(passcode) <= 10:
+            raise RuntimeError("Enter a valid numeric DUO passcode.")
+    return selected, passcode
 
 
 def find_duo_action_button_in_current_context(driver, action: str, depth: int = 0):
     expected_terms = (
         ("send me a push", "send a push", "duo push", "push")
         if action == "push"
-        else ("call me", "phone call", "make a call", "call")
+        else (
+            ("call me", "phone call", "make a call", "call")
+            if action == "call"
+            else ("enter a passcode", "use a passcode", "passcode")
+        )
     )
     for element in driver.find_elements(
         By.CSS_SELECTOR,
@@ -145,6 +165,55 @@ def find_duo_action_button(driver, action: str):
     except WebDriverException:
         return None
     return find_duo_action_button_in_current_context(driver, action)
+
+
+def submit_duo_passcode(driver, passcode: str) -> None:
+    passcode_button = find_duo_action_button(driver, "passcode")
+    if not passcode_button:
+        raise RuntimeError("The DUO passcode option is not available on the sign-in page.")
+    passcode_button.click()
+
+    passcode_input = WebDriverWait(driver, 5).until(
+        lambda current_driver: next(
+            (
+                field
+                for field in current_driver.find_elements(
+                    By.CSS_SELECTOR,
+                    "input[name='passcode'], input[aria-label*='passcode' i]",
+                )
+                if field.is_displayed() and field.is_enabled()
+            ),
+            None,
+        )
+    )
+    passcode_input.clear()
+    passcode_input.send_keys(passcode)
+
+    login_button = WebDriverWait(driver, 5).until(
+        lambda current_driver: next(
+            (
+                button
+                for button in current_driver.find_elements(
+                    By.CSS_SELECTOR, "button, input[type='submit']"
+                )
+                if button.is_displayed()
+                and button.is_enabled()
+                and "log in"
+                in " ".join(
+                    filter(
+                        None,
+                        [
+                            button.text,
+                            button.get_attribute("value"),
+                            button.get_attribute("aria-label"),
+                        ],
+                    )
+                ).lower()
+            ),
+            None,
+        )
+    )
+    login_button.click()
 
 
 def parse_args() -> argparse.Namespace:
@@ -926,6 +995,15 @@ def duo_request_state(driver, action: str) -> tuple[str, str | None]:
         )
     ):
         return "error", "DUO could not deliver the verification request. Try the phone-call option."
+    if any(
+        marker in body_text
+        for marker in (
+            "incorrect passcode",
+            "invalid passcode",
+            "passcode is incorrect",
+        )
+    ):
+        return "error", "DUO rejected the passcode. Generate a new code in Duo Mobile and try again."
 
     if action == "push" and any(
         marker in body_text
@@ -945,6 +1023,10 @@ def duo_request_state(driver, action: str) -> tuple[str, str | None]:
             "phone call initiated",
             "call request sent",
         )
+    ):
+        return "sent", None
+    if action == "passcode" and any(
+        marker in body_text for marker in ("logging you in", "passcode accepted")
     ):
         return "sent", None
     return "pending", None
@@ -1696,30 +1778,49 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                         WebDriverWait(driver, 10).until(
                             lambda current_driver: find_duo_action_button(current_driver, "push")
                             or find_duo_action_button(current_driver, "call")
+                            or find_duo_action_button(current_driver, "passcode")
                         )
-                        duo_action = request_duo_action()
+                        duo_action, duo_passcode = request_duo_action()
                         try:
-                            duo_action_button = WebDriverWait(driver, 10).until(
-                                lambda current_driver: find_duo_action_button(
-                                    current_driver, duo_action
+                            if duo_action == "passcode":
+                                if not duo_passcode:
+                                    raise RuntimeError("Enter a valid numeric DUO passcode.")
+                                log("Submitting DUO passcode.")
+                                submit_duo_passcode(driver, duo_passcode)
+                                delivery_state = wait_for_duo_request_confirmation(
+                                    driver, duo_action
                                 )
-                            )
+                            else:
+                                duo_action_button = WebDriverWait(driver, 10).until(
+                                    lambda current_driver: find_duo_action_button(
+                                        current_driver, duo_action
+                                    )
+                                )
+                                state_before_click, duo_error = duo_request_state(
+                                    driver, duo_action
+                                )
+                                if state_before_click == "error" and duo_error:
+                                    raise RuntimeError(duo_error)
+                                action_label = "phone call" if duo_action == "call" else "push"
+                                log(f"Requesting DUO {action_label}.")
+                                duo_action_button.click()
+                                delivery_state = wait_for_duo_request_confirmation(
+                                    driver, duo_action
+                                )
                         except TimeoutException as exc:
-                            action_label = "phone call" if duo_action == "call" else "push"
+                            action_label = {
+                                "call": "phone call",
+                                "push": "push",
+                                "passcode": "passcode",
+                            }[duo_action]
                             raise RuntimeError(
                                 f"The DUO {action_label} button is not available on the sign-in page."
                             ) from exc
-                        state_before_click, duo_error = duo_request_state(driver, duo_action)
-                        if state_before_click == "error" and duo_error:
-                            raise RuntimeError(duo_error)
-                        action_label = "phone call" if duo_action == "call" else "push"
-                        log(f"Requesting DUO {action_label}.")
-                        duo_action_button.click()
-                        delivery_state = wait_for_duo_request_confirmation(
-                            driver, duo_action
-                        )
                         duo_clicked = True
-                        if duo_action == "call":
+                        if duo_action == "passcode":
+                            log("DUO passcode accepted.")
+                            log("Waiting for Microsoft sign-in to finish.")
+                        elif duo_action == "call":
                             log("DUO phone call request confirmed by DUO.")
                             log("Waiting for DUO phone call approval.")
                         else:

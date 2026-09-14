@@ -167,8 +167,18 @@ function sanitizeScriptError(stderr: string) {
 }
 
 export function registerMeetingsIpc() {
-  ipcMain.handle('meetings:duo-action', async (event, action: unknown) => {
-    const selected = validateEnum(action, ['push', 'call'] as const)
+  ipcMain.handle('meetings:duo-action', async (event, payload: unknown) => {
+    const safe = validateExactObject<{ action?: unknown; passcode?: unknown }>(
+      payload ?? {},
+      ['action', 'passcode'],
+      'DUO verification choice'
+    )
+    const selected = validateEnum(safe.action, ['push', 'call', 'passcode'] as const)
+    const passcode =
+      validateOptionalString(safe.passcode, { min: 0, max: 10, allowNull: true }) ?? null
+    if (selected === 'passcode' && (!passcode || !/^\d{4,10}$/.test(passcode))) {
+      throw new Error('Enter a valid numeric DUO passcode.')
+    }
     const activeRun = activeMeetingsRuns.get(event.sender.id)
     if (!activeRun || !activeRun.awaitingDuoAction) {
       throw new Error('There is no pending DUO verification choice for this meeting sync.')
@@ -176,7 +186,9 @@ export function registerMeetingsIpc() {
     if (!activeRun.child.stdin.writable || activeRun.child.stdin.destroyed) {
       throw new Error('The meeting sync is no longer accepting a DUO verification choice.')
     }
-    activeRun.child.stdin.write(`${selected}\n`)
+    activeRun.child.stdin.write(
+      `${JSON.stringify({ action: selected, ...(passcode ? { passcode } : {}) })}\n`
+    )
     activeRun.awaitingDuoAction = false
     return true
   })

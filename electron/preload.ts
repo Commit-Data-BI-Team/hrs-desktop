@@ -283,8 +283,8 @@ contextBridge.exposeInMainWorld('hrs', {
     username?: string | null
     password?: string | null
   }) => ipcRenderer.invoke('meetings:run', options),
-  selectMeetingsDuoAction: (action: 'push' | 'call') =>
-    ipcRenderer.invoke('meetings:duo-action', action),
+  selectMeetingsDuoAction: (action: 'push' | 'call' | 'passcode', passcode?: string | null) =>
+    ipcRenderer.invoke('meetings:duo-action', { action, passcode: passcode ?? null }),
   onMeetingsDuoActionRequired: (handler: () => void) => {
     const listener = () => handler()
     ipcRenderer.on('meetings:duo-action-required', listener)

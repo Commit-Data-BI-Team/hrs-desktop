@@ -903,7 +903,10 @@ type HrsApi = {
     username?: string | null
     password?: string | null
   }) => Promise<MeetingsResult>
-  selectMeetingsDuoAction: (action: 'push' | 'call') => Promise<boolean>
+  selectMeetingsDuoAction: (
+    action: 'push' | 'call' | 'passcode',
+    passcode?: string | null
+  ) => Promise<boolean>
   onMeetingsDuoActionRequired: (handler: () => void) => () => void
   onMeetingsProgress: (handler: (message: string) => void) => () => void
   getAgenda: (options: {

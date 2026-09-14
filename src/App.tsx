@@ -8123,8 +8123,15 @@ export default function App() {
       setTrayMeetingsProgressOpen(false)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      const credentialsRejected = /Microsoft rejected the saved username or password/i.test(message)
+      if (credentialsRejected) {
+        setMeetingsPassword('')
+        setMeetingsCredentialsOpen(true)
+      }
       setMeetingsError(message)
-      setMeetingsProgress('Fetch failed.')
+      setMeetingsProgress(
+        credentialsRejected ? 'Update the Microsoft password and try again.' : 'Fetch failed.'
+      )
       setMeetingsFetchPhase('error')
       setMeetingsDuoPromptActive(false)
       setMeetingsDuoActionRequired(false)

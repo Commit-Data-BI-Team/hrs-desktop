@@ -15,6 +15,7 @@
 - Fixed the Python compatibility probe so an installed macOS Python runtime is detected correctly.
 - Added explicit macOS Python discovery for Apple, Homebrew, and python.org installations when the bundled runtime is unavailable.
 - Made architecture-specific macOS packages embed the complete calendar runtime, matching the Windows installer behavior.
+- Detects rejected Microsoft usernames or passwords immediately, shows the real recovery action instead of waiting for a token timeout, and reopens the meeting credentials for correction.
 
 ## 1.0.18
 

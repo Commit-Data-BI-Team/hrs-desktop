@@ -833,10 +833,68 @@ def click_stay_signed_in_confirmation(driver) -> bool:
     return False
 
 
+def microsoft_sign_in_error_message(driver) -> str | None:
+    """Return a safe, actionable message for a visible Microsoft sign-in failure."""
+    try:
+        body_text = " ".join(
+            (driver.find_element(By.TAG_NAME, "body").text or "").lower().split()
+        )
+    except (NoSuchElementException, NoSuchWindowException, WebDriverException):
+        return None
+
+    if any(
+        marker in body_text
+        for marker in (
+            "your account or password is incorrect",
+            "incorrect account or password",
+            "aadsts50126",
+        )
+    ):
+        return (
+            "Microsoft rejected the saved username or password. "
+            "Open Meetings > Edit credentials, enter the current Microsoft password, and try again."
+        )
+    if any(
+        marker in body_text
+        for marker in (
+            "we couldn't find an account with that username",
+            "this username may be incorrect",
+            "aadsts50034",
+        )
+    ):
+        return (
+            "Microsoft could not find the saved account. "
+            "Open Meetings > Edit credentials and verify the full email address."
+        )
+    if "password has expired" in body_text or "change your password" in body_text:
+        return (
+            "The Microsoft password has expired and must be changed before meetings can sync."
+        )
+    if "account has been locked" in body_text or "account is locked" in body_text:
+        return "The Microsoft account is locked. Unlock it before trying meeting sync again."
+    if "tried to sign in too many times" in body_text:
+        return (
+            "Microsoft temporarily blocked sign-in after too many attempts. "
+            "Wait a few minutes, update the saved password, and try again."
+        )
+    if "you can't get there from here" in body_text:
+        return (
+            "Microsoft blocked this background sign-in because of an organizational access policy."
+        )
+    return None
+
+
+def raise_for_microsoft_sign_in_error(driver) -> None:
+    message = microsoft_sign_in_error_message(driver)
+    if message:
+        raise RuntimeError(message)
+
+
 def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 90) -> str | None:
     deadline = time.time() + timeout_seconds
     last_log = 0.0
     while time.time() < deadline:
+        raise_for_microsoft_sign_in_error(driver)
         token = wait_for_access_token_in_current_url(driver, 1)
         if token:
             return token
@@ -1516,6 +1574,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
 
                 try:
                     time.sleep(2)
+                    raise_for_microsoft_sign_in_error(driver)
                     sign_in_button_after_password = WebDriverWait(driver, 6).until(
                         EC.element_to_be_clickable((By.ID, "idSIButton9"))
                     )
@@ -1539,6 +1598,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                         auth_window_closed = True
                     log(f"Microsoft continue step unavailable. Continuing. reason={exc.__class__.__name__}")
 
+                raise_for_microsoft_sign_in_error(driver)
                 if auth_window_closed:
                     log("Microsoft auth window closed before DUO inspection. Continuing token recovery from Graph Explorer.")
                 else:
@@ -1570,6 +1630,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                         driver.switch_to.default_content()
                         time.sleep(10)
                     except TimeoutException:
+                        raise_for_microsoft_sign_in_error(driver)
                         log("DUO verification buttons not found. Continuing.")
                     except (NoSuchWindowException, WebDriverException, ProtocolError, OSError) as exc:
                         if isinstance(exc, NoSuchWindowException) or is_browser_transport_error(exc):

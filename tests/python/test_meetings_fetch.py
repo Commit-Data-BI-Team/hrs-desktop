@@ -21,6 +21,7 @@ from meetings_fetch import (
     find_duo_action_button,
     chrome_binary_version,
     looks_like_graph_access_token,
+    microsoft_sign_in_error_message,
 )
 
 
@@ -109,7 +110,34 @@ class FakeOAuthDriver:
         return self.values
 
 
+class FakeBody:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeSignInDriver:
+    def __init__(self, text):
+        self.text = text
+
+    def find_element(self, _by, _selector):
+        return FakeBody(self.text)
+
+
 class MeetingsTokenCaptureTests(unittest.TestCase):
+    def test_reports_incorrect_microsoft_credentials_immediately(self):
+        message = microsoft_sign_in_error_message(
+            FakeSignInDriver(
+                "Your account or password is incorrect. If you don't remember your password, reset it now."
+            )
+        )
+
+        self.assertIn("rejected the saved username or password", message)
+
+    def test_does_not_treat_regular_microsoft_page_as_sign_in_error(self):
+        self.assertIsNone(
+            microsoft_sign_in_error_message(FakeSignInDriver("Approve sign in request"))
+        )
+
     def test_accepts_long_opaque_graph_access_tokens_but_not_abbreviated_values(self):
         self.assertTrue(looks_like_graph_access_token("opaque_" + "x" * 220))
         self.assertFalse(looks_like_graph_access_token("eyJ.short.parts"))

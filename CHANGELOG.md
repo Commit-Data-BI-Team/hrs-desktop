@@ -4,7 +4,8 @@
 
 ### Jira sprint management
 
-- Added the Jira Sprint Board as a full view inside the main HRS application window, opened directly from the tray and closed with its own top-right **X**.
+- Added a compact Jira Sprint Board directly inside the normal HRS tray window, with status tabs and Supabase contributor totals that do not open another window.
+- Added an explicit **Expand** action that opens the existing full board inside the main HRS application window; the expanded view closes with its own top-right **X**.
 - Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
 - Keeps active sprints editable and displays completed sprints in a clear read-only history view.
 - Uses the authenticated Supabase profile role for access control: managers can drag, transition, and rank Jira cards, while employees receive the complete board as a read-only view.

@@ -5296,6 +5296,31 @@ body.sprints-mode {
   min-height: 0;
 }
 
+.sprint-board-root.is-compact {
+  height: auto;
+  min-height: 0;
+}
+
+.sprint-board-root.is-compact .sprint-header-actions {
+  margin-right: 0;
+}
+
+.sprint-board-root.is-compact .sprint-board-toolbar {
+  padding: 10px;
+}
+
+.sprint-board-root.is-compact .sprint-only-select {
+  flex-basis: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.sprint-board-root.is-compact .sprint-goal-copy {
+  flex-basis: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
 .sprint-empty-state {
   width: min(460px, 100%);
   margin: 12vh auto 0;
@@ -5335,6 +5360,36 @@ body.sprints-mode {
 
 .sprint-board-columns.is-past {
   grid-template-columns: repeat(3, minmax(240px, 1fr));
+}
+
+.sprint-board-columns.is-compact,
+.sprint-board-columns.is-past.is-compact {
+  display: block;
+  min-height: 0;
+  overflow: visible;
+}
+
+.sprint-board-columns.is-compact .sprint-column {
+  min-height: 150px;
+  max-height: min(48vh, 410px);
+}
+
+.sprint-board-columns.is-compact .sprint-column-list {
+  max-height: min(40vh, 330px);
+}
+
+.sprint-board-root.is-compact .sprint-issue-card {
+  padding: 9px;
+}
+
+.sprint-compact-columns-switcher {
+  flex: 0 0 auto;
+}
+
+.sprint-empty-state.is-compact {
+  margin: 0;
+  width: 100%;
+  padding: 18px;
 }
 
 .sprint-close-button {

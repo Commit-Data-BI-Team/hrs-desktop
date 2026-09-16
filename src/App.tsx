@@ -2727,6 +2727,7 @@ export default function App() {
     | 'agenda'
     | 'employees'
     | 'reports'
+    | 'sprints'
     | 'settings'
   >('log')
   const [employeesAccessChecked, setEmployeesAccessChecked] = useState(false)
@@ -4309,6 +4310,7 @@ export default function App() {
       | 'agenda'
       | 'employees'
       | 'reports'
+      | 'sprints'
       | 'settings'
   ) {
     if (nextPanel === 'agenda' && !AGENDA_UI_ENABLED) {
@@ -4353,7 +4355,7 @@ export default function App() {
     options: { force?: boolean; reason?: 'enter' | 'focus' | 'timer' } = {}
   ) {
     if (!loggedIn) return
-    if (panel === 'agenda' || panel === 'settings' || panel === 'clockify') return
+    if (panel === 'agenda' || panel === 'settings' || panel === 'clockify' || panel === 'sprints') return
     const key = `${panel}:${dayjs(reportMonth).format('YYYY-MM')}:${reportSource}`
     const now = Date.now()
     const minAge = options.reason === 'focus' ? 20_000 : 0
@@ -20040,9 +20042,9 @@ export default function App() {
                     className="tray-nav-icon-btn"
                     size={38}
                     radius="md"
-                    variant="subtle"
+                    variant={trayPanel === 'sprints' ? 'light' : 'subtle'}
                     onClick={() => {
-                      void openSprintWindow()
+                      switchTrayPanel('sprints')
                     }}
                     aria-label="Jira Sprint Board"
                     title="Jira Sprint Board"
@@ -22042,6 +22044,20 @@ export default function App() {
                     </Card>
                     )}
                   </Stack>
+                ) : trayPanel === 'sprints' ? (
+                  <SprintBoard
+                    compact
+                    jiraStatus={jiraStatus}
+                    linkedIssueKeys={allProjectMissions
+                      .map(mission => mission.jiraIssueKey?.trim() ?? '')
+                      .filter(Boolean)}
+                    supabaseConnected={Boolean(supabaseStatus?.email)}
+                    canEdit={supabaseStatus?.profile?.role === 'manager'}
+                    onExpand={() => {
+                      void openSprintWindow()
+                    }}
+                    onClose={() => switchTrayPanel('log')}
+                  />
                 ) : (
                   <Stack gap="xs" className="tray-settings-panel">
                     <Card radius="md" withBorder className="tray-settings-card tray-theme-settings-card">

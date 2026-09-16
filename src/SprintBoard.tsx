@@ -6,6 +6,7 @@ import {
   Card,
   Group,
   Loader,
+  SegmentedControl,
   Select,
   Stack,
   Text,
@@ -13,6 +14,7 @@ import {
 } from '@mantine/core'
 import {
   IconArrowBackUp,
+  IconArrowsMaximize,
   IconClock,
   IconGripVertical,
   IconRefresh,
@@ -57,6 +59,8 @@ type Props = {
   linkedIssueKeys: string[]
   supabaseConnected: boolean
   canEdit: boolean
+  compact?: boolean
+  onExpand?: () => void
   onClose: () => void
 }
 
@@ -126,6 +130,8 @@ export function SprintBoard({
   linkedIssueKeys,
   supabaseConnected,
   canEdit,
+  compact = false,
+  onExpand,
   onClose
 }: Props) {
   const projectKeys = useMemo(() => {
@@ -138,6 +144,7 @@ export function SprintBoard({
   }, [jiraStatus])
   const [catalog, setCatalog] = useState<SprintCatalogItem[]>([])
   const [sprintSelection, setSprintSelection] = useState<string | null>(null)
+  const [compactColumn, setCompactColumn] = useState<SprintColumn>('indeterminate')
   const [backlogIssues, setBacklogIssues] = useState<JiraSprintIssue[]>([])
   const [sprintIssues, setSprintIssues] = useState<JiraSprintIssue[]>([])
   const [supabaseUsage, setSupabaseUsage] = useState<
@@ -168,7 +175,7 @@ export function SprintBoard({
   const selectedSprint = selectedCatalogItem?.sprint ?? null
   const selectedBoard = selectedCatalogItem?.board ?? null
   const isPastSprint = selectedSprint?.state === 'closed'
-  const isReadOnly = isPastSprint || !canEdit
+  const isReadOnly = isPastSprint || !canEdit || compact
 
   useEffect(() => {
     if (!jiraStatus?.configured || !projectKeys.length) return
@@ -334,6 +341,12 @@ export function SprintBoard({
   const visibleColumns: SprintColumn[] = isPastSprint
     ? ['todo', 'indeterminate', 'done']
     : ['backlog', 'todo', 'indeterminate', 'done']
+  const displayedColumns = compact ? [compactColumn] : visibleColumns
+
+  useEffect(() => {
+    if (!compact) return
+    if (isPastSprint && compactColumn === 'backlog') setCompactColumn('done')
+  }, [compact, isPastSprint, compactColumn])
 
   async function transitionToColumn(issueKey: string, column: Exclude<SprintColumn, 'backlog'>) {
     const transitions = await window.hrs.getJiraTransitions(issueKey)
@@ -613,7 +626,7 @@ export function SprintBoard({
     )
   }
 
-  const closeButton = (
+  const closeButton = compact ? null : (
     <Tooltip label="Close" withArrow>
       <ActionIcon
         className="sprint-close-button"
@@ -633,7 +646,11 @@ export function SprintBoard({
     return (
       <>
         {closeButton}
-        <Card withBorder radius="lg" className="sprint-empty-state">
+        <Card
+          withBorder
+          radius="lg"
+          className={`sprint-empty-state${compact ? ' is-compact' : ''}`}
+        >
           <Stack align="center" gap="sm">
             <IconRoute size={36} />
             <Text fw={800}>Connect Jira to manage sprints</Text>
@@ -647,16 +664,20 @@ export function SprintBoard({
   }
 
   return (
-    <Stack gap="md" className="sprint-board-root">
+    <Stack gap={compact ? 'xs' : 'md'} className={`sprint-board-root${compact ? ' is-compact' : ''}`}>
       {closeButton}
       <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
         <Stack gap={5}>
           <Group gap="xs">
             <IconRoute size={22} />
-            <Text fw={900} size="xl">Jira Sprint Board</Text>
+            <Text fw={900} size={compact ? 'md' : 'xl'}>Jira Sprint Board</Text>
           </Group>
           <Text size="sm" c="dimmed">
-            {isPastSprint
+            {compact
+              ? canEdit
+                ? 'Review the sprint here, or expand the board to edit Jira cards.'
+                : 'Review the sprint and Supabase hours in this read-only view.'
+              : isPastSprint
               ? 'Review completed sprint issues and the hours reported by every contributor.'
               : canEdit
                 ? 'Drag Jira issues between backlog and sprint statuses. Every drop is saved to Jira.'
@@ -675,6 +696,16 @@ export function SprintBoard({
           >
             Refresh
           </Button>
+          {compact && onExpand ? (
+            <Button
+              size="xs"
+              variant="light"
+              leftSection={<IconArrowsMaximize size={14} />}
+              onClick={onExpand}
+            >
+              Expand
+            </Button>
+          ) : null}
         </Group>
       </Group>
 
@@ -700,7 +731,9 @@ export function SprintBoard({
                 {isPastSprint
                   ? 'Past sprint · Read only'
                   : canEdit
-                    ? 'Manager editing'
+                    ? compact
+                      ? 'Manager view · Expand to edit'
+                      : 'Manager editing'
                     : 'Employee view · Read only'}
               </Badge>
               <Text size="xs" c="dimmed" lineClamp={2}>
@@ -736,11 +769,25 @@ export function SprintBoard({
         </Alert>
       ) : null}
 
+      {compact ? (
+        <SegmentedControl
+          fullWidth
+          size="xs"
+          value={compactColumn}
+          onChange={value => setCompactColumn(value as SprintColumn)}
+          data={visibleColumns.map(column => ({
+            value: column,
+            label: `${COLUMN_LABELS[column]} ${issuesByColumn[column].length}`
+          }))}
+          className="sprint-compact-columns-switcher"
+        />
+      ) : null}
+
       <div
-        className={`sprint-board-columns${isPastSprint ? ' is-past' : ''}`}
+        className={`sprint-board-columns${isPastSprint ? ' is-past' : ''}${compact ? ' is-compact' : ''}`}
         aria-busy={loadingIssues || mutationLoading}
       >
-        {visibleColumns.map(column => {
+        {displayedColumns.map(column => {
           const issues = issuesByColumn[column]
           return (
             <section
@@ -788,7 +835,11 @@ export function SprintBoard({
       </div>
 
       <Text size="xs" c="dimmed" ta="center">
-        {isPastSprint
+        {compact
+          ? canEdit
+            ? 'Expand the board to move and rank Jira cards.'
+            : 'Employee access is read-only.'
+          : isPastSprint
           ? 'Past sprints are read-only. Contributor totals come from Supabase reports.'
           : canEdit
             ? 'Manager access enabled. Moving and ranking issues is saved to Jira.'

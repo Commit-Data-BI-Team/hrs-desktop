@@ -19,8 +19,12 @@ test('manages active and past Jira sprints with Supabase contributors', async ()
   try {
     const trayPage = await app.firstWindow()
     await trayPage.waitForLoadState('domcontentloaded')
+    await trayPage.getByRole('button', { name: 'Jira Sprint Board' }).click()
+    await expect(trayPage.getByText('Jira Sprint Board', { exact: true })).toBeVisible()
+    await expect(trayPage.getByRole('button', { name: 'Expand' })).toBeVisible()
+    expect(app.windows()).toHaveLength(1)
     const sprintPagePromise = app.waitForEvent('window')
-    await trayPage.evaluate(() => window.hrs.openSprintWindow())
+    await trayPage.getByRole('button', { name: 'Expand' }).click()
     const sprintPage = await sprintPagePromise
     await sprintPage.waitForLoadState('domcontentloaded')
 

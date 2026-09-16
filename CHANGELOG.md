@@ -16,11 +16,12 @@
 - Added optimistic updates, automatic rollback on Jira errors, a one-click **Undo**, manual refresh, sprint goals, assignees, time progress, and HRS-linked issue badges.
 - Keeps each column independently scrollable and adapts the board to smaller Windows and macOS displays without forcing the app fullscreen.
 
-### Local HRS task display names
+### Local recent-shortcut names
 
-- Added a right-click **Change display name** action to regular HRS task shortcuts, matching the existing shared-task rename workflow.
-- Stores aliases locally by immutable HRS task ID and applies them to recent shortcuts and task selectors across app windows.
-- Keeps the original HRS task name and task ID for HRS logging, Supabase synchronization, reports, and source data, with a one-click **Restore original** action.
+- Added a right-click **Change display name** action to regular HRS recent shortcuts, matching the existing shared-task rename workflow.
+- Replaces the complete shortcut label—customer, arrow, and task—with one custom local name, rather than changing only the task portion.
+- Limits the alias to that recent-shortcut view; task selectors, reports, HRS logging, Supabase synchronization, and source data keep the original customer, task name, and ID.
+- Persists shortcut aliases locally by their stable route and provides a one-click **Restore original** action.
 
 ### Compact tray header
 

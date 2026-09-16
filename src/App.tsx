@@ -741,7 +741,7 @@ const AGENDA_UI_ENABLED = false
 const HRS_CREDENTIAL_RESET_REQUEST_KEY = 'hrs-credential-reset-request'
 const REPORT_CUSTOMER_ALIASES_STORAGE_KEY = 'hrs-report-customer-aliases-v1'
 const REPORT_MISSION_MAP_STORAGE_KEY = 'hrs-report-mission-map-v1'
-const TASK_DISPLAY_ALIASES_STORAGE_KEY = 'hrs-task-display-aliases-v1'
+const RECENT_SHORTCUT_ALIASES_STORAGE_KEY = 'hrs-recent-shortcut-aliases-v2'
 const MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY = 'hrs-meeting-excluded-subjects-v1'
 const EMPLOYEE_REPORT_ALL_VALUE = '__all_employees__'
 const EXCLUDED_EMPLOYEE_NAMES = new Set(['ronen amsalem'])
@@ -2541,7 +2541,13 @@ export default function App() {
   const [sharedTaskRenameDraft, setSharedTaskRenameDraft] = useState('')
   const [sharedTaskRenameSaving, setSharedTaskRenameSaving] = useState(false)
   const [sharedTaskRenameError, setSharedTaskRenameError] = useState<string | null>(null)
-  const [regularTaskRenameId, setRegularTaskRenameId] = useState<number | null>(null)
+  const [regularTaskRenameTarget, setRegularTaskRenameTarget] = useState<{
+    aliasKey: string
+    taskId: number
+    originalDisplayName: string
+    customerLabel: string
+    projectName: string
+  } | null>(null)
   const [regularTaskRenameDraft, setRegularTaskRenameDraft] = useState('')
   const [regularTaskRenameError, setRegularTaskRenameError] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
@@ -2751,8 +2757,8 @@ export default function App() {
   const [reportMissionMap, setReportMissionMap] = useState<Record<string, string>>(() =>
     safeGetLocalStorageStringRecord(REPORT_MISSION_MAP_STORAGE_KEY)
   )
-  const [taskDisplayAliases, setTaskDisplayAliases] = useState<Record<string, string>>(() =>
-    safeGetLocalStorageStringRecord(TASK_DISPLAY_ALIASES_STORAGE_KEY)
+  const [recentShortcutAliases, setRecentShortcutAliases] = useState<Record<string, string>>(() =>
+    safeGetLocalStorageStringRecord(RECENT_SHORTCUT_ALIASES_STORAGE_KEY)
   )
   const [editingCustomerAliasKey, setEditingCustomerAliasKey] = useState<string | null>(null)
   const [customerAliasDraft, setCustomerAliasDraft] = useState('')
@@ -11944,9 +11950,6 @@ export default function App() {
     return map
   }, [logs])
 
-  const getRegularTaskDisplayName = (taskId: number, originalName: string) =>
-    taskDisplayAliases[String(taskId)]?.trim() || originalName
-
   const taskNameMap = useMemo(() => {
     const map = new Map<string, WorkLog>()
     for (const log of activeTaskScope) {
@@ -12088,7 +12091,6 @@ export default function App() {
       .filter(log => !hiddenOriginalTaskIds.has(String(log.taskId)))
       .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
       .map(log => {
-        const displayName = getRegularTaskDisplayName(log.taskId, log.taskName)
         const cappedMission = allProjectMissions.find(
           mission =>
             !mission.virtual &&
@@ -12097,12 +12099,12 @@ export default function App() {
             (mission.hrsTaskIds ?? []).map(String).includes(String(log.taskId))
         )
         if (!cappedMission) {
-          return { value: log.taskName, label: displayName }
+          return { value: log.taskName, label: log.taskName }
         }
         const usedMinutes = getMissionUsedMinutesFromReports(cappedMission, allReportItems)
         return {
           value: log.taskName,
-          label: `${displayName} · ${minutesToHHMM(usedMinutes)} / ${cappedMission.cappedHours}h`
+          label: `${log.taskName} · ${minutesToHHMM(usedMinutes)} / ${cappedMission.cappedHours}h`
         }
       })
 
@@ -12118,8 +12120,7 @@ export default function App() {
     projectName,
     activeTaskScope,
     allReportItems,
-    reportMissionMap,
-    taskDisplayAliases
+    reportMissionMap
   ])
 
   async function deleteQuickFictiveTask(mission: ProjectMission) {
@@ -14303,9 +14304,9 @@ export default function App() {
       .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
       .map(log => ({
         value: String(log.taskId),
-        label: `${getRegularTaskDisplayName(log.taskId, log.taskName || `Task ${log.taskId}`)} · ${log.projectName || log.projectInstance}`
+        label: `${log.taskName || `Task ${log.taskId}`} · ${log.projectName || log.projectInstance}`
       }))
-  }, [activeTaskScope, taskDisplayAliases])
+  }, [activeTaskScope])
 
   const quickFictiveOriginalTask = useMemo(() => {
     if (!quickFictiveOriginalTaskId) return null
@@ -15183,9 +15184,9 @@ export default function App() {
       })
       .map(log => ({
         value: String(log.taskId),
-        label: getRegularTaskDisplayName(log.taskId, log.taskName || `Task ${log.taskId}`)
+        label: log.taskName || `Task ${log.taskId}`
       }))
-  }, [logs, projectDashboardCustomer, projectDashboardProject, taskDisplayAliases])
+  }, [logs, projectDashboardCustomer, projectDashboardProject])
 
   const selectedProjectHrsTask = useMemo(() => {
     if (!missionHrsTaskId) return null
@@ -15693,56 +15694,64 @@ export default function App() {
     }
   }
 
-  function openRegularTaskRename(taskId: number) {
-    const task = taskMetaById.get(taskId)
-    if (!task) return
+  function openRegularTaskRename(item: {
+    aliasKey: string
+    regularTaskId: number | null
+    originalDisplayName: string
+    customerLabel: string
+    projectName: string
+  }) {
+    if (item.regularTaskId === null) return
     setRecentQuickLogContextId(null)
-    setRegularTaskRenameId(taskId)
+    setRegularTaskRenameTarget({
+      aliasKey: item.aliasKey,
+      taskId: item.regularTaskId,
+      originalDisplayName: item.originalDisplayName,
+      customerLabel: item.customerLabel,
+      projectName: item.projectName
+    })
     setRegularTaskRenameDraft(
-      taskDisplayAliases[String(taskId)]?.trim() || task.taskName || `Task ${taskId}`
+      recentShortcutAliases[item.aliasKey]?.trim() || item.originalDisplayName
     )
     setRegularTaskRenameError(null)
   }
 
   function closeRegularTaskRename() {
-    setRegularTaskRenameId(null)
+    setRegularTaskRenameTarget(null)
     setRegularTaskRenameDraft('')
     setRegularTaskRenameError(null)
   }
 
   function saveRegularTaskRename() {
-    if (regularTaskRenameId === null) return
-    const task = taskMetaById.get(regularTaskRenameId)
-    if (!task) {
-      setRegularTaskRenameError('This HRS task is no longer available.')
-      return
-    }
+    if (!regularTaskRenameTarget) return
     const safeName = regularTaskRenameDraft.trim()
     if (!safeName) {
       setRegularTaskRenameError('Enter a display name.')
       return
     }
-    const originalName = task.taskName || `Task ${regularTaskRenameId}`
-    setTaskDisplayAliases(previous => {
+    setRecentShortcutAliases(previous => {
       const next = { ...previous }
-      if (safeName === originalName) delete next[String(regularTaskRenameId)]
-      else next[String(regularTaskRenameId)] = safeName
+      if (safeName === regularTaskRenameTarget.originalDisplayName) {
+        delete next[regularTaskRenameTarget.aliasKey]
+      } else {
+        next[regularTaskRenameTarget.aliasKey] = safeName
+      }
       return next
     })
     closeRegularTaskRename()
-    setLogSuccess(`Task display name changed to ${safeName}.`)
+    setLogSuccess(`Shortcut display name changed to ${safeName}.`)
   }
 
   function restoreRegularTaskName() {
-    if (regularTaskRenameId === null) return
-    const taskId = regularTaskRenameId
-    setTaskDisplayAliases(previous => {
+    if (!regularTaskRenameTarget) return
+    const aliasKey = regularTaskRenameTarget.aliasKey
+    setRecentShortcutAliases(previous => {
       const next = { ...previous }
-      delete next[String(taskId)]
+      delete next[aliasKey]
       return next
     })
     closeRegularTaskRename()
-    setLogSuccess('The original HRS task name was restored.')
+    setLogSuccess('The original shortcut name was restored.')
   }
 
   const resetMissionForm = () => {
@@ -15919,12 +15928,12 @@ export default function App() {
                 }}
                 title={
                   item.sharedMissionId
-                    ? `${item.customerLabel} -> ${item.taskLabel}. Right click to rename.`
-                    : `${item.customerLabel} -> ${item.taskLabel}. Right click to change the display name.`
+                    ? `${item.displayLabel}. Right click to rename.`
+                    : `${item.displayLabel}. Right click to change this shortcut label.`
                 }
               >
                 <span className="quicklog-recent-route">
-                  {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
+                  {item.displayLabel}
                 </span>
               </button>
             </Popover.Target>
@@ -15943,7 +15952,7 @@ export default function App() {
                   <button
                     type="button"
                     className="quicklog-recent-context-action"
-                    onClick={() => openRegularTaskRename(item.regularTaskId!)}
+                    onClick={() => openRegularTaskRename(item)}
                   >
                     <IconPencil size={15} />
                     <span>Change display name</span>
@@ -16365,6 +16374,9 @@ export default function App() {
       customerLabel: string
       taskValue: string
       taskLabel: string
+      aliasKey: string
+      originalDisplayName: string
+      displayLabel: string
       isVirtual: boolean
       sharedMissionId: string | null
       regularTaskId: number | null
@@ -16394,19 +16406,26 @@ export default function App() {
       const project = sourceTask?.projectName || meta?.projectName || item.projectInstance || 'Project'
       const taskValue = mission ? getMissionOptionValue(mission.id) : meta?.taskName || item.taskName
       const originalTaskLabel = mission?.name || meta?.taskName || item.taskName
-      const taskLabel = mission
-        ? originalTaskLabel
-        : getRegularTaskDisplayName(item.taskId, originalTaskLabel)
+      const taskLabel = originalTaskLabel
       const routeKey = [project, rawCustomer, taskValue].map(normalizeText).join('|')
+      const aliasKey = [project, rawCustomer, String(item.taskId)].map(normalizeText).join('|')
+      const customerLabel = getCustomerDisplayName(rawCustomer)
+      const originalDisplayName = `${customerLabel} -> ${originalTaskLabel}`
+      const displayLabel = mission
+        ? originalDisplayName
+        : recentShortcutAliases[aliasKey]?.trim() || originalDisplayName
       if (seenRoutes.has(routeKey)) continue
       seenRoutes.add(routeKey)
       distinctItems.push({
         id: `${item.dateKey}-${item.dayIndex}-${item.taskId}-${mission?.id ?? 'hrs'}`,
         projectName: project,
         customerName: rawCustomer,
-        customerLabel: getCustomerDisplayName(rawCustomer),
+        customerLabel,
         taskValue,
         taskLabel,
+        aliasKey,
+        originalDisplayName,
+        displayLabel,
         isVirtual: Boolean(mission),
         sharedMissionId: mission?.shared ? mission.id : null,
         regularTaskId: mission ? null : item.taskId
@@ -16420,7 +16439,7 @@ export default function App() {
     allProjectMissions,
     jiraCustomerAliases,
     reportMissionMap,
-    taskDisplayAliases
+    recentShortcutAliases
   ])
 
   const clockHistoryTotalMinutes = useMemo(
@@ -16661,16 +16680,21 @@ export default function App() {
 
   useEffect(() => {
     try {
-      localStorage.setItem(TASK_DISPLAY_ALIASES_STORAGE_KEY, JSON.stringify(taskDisplayAliases))
+      localStorage.setItem(
+        RECENT_SHORTCUT_ALIASES_STORAGE_KEY,
+        JSON.stringify(recentShortcutAliases)
+      )
     } catch {
       // Ignore unavailable local storage.
     }
-  }, [taskDisplayAliases])
+  }, [recentShortcutAliases])
 
   useEffect(() => {
     const handleStorage = (event: StorageEvent) => {
-      if (event.key !== TASK_DISPLAY_ALIASES_STORAGE_KEY) return
-      setTaskDisplayAliases(safeGetLocalStorageStringRecord(TASK_DISPLAY_ALIASES_STORAGE_KEY))
+      if (event.key !== RECENT_SHORTCUT_ALIASES_STORAGE_KEY) return
+      setRecentShortcutAliases(
+        safeGetLocalStorageStringRecord(RECENT_SHORTCUT_ALIASES_STORAGE_KEY)
+      )
     }
     window.addEventListener('storage', handleStorage)
     return () => window.removeEventListener('storage', handleStorage)
@@ -19585,13 +19609,11 @@ export default function App() {
     </Modal>
   )
 
-  const regularTaskRenameTarget =
-    regularTaskRenameId === null ? null : taskMetaById.get(regularTaskRenameId) ?? null
   const regularTaskRenameModal = (
     <Modal
-      opened={regularTaskRenameId !== null}
+      opened={Boolean(regularTaskRenameTarget)}
       onClose={closeRegularTaskRename}
-      title="Change task display name"
+      title="Change shortcut display name"
       centered
       size="sm"
       classNames={isFloating ? { content: 'floating-modal' } : undefined}
@@ -19600,18 +19622,18 @@ export default function App() {
         {regularTaskRenameTarget ? (
           <Stack gap={2}>
             <Text size="sm" c="dimmed">
-              {getCustomerDisplayName(regularTaskRenameTarget.customerName)}
+              {regularTaskRenameTarget.customerLabel}
               {regularTaskRenameTarget.projectName
                 ? ` · ${regularTaskRenameTarget.projectName}`
                 : ''}
             </Text>
             <Text size="xs" c="dimmed">
-              Original HRS name: {regularTaskRenameTarget.taskName}
+              Original shortcut: {regularTaskRenameTarget.originalDisplayName}
             </Text>
           </Stack>
         ) : null}
         <TextInput
-          label="Display name"
+          label="Shortcut display name"
           value={regularTaskRenameDraft}
           onChange={event => {
             setRegularTaskRenameDraft(event.currentTarget.value)
@@ -19623,8 +19645,8 @@ export default function App() {
           autoFocus
         />
         <Alert color="cyan" variant="light" radius="md">
-          This changes only the name shown in HRS Desktop on this device. Reports sent to HRS and
-          Supabase always keep the original task name and task ID.
+          This replaces the entire label of this recent shortcut only. Task selectors, reports,
+          HRS logging, and Supabase synchronization keep the original customer, task name, and ID.
         </Alert>
         {regularTaskRenameError ? (
           <Alert color="red" variant="light" radius="md">
@@ -19636,7 +19658,10 @@ export default function App() {
             variant="subtle"
             color="gray"
             onClick={restoreRegularTaskName}
-            disabled={!regularTaskRenameTarget || !taskDisplayAliases[String(regularTaskRenameId)]}
+            disabled={
+              !regularTaskRenameTarget ||
+              !recentShortcutAliases[regularTaskRenameTarget.aliasKey]
+            }
           >
             Restore original
           </Button>

@@ -89,16 +89,24 @@ test('renders the tray reports KPIs and employee projects', async () => {
     await expect(regularShortcut).toBeVisible()
     await regularShortcut.click({ button: 'right' })
     await window.getByRole('button', { name: 'Change display name' }).click()
-    const taskAliasDialog = window.getByRole('dialog', { name: 'Change task display name' })
-    await expect(taskAliasDialog.getByText('Original HRS name: Design sync')).toBeVisible()
-    await taskAliasDialog.getByRole('textbox', { name: 'Display name' }).fill('Design sync UI alias')
+    const taskAliasDialog = window.getByRole('dialog', { name: 'Change shortcut display name' })
+    await expect(taskAliasDialog.getByText('Original shortcut: Acme Labs -> Design sync')).toBeVisible()
+    await taskAliasDialog
+      .getByRole('textbox', { name: 'Shortcut display name' })
+      .fill('Design sync UI alias')
     await taskAliasDialog.getByRole('button', { name: 'Save display name' }).click()
-    await expect(
-      window.locator('.quicklog-recent-shortcut').filter({ hasText: 'Design sync UI alias' })
-    ).toBeVisible()
+    const aliasedShortcut = window
+      .locator('.quicklog-recent-shortcut')
+      .filter({ hasText: 'Design sync UI alias' })
+    await expect(aliasedShortcut).toHaveText('Design sync UI alias')
+    await aliasedShortcut.click()
+    await expect(window.getByRole('textbox', { name: 'Task' })).toHaveValue('Design sync')
+    await expect(window.getByRole('textbox', { name: 'Customer', exact: true })).toHaveValue(
+      'Acme Labs'
+    )
     await expect.poll(() =>
       window.evaluate(() => {
-        const aliases = JSON.parse(localStorage.getItem('hrs-task-display-aliases-v1') || '{}')
+        const aliases = JSON.parse(localStorage.getItem('hrs-recent-shortcut-aliases-v2') || '{}')
         return Object.values(aliases).includes('Design sync UI alias')
       })
     ).toBe(true)
@@ -109,9 +117,6 @@ test('renders the tray reports KPIs and employee projects', async () => {
         getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length
       )
     ).toBe(1)
-    await window.getByRole('textbox', { name: 'Project' }).fill('Website revamp')
-    await window.getByRole('option', { name: /Website revamp/ }).click()
-    await expect(window.getByRole('textbox', { name: 'Customer', exact: true })).toHaveValue('Acme Labs')
     await expect.poll(() =>
       window.locator('.tray-content').evaluate(element =>
         element.scrollWidth <= element.clientWidth + 1

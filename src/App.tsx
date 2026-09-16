@@ -14957,6 +14957,72 @@ export default function App() {
     </span>
   )
 
+  const TrayCalendarStatusLegend = ({ inMeetingBar = false }: { inMeetingBar?: boolean }) => (
+    <div
+      className={`tray-calendar-status-legend${inMeetingBar ? ' is-in-meeting-bar' : ''}`}
+      aria-label="Calendar reporting status legend"
+    >
+      <Tooltip
+        label="Reported workdays below the required daily hours"
+        withArrow
+        openDelay={150}
+        withinPortal
+      >
+        <button
+          type="button"
+          className={[
+            'tray-calendar-status-item',
+            'is-incomplete',
+            trayCalendarStatusFilter === 'incomplete' ? 'is-active' : ''
+          ]
+            .join(' ')
+            .trim()}
+          aria-pressed={trayCalendarStatusFilter === 'incomplete'}
+          onClick={() =>
+            setTrayCalendarStatusFilter(current =>
+              current === 'incomplete' ? null : 'incomplete'
+            )
+          }
+        >
+          <span className="tray-calendar-status-dot" aria-hidden="true" />
+          <span>Missing hours</span>
+          <span className="tray-calendar-status-count">
+            {trayCalendarStatusCounts.incomplete}
+          </span>
+        </button>
+      </Tooltip>
+      <Tooltip
+        label="Past required workdays with no reported hours; weekends and holidays are excluded"
+        withArrow
+        openDelay={150}
+        withinPortal
+      >
+        <button
+          type="button"
+          className={[
+            'tray-calendar-status-item',
+            'is-unreported',
+            trayCalendarStatusFilter === 'unreported' ? 'is-active' : ''
+          ]
+            .join(' ')
+            .trim()}
+          aria-pressed={trayCalendarStatusFilter === 'unreported'}
+          onClick={() =>
+            setTrayCalendarStatusFilter(current =>
+              current === 'unreported' ? null : 'unreported'
+            )
+          }
+        >
+          <span className="tray-calendar-status-dot" aria-hidden="true" />
+          <span>Unreported days</span>
+          <span className="tray-calendar-status-count">
+            {trayCalendarStatusCounts.unreported}
+          </span>
+        </button>
+      </Tooltip>
+    </div>
+  )
+
   const quickLogMeetingsPanel = (
     <Stack gap="xs" className="quick-meetings-panel">
       <Group className="quick-meetings-actions" justify="space-between" align="stretch" wrap="nowrap">
@@ -15027,17 +15093,7 @@ export default function App() {
             {meetingSubjectFilterContent}
           </Popover.Dropdown>
         </Popover>
-	        <Button
-	          size="xs"
-	          variant="light"
-	          className="quick-floating-timer-button"
-	          leftSection={<IconClock size={15} stroke={2.2} />}
-          onClick={() => {
-	            void openFloatingTimer()
-	          }}
-	        >
-	          Clockify
-	        </Button>
+        <TrayCalendarStatusLegend inMeetingBar />
       </Group>
 
       {meetingsError && (
@@ -20078,71 +20134,8 @@ export default function App() {
 
               <div className={`tray-panel-body${trayPanel === 'clockify' ? ' is-clockify' : ''}`}>
                 {trayPanel === 'log' ? (
-                  <Stack gap="xs">
+                  <Stack gap={4}>
                     {quickLogMeetingsPanel}
-                    <div
-                      className="tray-calendar-status-legend"
-                      aria-label="Calendar reporting status legend"
-                    >
-                      <Tooltip
-                        label="Reported workdays below the required daily hours"
-                        withArrow
-                        openDelay={150}
-                        withinPortal
-                      >
-                        <button
-                          type="button"
-                          className={[
-                            'tray-calendar-status-item',
-                            'is-incomplete',
-                            trayCalendarStatusFilter === 'incomplete' ? 'is-active' : ''
-                          ]
-                            .join(' ')
-                            .trim()}
-                          aria-pressed={trayCalendarStatusFilter === 'incomplete'}
-                          onClick={() =>
-                            setTrayCalendarStatusFilter(current =>
-                              current === 'incomplete' ? null : 'incomplete'
-                            )
-                          }
-                        >
-                          <span className="tray-calendar-status-dot" aria-hidden="true" />
-                          <span>Missing hours</span>
-                          <span className="tray-calendar-status-count">
-                            {trayCalendarStatusCounts.incomplete}
-                          </span>
-                        </button>
-                      </Tooltip>
-                      <Tooltip
-                        label="Past required workdays with no reported hours; weekends and holidays are excluded"
-                        withArrow
-                        openDelay={150}
-                        withinPortal
-                      >
-                        <button
-                          type="button"
-                          className={[
-                            'tray-calendar-status-item',
-                            'is-unreported',
-                            trayCalendarStatusFilter === 'unreported' ? 'is-active' : ''
-                          ]
-                            .join(' ')
-                            .trim()}
-                          aria-pressed={trayCalendarStatusFilter === 'unreported'}
-                          onClick={() =>
-                            setTrayCalendarStatusFilter(current =>
-                              current === 'unreported' ? null : 'unreported'
-                            )
-                          }
-                        >
-                          <span className="tray-calendar-status-dot" aria-hidden="true" />
-                          <span>Unreported days</span>
-                          <span className="tray-calendar-status-count">
-                            {trayCalendarStatusCounts.unreported}
-                          </span>
-                        </button>
-                      </Tooltip>
-                    </div>
                     <div className="tray-calendar-shell">
                       {(() => {
                         const monthStart = dayjs(reportMonth).startOf('month')

@@ -3345,7 +3345,7 @@ html[data-platform='mac'] body.tray-mode {
 
 .tray-shell {
   height: 100vh;
-  padding: 4px 10px 0;
+  padding: 0 10px;
   box-sizing: border-box;
   background: var(--tray-bg);
   will-change: opacity, transform;
@@ -3399,7 +3399,7 @@ html[data-platform='windows'] .tray-shell-enter {
   max-width: 100%;
   min-width: 0;
   height: auto;
-  max-height: calc(100vh - 6px);
+  max-height: 100vh;
   overflow-y: auto;
   overflow-x: hidden;
   overscroll-behavior: contain;
@@ -3408,12 +3408,21 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-window-controls {
-  position: sticky;
-  top: 0;
+  position: fixed;
+  top: 6px;
+  right: 10px;
   z-index: 8;
-  min-height: 30px;
-  padding: 2px 0;
-  background: linear-gradient(180deg, var(--tray-bg) 68%, transparent);
+  display: flex !important;
+  flex-direction: column !important;
+  align-items: center !important;
+  min-height: 0;
+  padding: 0;
+  gap: 2px !important;
+  background: transparent;
+}
+
+.tray-window-control-btn.is-close {
+  order: -1;
 }
 
 .tray-window-control-btn {
@@ -3484,7 +3493,8 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-month-nav {
-  margin-top: 0;
+  margin-top: 1px;
+  min-height: 30px;
 }
 
 .tray-month-nav-spacer {
@@ -3500,14 +3510,14 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-calendar-shell {
-  padding: 8px;
+  padding: 6px;
   border-radius: 16px;
   background: rgba(11, 18, 22, 0.75);
   border: 1px solid rgba(255, 255, 255, 0.06);
 }
 
 .quick-meetings-panel {
-  padding: 8px;
+  padding: 6px;
   border-radius: 16px;
   background: rgba(10, 14, 22, 0.58);
   border: 1px solid rgba(171, 119, 255, 0.16);
@@ -3521,6 +3531,27 @@ html[data-platform='windows'] .tray-shell-enter {
   gap: 6px 12px;
   min-height: 20px;
   padding: 0 4px;
+}
+
+.tray-calendar-status-legend.is-in-meeting-bar {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  align-content: stretch;
+  justify-content: stretch;
+  gap: 2px;
+  min-height: 48px;
+  padding: 2px 4px;
+  border: 1px solid rgba(100, 190, 255, 0.16);
+  border-radius: 14px;
+  background: rgba(11, 45, 74, 0.36);
+}
+
+.tray-calendar-status-legend.is-in-meeting-bar .tray-calendar-status-item {
+  width: 100%;
+  min-height: 20px;
+  justify-content: space-between;
+  padding: 2px 5px;
+  font-size: 0.56rem;
 }
 
 .tray-calendar-status-item {
@@ -3785,7 +3816,8 @@ html[data-platform='windows'] .tray-shell-enter {
   grid-template-columns: repeat(auto-fit, minmax(36px, 1fr));
   gap: 4px;
   width: 100%;
-  padding-inline: 6px;
+  padding-left: 6px;
+  padding-right: 48px;
   align-items: center;
   justify-items: center;
 }

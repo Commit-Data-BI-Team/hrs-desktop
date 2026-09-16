@@ -13526,14 +13526,21 @@ export default function App() {
       return
     }
     if (logToJira) {
-      setJiraIssueKey(null)
+      const selectedMissionId = getMissionIdFromTaskValue(debouncedTaskName)
+      const selectedMissionIssueKey = selectedMissionId
+        ? allProjectMissions
+            .find(mission => mission.id === selectedMissionId)
+            ?.jiraIssueKey?.trim()
+            .toUpperCase() ?? null
+        : null
+      setJiraIssueKey(selectedMissionIssueKey)
       setJiraIssues([])
       void loadJiraWorkItems(mappedEpicKey)
       return
     }
     setJiraLoadingIssues(false)
     setJiraIssueLoadError(null)
-  }, [jiraConfigured, mappedEpicKey, logToJira])
+  }, [jiraConfigured, mappedEpicKey, logToJira, debouncedTaskName, allProjectMissions])
 
   useEffect(() => {
     if (!logToJira) return
@@ -13949,6 +13956,35 @@ export default function App() {
     selectedQuickLogMission?.jiraIssueKey,
     selectedQuickLogParentJiraKey
   )
+  const quickLogJiraIssueOptions = useMemo(() => {
+    const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase()
+    if (!missionIssueKey || jiraIssueOptions.some(option => option.value === missionIssueKey)) {
+      return jiraIssueOptions
+    }
+    return [
+      {
+        value: missionIssueKey,
+        label: `${missionIssueKey} · ${selectedQuickLogMission.name}`
+      },
+      ...jiraIssueOptions
+    ]
+  }, [jiraIssueOptions, selectedQuickLogMission])
+  const autoJiraMissionRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase()
+    if (selectedQuickLogMission && missionIssueKey && jiraConfigured) {
+      autoJiraMissionRef.current = selectedQuickLogMission.id
+      setJiraIssueKey(missionIssueKey)
+      setLogToJira(true)
+      return
+    }
+    if (autoJiraMissionRef.current && !selectedQuickLogMission) {
+      autoJiraMissionRef.current = null
+      setJiraIssueKey(null)
+      setLogToJira(false)
+    }
+  }, [selectedQuickLogMission?.id, selectedQuickLogMission?.jiraIssueKey, jiraConfigured])
 
   useEffect(() => {
     if (!integrationComposerOpen || !integrationQuickLogLinked) return
@@ -15397,6 +15433,8 @@ export default function App() {
       })
       void loadJiraWorkItems(selectedParentIssueKey, true)
       await loadProjectManagementConfig()
+      setJiraIssueKey(createdIssue.key.trim().toUpperCase())
+      setLogToJira(true)
       setTaskName(getMissionOptionValue(sharedMission.id))
       setSuppressTaskAutoSelect(false)
       setQuickFictiveModalOpen(false)
@@ -15605,24 +15643,6 @@ export default function App() {
                   {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
                   {percentLabel}
                 </Text>
-                <Tooltip label="Send project update" withArrow withinPortal>
-                  <ActionIcon
-                    size="sm"
-                    variant="subtle"
-                    className="quick-fictive-usage-action"
-                    aria-label="Send project update"
-                    onClick={() =>
-                      openIntegrationUpdate({
-                        customer: selectedQuickLogUsageCustomer,
-                        issueKey: selectedQuickLogJiraTarget,
-                        message: `${gauge.title}: `,
-                        followQuickLog: true
-                      })
-                    }
-                  >
-                    <IconMessageCircle size={14} />
-                  </ActionIcon>
-                </Tooltip>
               </div>
               <div
                 className="quick-fictive-usage-track"
@@ -20156,30 +20176,64 @@ export default function App() {
                         disabled={lockCustomer}
                         size="xs"
                       />
-                      <Select
-                        label="Task"
-                        placeholder="Choose a task"
-                        data={taskOptions}
-                        value={taskName}
-                        onChange={value => {
-                          handleQuickLogTaskChange(value, {
-                            markTouched: true,
-                            manageAutoSelect: true
-                          })
-                        }}
-                        renderOption={taskSelectRenderOption}
-                        classNames={{
-                          dropdown: 'task-select-dropdown',
-                          option: 'task-select-mantine-option'
-                        }}
-                        styles={traySelectStyles}
-                        searchable
-                        clearable
-                        nothingFoundMessage="No matching task"
-                        maxDropdownHeight={180}
-                        disabled={lockTask}
-                        size="xs"
-                      />
+                      <div className="tray-task-field-with-update">
+                        <Select
+                          label="Task"
+                          placeholder="Choose a task"
+                          data={taskOptions}
+                          value={taskName}
+                          onChange={value => {
+                            handleQuickLogTaskChange(value, {
+                              markTouched: true,
+                              manageAutoSelect: true
+                            })
+                          }}
+                          renderOption={taskSelectRenderOption}
+                          classNames={{
+                            dropdown: 'task-select-dropdown',
+                            option: 'task-select-mantine-option'
+                          }}
+                          styles={traySelectStyles}
+                          searchable
+                          clearable
+                          nothingFoundMessage="No matching task"
+                          maxDropdownHeight={180}
+                          disabled={lockTask}
+                          size="xs"
+                        />
+                        <Tooltip
+                          label={integrationComposerOpen ? 'Close Jira & Slack update' : 'Update Jira & Slack'}
+                          withArrow
+                          withinPortal
+                        >
+                          <ActionIcon
+                            size="sm"
+                            variant={integrationComposerOpen ? 'filled' : 'light'}
+                            className={`tray-task-update-bubble${integrationComposerOpen ? ' is-open' : ''}`}
+                            aria-label={
+                              integrationComposerOpen
+                                ? 'Close Jira and Slack update'
+                                : 'Update Jira and Slack'
+                            }
+                            disabled={!selectedQuickLogUsageCustomer && !customerName}
+                            onClick={() => {
+                              if (integrationComposerOpen) {
+                                setIntegrationComposerOpen(false)
+                                setIntegrationMentionOpen(false)
+                                return
+                              }
+                              openIntegrationUpdate({
+                                customer: selectedQuickLogUsageCustomer || customerName,
+                                issueKey: selectedQuickLogJiraTarget,
+                                message: comment.trim(),
+                                followQuickLog: true
+                              })
+                            }}
+                          >
+                            <IconMessageCircle size={14} />
+                          </ActionIcon>
+                        </Tooltip>
+                      </div>
                     </SimpleGrid>
                     {renderQuickFictiveUsageBar(true)}
 
@@ -20215,31 +20269,6 @@ export default function App() {
                       withAsterisk
                     />
 
-                    <Button
-                      size="xs"
-                      variant={integrationComposerOpen ? 'filled' : 'light'}
-                      className={`tray-integration-launch${integrationComposerOpen ? ' is-open' : ''}`}
-                      leftSection={<IconMessageCircle size={14} />}
-                      disabled={!selectedQuickLogUsageCustomer && !customerName}
-                      onClick={() => {
-                        if (integrationComposerOpen) {
-                          setIntegrationComposerOpen(false)
-                          setIntegrationMentionOpen(false)
-                          return
-                        }
-                        openIntegrationUpdate({
-                          customer: selectedQuickLogUsageCustomer || customerName,
-                          issueKey: selectedQuickLogJiraTarget,
-                          message: comment.trim(),
-                          followQuickLog: true
-                        })
-                      }}
-                    >
-                      {integrationComposerOpen
-                        ? 'Close Jira + Slack update'
-                        : 'Update Jira & Slack'}
-                    </Button>
-
                     <Collapse
                       in={integrationComposerOpen}
                       transitionDuration={320}
@@ -20262,8 +20291,8 @@ export default function App() {
                             onChange={event => {
                               const next = event.currentTarget.checked
                               setLogToJira(next)
-                              if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                                setJiraIssueKey(jiraIssueOptions[0].value)
+                              if (next && !jiraIssueKey && quickLogJiraIssueOptions.length) {
+                                setJiraIssueKey(quickLogJiraIssueOptions[0].value)
                               }
                             }}
                             label="Log to Jira"
@@ -20274,7 +20303,7 @@ export default function App() {
                           <Select
                             label="Jira work item"
                             placeholder="Choose an issue"
-                            data={jiraIssueOptions}
+                            data={quickLogJiraIssueOptions}
                             value={jiraIssueKey}
                             onChange={value => {
                               setJiraIssueKey(value)

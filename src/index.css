@@ -3121,21 +3121,16 @@ body.floating-mode {
 
 .quick-fictive-usage-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(140px, max-content) 28px;
+  grid-template-columns: minmax(0, 1fr) minmax(140px, max-content);
   grid-template-areas:
-    'kind kind action'
-    'title hours hours';
+    'kind kind'
+    'title hours';
   column-gap: 8px;
   row-gap: 2px;
   align-items: start;
   width: 100%;
   max-width: 100%;
   min-width: 0;
-}
-
-.quick-fictive-usage-action {
-  grid-area: action;
-  justify-self: end;
 }
 
 .quick-fictive-usage-title {
@@ -5144,6 +5139,35 @@ html[data-platform='windows'] .tray-calendar {
 .tray-filters .mantine-Select-input {
   padding-left: 8px;
   padding-right: 24px;
+}
+
+.tray-task-field-with-update {
+  position: relative;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+}
+
+.tray-task-field-with-update .tray-task-update-bubble {
+  position: absolute;
+  top: -3px;
+  right: 0;
+  z-index: 3;
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  color: #86d6ff;
+  border-color: rgba(91, 185, 239, 0.34);
+  background: linear-gradient(145deg, rgba(28, 105, 160, 0.32), rgba(87, 58, 153, 0.26));
+  box-shadow: 0 4px 12px rgba(5, 30, 52, 0.22);
+}
+
+.tray-task-field-with-update .tray-task-update-bubble:hover,
+.tray-task-field-with-update .tray-task-update-bubble.is-open {
+  color: #dff6ff;
+  border-color: rgba(116, 211, 255, 0.62);
+  box-shadow: 0 0 0 2px rgba(91, 185, 239, 0.12), 0 6px 16px rgba(5, 30, 52, 0.3);
 }
 
 .tray-log-submit {

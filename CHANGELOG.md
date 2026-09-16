@@ -22,6 +22,7 @@
 - Switched meeting authentication to Graph Explorer's native MSAL/PKCE sign-in, handles the post-DUO “Stay signed in?” popup safely, and captures the usable bearer token from the first authenticated Graph request.
 - Accepts large real-world attendee lists from company-wide meetings while retaining bounded per-field, per-list, meeting-count, and total-payload validation.
 - Added compact yellow **Missing hours** and red **Unreported days** indicators above the tray calendar, with live counts that exclude weekends, future dates, HRS holidays, and Israeli `yomTov` holidays.
+- Made each reporting indicator clickable: the chosen category stays bright while unrelated calendar days dim, and clicking it again restores the complete month.
 
 ## 1.0.18
 

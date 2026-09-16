@@ -2413,6 +2413,9 @@ export default function App() {
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({ state: 'idle' })
   const [appUpdateActionLoading, setAppUpdateActionLoading] = useState(false)
   const [israeliHolidays, setIsraeliHolidays] = useState<IsraeliHoliday[]>([])
+  const [trayCalendarStatusFilter, setTrayCalendarStatusFilter] = useState<
+    'incomplete' | 'unreported' | null
+  >(null)
   const [jiraActiveOnly, setJiraActiveOnly] = useState(true)
   const [jiraReportedOnly, setJiraReportedOnly] = useState(true)
   const [jiraMappingProject, setJiraMappingProject] = useState<string | null>(null)
@@ -17351,11 +17354,18 @@ export default function App() {
       ? monthStart.endOf('month')
       : today
     if (lastRelevantDay.isBefore(monthStart, 'day')) {
-      return { incomplete: 0, unreported: 0 }
+      return {
+        incomplete: 0,
+        unreported: 0,
+        incompleteDays: new Set<string>(),
+        unreportedDays: new Set<string>()
+      }
     }
 
     let incomplete = 0
     let unreported = 0
+    const incompleteDays = new Set<string>()
+    const unreportedDays = new Set<string>()
     let cursor = monthStart
     while (cursor.isBefore(lastRelevantDay, 'day') || cursor.isSame(lastRelevantDay, 'day')) {
       const key = cursor.format('YYYY-MM-DD')
@@ -17371,14 +17381,16 @@ export default function App() {
       if (!isWeekend && !isHoliday && targetMinutes > 0) {
         if (!hasReports) {
           unreported += 1
+          unreportedDays.add(key)
         } else if ((info?.totalMinutes ?? 0) < targetMinutes) {
           incomplete += 1
+          incompleteDays.add(key)
         }
       }
       cursor = cursor.add(1, 'day')
     }
 
-    return { incomplete, unreported }
+    return { incomplete, unreported, incompleteDays, unreportedDays }
   }, [reportMonth, reportsByDate, weekendDays, israeliHolidaysByDate])
 
   const handleFloatingLog = async () => {
@@ -19784,13 +19796,28 @@ export default function App() {
                         openDelay={150}
                         withinPortal
                       >
-                        <span className="tray-calendar-status-item is-incomplete">
+                        <button
+                          type="button"
+                          className={[
+                            'tray-calendar-status-item',
+                            'is-incomplete',
+                            trayCalendarStatusFilter === 'incomplete' ? 'is-active' : ''
+                          ]
+                            .join(' ')
+                            .trim()}
+                          aria-pressed={trayCalendarStatusFilter === 'incomplete'}
+                          onClick={() =>
+                            setTrayCalendarStatusFilter(current =>
+                              current === 'incomplete' ? null : 'incomplete'
+                            )
+                          }
+                        >
                           <span className="tray-calendar-status-dot" aria-hidden="true" />
                           <span>Missing hours</span>
                           <span className="tray-calendar-status-count">
                             {trayCalendarStatusCounts.incomplete}
                           </span>
-                        </span>
+                        </button>
                       </Tooltip>
                       <Tooltip
                         label="Past required workdays with no reported hours; weekends and holidays are excluded"
@@ -19798,13 +19825,28 @@ export default function App() {
                         openDelay={150}
                         withinPortal
                       >
-                        <span className="tray-calendar-status-item is-unreported">
+                        <button
+                          type="button"
+                          className={[
+                            'tray-calendar-status-item',
+                            'is-unreported',
+                            trayCalendarStatusFilter === 'unreported' ? 'is-active' : ''
+                          ]
+                            .join(' ')
+                            .trim()}
+                          aria-pressed={trayCalendarStatusFilter === 'unreported'}
+                          onClick={() =>
+                            setTrayCalendarStatusFilter(current =>
+                              current === 'unreported' ? null : 'unreported'
+                            )
+                          }
+                        >
                           <span className="tray-calendar-status-dot" aria-hidden="true" />
                           <span>Unreported days</span>
                           <span className="tray-calendar-status-count">
                             {trayCalendarStatusCounts.unreported}
                           </span>
-                        </span>
+                        </button>
                       </Tooltip>
                     </div>
                     <div className="tray-calendar-shell">
@@ -19830,7 +19872,11 @@ export default function App() {
                           weeks.push(cells.slice(index, index + 7))
                         }
                         return (
-                          <div className="tray-calendar" role="grid" aria-label="Quick log calendar">
+                          <div
+                            className={`tray-calendar${trayCalendarStatusFilter ? ' has-status-filter' : ''}`}
+                            role="grid"
+                            aria-label="Quick log calendar"
+                          >
                             <div className="tray-calendar-weekdays" role="row">
                               {['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].map(label => (
                                 <span key={label} className="tray-calendar-weekday" role="columnheader">
@@ -19900,6 +19946,15 @@ export default function App() {
                                     const hasMeetings = dayMeetings.length > 0
                                     const hasManyMeetings = dayMeetings.length > 1
                                     const hasDayHoverContent = hasReports || hasMeetings || hasIsraeliHoliday
+                                    const isStatusMatch =
+                                      trayCalendarStatusFilter === 'incomplete'
+                                        ? trayCalendarStatusCounts.incompleteDays.has(dayCell.key)
+                                        : trayCalendarStatusFilter === 'unreported'
+                                          ? trayCalendarStatusCounts.unreportedDays.has(dayCell.key)
+                                          : false
+                                    const isStatusDimmed = Boolean(
+                                      trayCalendarStatusFilter && !isStatusMatch
+                                    )
                                     return (
                                       <HoverCard
                                         key={dayCell.key}
@@ -19933,7 +19988,9 @@ export default function App() {
                                                 isWeekend ? 'is-weekend' : '',
                                                 heatmapActive ? 'heatmap' : '',
                                                 isSelected ? 'is-selected' : '',
-                                                isToday ? 'is-today' : ''
+                                                isToday ? 'is-today' : '',
+                                                isStatusMatch ? 'is-status-match' : '',
+                                                isStatusDimmed ? 'is-status-dimmed' : ''
                                               ]
                                                 .join(' ')
                                                 .trim()}

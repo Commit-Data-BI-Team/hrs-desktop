@@ -3529,6 +3529,11 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-calendar-status-item {
+  appearance: none;
+  border: 1px solid transparent;
+  background: transparent;
+  font: inherit;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
   gap: 5px;
@@ -3538,6 +3543,36 @@ html[data-platform='windows'] .tray-shell-enter {
   font-weight: 700;
   line-height: 1;
   white-space: nowrap;
+  padding: 3px 6px;
+  border-radius: 999px;
+  transition:
+    background 140ms ease,
+    border-color 140ms ease,
+    color 140ms ease,
+    transform 140ms ease;
+}
+
+.tray-calendar-status-item:hover {
+  transform: translateY(-1px);
+  background: rgba(255, 255, 255, 0.045);
+}
+
+.tray-calendar-status-item:focus-visible {
+  outline: 2px solid rgba(107, 201, 255, 0.72);
+  outline-offset: 2px;
+}
+
+.tray-calendar-status-item.is-active {
+  color: rgba(246, 251, 252, 0.98);
+  background: rgba(255, 255, 255, 0.075);
+}
+
+.tray-calendar-status-item.is-incomplete.is-active {
+  border-color: rgba(244, 191, 104, 0.5);
+}
+
+.tray-calendar-status-item.is-unreported.is-active {
+  border-color: rgba(239, 83, 93, 0.5);
 }
 
 .tray-calendar-status-dot {
@@ -4919,6 +4954,35 @@ html[data-platform='windows'] .tray-calendar {
   border-radius: 999px;
   background: rgba(244, 191, 104, 0.98);
   box-shadow: 0 0 0 2px rgba(244, 191, 104, 0.2);
+}
+
+.tray-calendar.has-status-filter .tray-day-button {
+  transition:
+    opacity 160ms ease,
+    filter 160ms ease,
+    transform 140ms ease,
+    border-color 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.tray-calendar.has-status-filter .tray-day-button.is-status-dimmed {
+  opacity: 0.18;
+  filter: saturate(0.25) brightness(0.72);
+}
+
+.tray-calendar.has-status-filter .tray-day-button.is-status-match {
+  opacity: 1;
+  filter: none;
+  transform: translateY(-1px) scale(1.025);
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.16),
+    0 0 12px rgba(244, 191, 104, 0.18);
+}
+
+.tray-calendar.has-status-filter .tray-day-button.is-status-match.is-missing {
+  box-shadow:
+    inset 0 0 0 1px rgba(255, 255, 255, 0.15),
+    0 0 14px rgba(239, 83, 93, 0.24);
 }
 
 .tray-day-button.is-selected {

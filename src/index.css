@@ -5523,11 +5523,15 @@ body.sprints-mode {
 
 .sprint-board-columns.is-compact .sprint-column {
   min-height: 150px;
-  max-height: min(48vh, 410px);
+  height: clamp(260px, 48vh, 410px);
+  max-height: none;
+  overflow: hidden;
 }
 
 .sprint-board-columns.is-compact .sprint-column-list {
-  max-height: min(40vh, 330px);
+  flex: 1 1 0;
+  min-height: 0;
+  max-height: none;
 }
 
 .sprint-board-root.is-compact .sprint-issue-card {
@@ -5607,8 +5611,25 @@ body.sprints-mode {
   flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  -webkit-overflow-scrolling: touch;
   padding: 1px 4px 6px 1px;
   scrollbar-width: thin;
+}
+
+.sprint-column-list::-webkit-scrollbar {
+  width: 7px;
+}
+
+.sprint-column-list::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(105, 201, 241, 0.42);
+}
+
+.sprint-column-list::-webkit-scrollbar-track {
+  background: rgba(255, 255, 255, 0.035);
 }
 
 .sprint-column-empty {

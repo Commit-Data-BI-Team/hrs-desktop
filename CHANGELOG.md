@@ -50,6 +50,7 @@
 - Collapsed the Overall Project and Shared Task contributor breakdowns by default, keeping only each title, hours, percentage, and gauge visible until its chevron is expanded.
 - Removed legacy negative margins that pulled gauges and the duration line into adjacent controls, restoring clear vertical spacing around Task, Jira, gauges, time fields, and comments.
 - Fixed the Quick Log **Overall Project** gauge so it keeps the complete Supabase project total, including hours from other tasks in the same project, while the **Shared Task** gauge remains limited to the selected task.
+- Made compact Sprint Board columns use a dedicated, visible vertical scroll area so expanded descriptions, attachments, and comments remain reachable without resizing the HRS tray.
 
 ### Update reliability
 

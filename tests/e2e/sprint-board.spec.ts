@@ -26,6 +26,26 @@ test('manages active and past Jira sprints with Supabase contributors', async ()
     await expect(trayPage.getByText('Jira Sprint Board', { exact: true })).toBeVisible()
     await expect(trayPage.getByRole('button', { name: 'Expand' })).toBeVisible()
     await expect(trayPage.getByText(/Loading Supabase contributors/i)).toHaveCount(0)
+    const compactIssue = trayPage.locator('[data-issue-key="VDA-601"]')
+    await compactIssue.getByRole('button', { name: 'Details' }).click()
+    await expect(compactIssue.getByText('Sprint comment for VDA-601.')).toBeVisible()
+    const compactIssueList = trayPage.locator(
+      '.sprint-board-columns.is-compact .sprint-column-list'
+    )
+    await expect.poll(() => compactIssueList.evaluate(element => ({
+      clientHeight: element.clientHeight,
+      overflowY: getComputedStyle(element).overflowY
+    }))).toMatchObject({ overflowY: 'auto' })
+    await compactIssue.evaluate(element => {
+      element.style.minHeight = '900px'
+    })
+    await expect.poll(() =>
+      compactIssueList.evaluate(element => element.scrollHeight > element.clientHeight)
+    ).toBe(true)
+    await compactIssueList.evaluate(element => {
+      element.scrollTop = element.scrollHeight
+    })
+    expect(await compactIssueList.evaluate(element => element.scrollTop)).toBeGreaterThan(0)
     expect(app.windows()).toHaveLength(1)
     const sprintPagePromise = app.waitForEvent('window')
     await trayPage.getByRole('button', { name: 'Expand' }).click()

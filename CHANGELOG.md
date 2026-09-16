@@ -20,6 +20,7 @@
 - Added a **Use Duo passcode** fallback so Microsoft meeting sync can finish headlessly even when Duo push notifications and phone calls are not delivered.
 - Replaced the blind post-DUO sleep and 90-second fallback with a bounded redirect watcher that captures Microsoft’s token as soon as Graph Explorer makes its authenticated request.
 - Switched meeting authentication to Graph Explorer's native MSAL/PKCE sign-in, handles the post-DUO “Stay signed in?” popup safely, and captures the usable bearer token from the first authenticated Graph request.
+- Accepts large real-world attendee lists from company-wide meetings while retaining bounded per-field, per-list, meeting-count, and total-payload validation.
 
 ## 1.0.18
 

@@ -40,6 +40,9 @@ const REQUIRED_PACKAGES = [
   'urllib3==1.26.20'
 ]
 const DUO_ACTION_REQUIRED_SIGNAL = '__HRS_DUO_ACTION_REQUIRED__'
+const MAX_MEETINGS_JSON_BYTES = 25 * 1024 * 1024
+const MAX_PARTICIPANTS_TEXT_LENGTH = 20_000
+const MAX_MEETING_EMAILS = 1_000
 
 type ActiveMeetingsRun = {
   child: ChildProcessWithoutNullStreams
@@ -104,13 +107,15 @@ function validateMeetingsResultPayload(payload: unknown): MeetingsResult {
         : validateNumberRange(item.attendanceCount, 0, 10000, { integer: true })
     const validateEmailList = (value: unknown): string[] => {
       if (!Array.isArray(value)) return []
-      return value.slice(0, 200).map(email => validateStringLength(email, 0, 320))
+      return value
+        .slice(0, MAX_MEETING_EMAILS)
+        .map(email => validateStringLength(email, 0, 320))
     }
     return {
       subject: validateStringLength(item.subject, 0, 500),
       startTime: validateStringLength(item.startTime, 1, 64),
       endTime: validateStringLength(item.endTime, 1, 64),
-      participants: validateStringLength(item.participants, 0, 2000),
+      participants: validateStringLength(item.participants, 0, MAX_PARTICIPANTS_TEXT_LENGTH),
       attendanceCount: attendanceCountRaw,
       attendanceEmails: validateEmailList(item.attendanceEmails),
       attendeeEmails: validateEmailList(item.attendeeEmails)
@@ -292,6 +297,9 @@ export function registerMeetingsIpc() {
           return
         }
         try {
+          if (Buffer.byteLength(stdout, 'utf8') > MAX_MEETINGS_JSON_BYTES) {
+            throw new Error('Meetings response is larger than the supported 25 MB limit')
+          }
           const parsed = JSON.parse(stdout)
           resolve(validateMeetingsResultPayload(parsed))
         } catch (err) {

@@ -1660,11 +1660,22 @@ def restart_graph_driver(driver, browser: str, headless: bool, reason: str):
         driver.quit()
     except Exception:
         pass
-    new_driver = build_driver(browser, headless)
-    new_driver.get(GRAPH_EXPLORER_URL)
-    WebDriverWait(new_driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-    log("Graph Explorer reloaded after browser automation restart.")
-    return new_driver
+    last_error = None
+    for attempt in range(1, 4):
+        try:
+            new_driver = build_driver(browser, headless)
+            new_driver.get(GRAPH_EXPLORER_URL)
+            WebDriverWait(new_driver, 30).until(
+                EC.presence_of_element_located((By.TAG_NAME, "body"))
+            )
+            log("Graph Explorer reloaded after browser automation restart.")
+            return new_driver
+        except Exception as exc:
+            last_error = exc
+            if attempt >= 3 or not is_browser_transport_error(exc):
+                raise
+            time.sleep(0.75)
+    raise RuntimeError(f"Could not restart Graph Explorer: {last_error}")
 
 
 def wait_for_graph_explorer_after_duo(driver, timeout_seconds: int = 60) -> bool:
@@ -1902,14 +1913,14 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                 if access_token:
                     return access_token
             else:
-                log("Microsoft sign-in window not detected after direct authorization. Continuing token recovery.")
+                log("Microsoft sign-in window not detected. Continuing Graph token recovery.")
 
         try:
             graph_window_found = find_graph_explorer_window(driver)
             if not graph_window_found:
                 driver.get(GRAPH_EXPLORER_URL)
                 WebDriverWait(driver, 20).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        except (WebDriverException, ProtocolError, OSError) as exc:
+        except Exception as exc:
             if not is_browser_transport_error(exc):
                 raise
             driver = restart_graph_driver(driver, browser, headless, str(exc))
@@ -1924,7 +1935,7 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                 access_token = wait_for_access_token(driver, 30, include_indexeddb=True)
             if not access_token:
                 access_token = extract_token_from_dom(driver)
-        except (WebDriverException, ProtocolError, OSError) as exc:
+        except Exception as exc:
             if not is_browser_transport_error(exc):
                 raise
             driver = restart_graph_driver(driver, browser, headless, str(exc))

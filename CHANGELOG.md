@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 1.0.19
+
 ### Jira sprint management
 
 - Added a compact Jira Sprint Board directly inside the normal HRS tray window, with status tabs and Supabase contributor totals that do not open another window.
@@ -59,7 +61,7 @@
 - Detects incompatible legacy macOS signatures, preserves the release changelog, and offers the correct full Mac installer for the required one-time replacement.
 - Requires production macOS releases to use a consistent Developer ID certificate so a broken ad-hoc-signed automatic update cannot be published again.
 
-### Cross-platform meeting runtime
+### Microsoft Teams meeting synchronization
 
 - Fixed meeting sync incorrectly showing Windows Python instructions on macOS.
 - Fixed the Python compatibility probe so an installed macOS Python runtime is detected correctly.

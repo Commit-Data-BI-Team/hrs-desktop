@@ -110,6 +110,9 @@ jobs:
           if [[ -f CHANGELOG.md ]]; then
             awk "/^## ${VERSION}$/{flag=1; print; next} /^## /{flag=0} flag" CHANGELOG.md > "release-files/CHANGELOG-${VERSION}.md"
           fi
+          if [[ -f "docs/HRS-Desktop-${VERSION}-Hebrew-Guide.docx" ]]; then
+            cp "docs/HRS-Desktop-${VERSION}-Hebrew-Guide.docx" "release-files/HRS-Desktop-${VERSION}-Hebrew-Guide.docx"
+          fi
 
           ls -lah release-files
       - name: Create release if missing
@@ -139,6 +142,7 @@ jobs:
             "HRS-Desktop-${VERSION}-arm64-mac.zip"
             "HRS-Desktop-${VERSION}-mac.zip"
             "CHANGELOG-${VERSION}.md"
+            "HRS-Desktop-${VERSION}-Hebrew-Guide.docx"
             "latest-mac.yml"
             "latest.yml"
           )

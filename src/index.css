@@ -3556,6 +3556,15 @@ html[data-platform='windows'] .tray-shell-enter {
   font-size: 0.63rem;
 }
 
+.quick-jira-required-item {
+  width: 100%;
+  min-width: 0;
+}
+
+.quick-jira-required-item .mantine-Select-label {
+  font-size: 0.7rem;
+}
+
 .tray-calendar-status-legend {
   display: flex;
   align-items: center;

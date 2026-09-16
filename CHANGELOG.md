@@ -39,6 +39,7 @@
 - Keeps Jira routing, optional status changes, Slack channel selection, recent threads, attachments, formatting, RTL, and mentions available without overwhelming the default view.
 - Moved Jira worklog controls directly below the Task selector and restored comfortable spacing throughout the remaining Quick Log form.
 - Makes Jira logging mandatory and non-disableable for fictive/shared tasks, automatically locks the matching Jira work item, and leaves Jira logging off by default for regular HRS tasks.
+- Reduced the mandatory fictive-task Jira UI to one read-only **Jira work item** field; the worklog explanation and Required badge stay hidden while enforcement continues internally.
 - Removed the verbose Slack posting checklist, bot-scope tutorial, and manual private-channel-ID field; customer mappings now use only channels returned by the normal Slack picker.
 
 ### Compact tray header

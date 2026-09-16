@@ -15930,6 +15930,27 @@ export default function App() {
   function renderQuickLogJiraControls() {
     if (!jiraConfigured && !isFictiveTaskSelected) return null
     const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase() ?? ''
+    if (isFictiveTaskSelected) {
+      const requiredOptions = quickLogJiraIssueOptions.length
+        ? quickLogJiraIssueOptions
+        : missionIssueKey
+          ? [{ value: missionIssueKey, label: missionIssueKey }]
+          : []
+      return (
+        <div className="quick-jira-required-item">
+          <Select
+            label="Jira work item"
+            placeholder={jiraConfigured ? 'Mapped Jira work item' : 'Connect Jira in Settings'}
+            data={requiredOptions}
+            value={missionIssueKey || null}
+            onChange={() => undefined}
+            allowDeselect={false}
+            disabled
+            size="xs"
+          />
+        </div>
+      )
+    }
     const jiraEnabled = isFictiveTaskSelected || logToJira
     return (
       <Card radius="md" withBorder className="quick-jira-inline-card">

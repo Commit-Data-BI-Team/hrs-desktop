@@ -46,6 +46,7 @@
 - Removed the Clockify action from the Quick Log meeting bar and placed the clickable **Missing hours** and **Unreported days** indicators in its former space.
 - Reduced the gap between the meeting/status bar and calendar and moved the month, navigation, and calendar content higher in the tray.
 - Stacked **Close** above **Pin** on the right edge and reserved navigation space so the Settings icon never overlaps the pin control.
+- Collapsed the Overall Project and Shared Task contributor breakdowns by default, keeping only each title, hours, percentage, and gauge visible until its chevron is expanded.
 
 ### Update reliability
 

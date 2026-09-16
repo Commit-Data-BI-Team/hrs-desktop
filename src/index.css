@@ -3121,16 +3121,23 @@ body.floating-mode {
 
 .quick-fictive-usage-header {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(140px, max-content);
+  grid-template-columns: minmax(0, 1fr) minmax(140px, max-content) 26px;
   grid-template-areas:
-    'kind kind'
-    'title hours';
+    'kind kind toggle'
+    'title hours toggle';
   column-gap: 8px;
   row-gap: 2px;
   align-items: start;
   width: 100%;
   max-width: 100%;
   min-width: 0;
+}
+
+.quick-fictive-usage-toggle {
+  grid-area: toggle;
+  align-self: center;
+  justify-self: end;
+  color: var(--accent);
 }
 
 .quick-fictive-usage-title {
@@ -3259,6 +3266,9 @@ body.floating-mode {
 
 .quick-fictive-usage.is-compact .quick-fictive-usage-header {
   grid-template-columns: minmax(0, 1fr) minmax(132px, max-content) 26px;
+  grid-template-areas:
+    'kind kind toggle'
+    'title hours toggle';
   column-gap: 6px;
 }
 

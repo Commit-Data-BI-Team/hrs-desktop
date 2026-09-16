@@ -2438,6 +2438,9 @@ export default function App() {
   const [sharedFictiveTaskUsage, setSharedFictiveTaskUsage] = useState<
     Record<string, SharedFictiveTaskUsage>
   >({})
+  const [quickUsageDetailsOpen, setQuickUsageDetailsOpen] = useState<
+    Record<'project' | 'task', boolean>
+  >({ project: false, task: false })
   const [pendingReportSyncMonths, setPendingReportSyncMonths] = useState<string[]>([])
   const pendingReportSyncMonthsRef = useRef<string[]>([])
   const reportReconciliationPromisesRef = useRef(
@@ -14006,6 +14009,9 @@ export default function App() {
     selectedQuickLogMission?.customerName?.trim() || customerName?.trim() || ''
   const selectedQuickLogUsageProject =
     selectedQuickLogMission?.projectName?.trim() || projectName?.trim() || ''
+  useEffect(() => {
+    setQuickUsageDetailsOpen({ project: false, task: false })
+  }, [selectedQuickLogMission?.id, selectedQuickLogUsageCustomer, selectedQuickLogUsageProject])
   const selectedQuickLogParentJiraKey = getMappedJiraParentForNames([
     selectedQuickLogUsageCustomer,
     selectedQuickLogUsageProject,
@@ -15830,6 +15836,7 @@ export default function App() {
         {selectedQuickLogUsageGauges.map(gauge => {
           const width = `${Math.min(Math.max(gauge.percent, 0), 100)}%`
           const percentLabel = `${Math.round(gauge.percent)}%`
+          const detailsOpen = quickUsageDetailsOpen[gauge.kind]
           return (
             <div
               className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
@@ -15854,6 +15861,29 @@ export default function App() {
                   {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
                   {percentLabel}
                 </Text>
+                {gauge.employees.length > 0 ? (
+                  <ActionIcon
+                    size="sm"
+                    variant="subtle"
+                    className="quick-fictive-usage-toggle"
+                    aria-label={`${detailsOpen ? 'Hide' : 'Show'} ${
+                      gauge.kind === 'project' ? 'overall project' : 'shared task'
+                    } contributors`}
+                    aria-expanded={detailsOpen}
+                    onClick={() =>
+                      setQuickUsageDetailsOpen(previous => ({
+                        ...previous,
+                        [gauge.kind]: !previous[gauge.kind]
+                      }))
+                    }
+                  >
+                    {detailsOpen ? (
+                      <IconChevronDown size={15} />
+                    ) : (
+                      <IconChevronRight size={15} />
+                    )}
+                  </ActionIcon>
+                ) : null}
               </div>
               <div
                 className="quick-fictive-usage-track"
@@ -15864,7 +15894,7 @@ export default function App() {
                   style={{ '--quick-fictive-progress': width } as CSSProperties}
                 />
               </div>
-              {gauge.employees.length > 0 && (
+              <Collapse in={detailsOpen && gauge.employees.length > 0} transitionDuration={160}>
                 <div className="quick-fictive-usage-employees">
                   {gauge.employees.map(employee => {
                     const share = gauge.usedMinutes > 0
@@ -15889,7 +15919,7 @@ export default function App() {
                     )
                   })}
                 </div>
-              )}
+              </Collapse>
             </div>
           )
         })}

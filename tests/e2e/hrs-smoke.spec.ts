@@ -83,6 +83,27 @@ test('renders the tray reports KPIs and employee projects', async () => {
     await window.getByRole('button', { name: 'Quick Log' }).click()
     const quickLogFilters = window.locator('.tray-filters')
     await expect(quickLogFilters).toBeVisible()
+    const regularShortcut = window
+      .locator('.quicklog-recent-shortcut')
+      .filter({ hasText: 'Acme Labs -> Design sync' })
+    await expect(regularShortcut).toBeVisible()
+    await regularShortcut.click({ button: 'right' })
+    await window.getByRole('button', { name: 'Change display name' }).click()
+    const taskAliasDialog = window.getByRole('dialog', { name: 'Change task display name' })
+    await expect(taskAliasDialog.getByText('Original HRS name: Design sync')).toBeVisible()
+    await taskAliasDialog.getByRole('textbox', { name: 'Display name' }).fill('Design sync UI alias')
+    await taskAliasDialog.getByRole('button', { name: 'Save display name' }).click()
+    await expect(
+      window.locator('.quicklog-recent-shortcut').filter({ hasText: 'Design sync UI alias' })
+    ).toBeVisible()
+    await expect.poll(() =>
+      window.evaluate(() => {
+        const aliases = JSON.parse(localStorage.getItem('hrs-task-display-aliases-v1') || '{}')
+        return Object.values(aliases).includes('Design sync UI alias')
+      })
+    ).toBe(true)
+    const originalHrsTasks = await window.evaluate(() => window.hrs.getWorkLogs())
+    expect(originalHrsTasks.some(task => task.taskName === 'Design sync')).toBe(true)
     await expect.poll(() =>
       quickLogFilters.evaluate(element =>
         getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length

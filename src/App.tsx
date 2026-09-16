@@ -741,6 +741,7 @@ const AGENDA_UI_ENABLED = false
 const HRS_CREDENTIAL_RESET_REQUEST_KEY = 'hrs-credential-reset-request'
 const REPORT_CUSTOMER_ALIASES_STORAGE_KEY = 'hrs-report-customer-aliases-v1'
 const REPORT_MISSION_MAP_STORAGE_KEY = 'hrs-report-mission-map-v1'
+const TASK_DISPLAY_ALIASES_STORAGE_KEY = 'hrs-task-display-aliases-v1'
 const MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY = 'hrs-meeting-excluded-subjects-v1'
 const EMPLOYEE_REPORT_ALL_VALUE = '__all_employees__'
 const EXCLUDED_EMPLOYEE_NAMES = new Set(['ronen amsalem'])
@@ -2540,6 +2541,9 @@ export default function App() {
   const [sharedTaskRenameDraft, setSharedTaskRenameDraft] = useState('')
   const [sharedTaskRenameSaving, setSharedTaskRenameSaving] = useState(false)
   const [sharedTaskRenameError, setSharedTaskRenameError] = useState<string | null>(null)
+  const [regularTaskRenameId, setRegularTaskRenameId] = useState<number | null>(null)
+  const [regularTaskRenameDraft, setRegularTaskRenameDraft] = useState('')
+  const [regularTaskRenameError, setRegularTaskRenameError] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
   const [jiraLoggedEntries, setJiraLoggedEntries] = useState<JiraLoggedEntries>({})
   const [jiraLogModalOpen, setJiraLogModalOpen] = useState(false)
@@ -2745,6 +2749,9 @@ export default function App() {
   )
   const [reportMissionMap, setReportMissionMap] = useState<Record<string, string>>(() =>
     safeGetLocalStorageStringRecord(REPORT_MISSION_MAP_STORAGE_KEY)
+  )
+  const [taskDisplayAliases, setTaskDisplayAliases] = useState<Record<string, string>>(() =>
+    safeGetLocalStorageStringRecord(TASK_DISPLAY_ALIASES_STORAGE_KEY)
   )
   const [editingCustomerAliasKey, setEditingCustomerAliasKey] = useState<string | null>(null)
   const [customerAliasDraft, setCustomerAliasDraft] = useState('')
@@ -11935,6 +11942,9 @@ export default function App() {
     return map
   }, [logs])
 
+  const getRegularTaskDisplayName = (taskId: number, originalName: string) =>
+    taskDisplayAliases[String(taskId)]?.trim() || originalName
+
   const taskNameMap = useMemo(() => {
     const map = new Map<string, WorkLog>()
     for (const log of activeTaskScope) {
@@ -12076,6 +12086,7 @@ export default function App() {
       .filter(log => !hiddenOriginalTaskIds.has(String(log.taskId)))
       .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
       .map(log => {
+        const displayName = getRegularTaskDisplayName(log.taskId, log.taskName)
         const cappedMission = allProjectMissions.find(
           mission =>
             !mission.virtual &&
@@ -12084,12 +12095,12 @@ export default function App() {
             (mission.hrsTaskIds ?? []).map(String).includes(String(log.taskId))
         )
         if (!cappedMission) {
-          return { value: log.taskName, label: log.taskName }
+          return { value: log.taskName, label: displayName }
         }
         const usedMinutes = getMissionUsedMinutesFromReports(cappedMission, allReportItems)
         return {
           value: log.taskName,
-          label: `${log.taskName} · ${minutesToHHMM(usedMinutes)} / ${cappedMission.cappedHours}h`
+          label: `${displayName} · ${minutesToHHMM(usedMinutes)} / ${cappedMission.cappedHours}h`
         }
       })
 
@@ -12105,7 +12116,8 @@ export default function App() {
     projectName,
     activeTaskScope,
     allReportItems,
-    reportMissionMap
+    reportMissionMap,
+    taskDisplayAliases
   ])
 
   async function deleteQuickFictiveTask(mission: ProjectMission) {
@@ -14289,9 +14301,9 @@ export default function App() {
       .sort((a, b) => (a.taskName || '').localeCompare(b.taskName || ''))
       .map(log => ({
         value: String(log.taskId),
-        label: `${log.taskName || `Task ${log.taskId}`} · ${log.projectName || log.projectInstance}`
+        label: `${getRegularTaskDisplayName(log.taskId, log.taskName || `Task ${log.taskId}`)} · ${log.projectName || log.projectInstance}`
       }))
-  }, [activeTaskScope])
+  }, [activeTaskScope, taskDisplayAliases])
 
   const quickFictiveOriginalTask = useMemo(() => {
     if (!quickFictiveOriginalTaskId) return null
@@ -15113,9 +15125,9 @@ export default function App() {
       })
       .map(log => ({
         value: String(log.taskId),
-        label: log.taskName || `Task ${log.taskId}`
+        label: getRegularTaskDisplayName(log.taskId, log.taskName || `Task ${log.taskId}`)
       }))
-  }, [logs, projectDashboardCustomer, projectDashboardProject])
+  }, [logs, projectDashboardCustomer, projectDashboardProject, taskDisplayAliases])
 
   const selectedProjectHrsTask = useMemo(() => {
     if (!missionHrsTaskId) return null
@@ -15623,6 +15635,58 @@ export default function App() {
     }
   }
 
+  function openRegularTaskRename(taskId: number) {
+    const task = taskMetaById.get(taskId)
+    if (!task) return
+    setRecentQuickLogContextId(null)
+    setRegularTaskRenameId(taskId)
+    setRegularTaskRenameDraft(
+      taskDisplayAliases[String(taskId)]?.trim() || task.taskName || `Task ${taskId}`
+    )
+    setRegularTaskRenameError(null)
+  }
+
+  function closeRegularTaskRename() {
+    setRegularTaskRenameId(null)
+    setRegularTaskRenameDraft('')
+    setRegularTaskRenameError(null)
+  }
+
+  function saveRegularTaskRename() {
+    if (regularTaskRenameId === null) return
+    const task = taskMetaById.get(regularTaskRenameId)
+    if (!task) {
+      setRegularTaskRenameError('This HRS task is no longer available.')
+      return
+    }
+    const safeName = regularTaskRenameDraft.trim()
+    if (!safeName) {
+      setRegularTaskRenameError('Enter a display name.')
+      return
+    }
+    const originalName = task.taskName || `Task ${regularTaskRenameId}`
+    setTaskDisplayAliases(previous => {
+      const next = { ...previous }
+      if (safeName === originalName) delete next[String(regularTaskRenameId)]
+      else next[String(regularTaskRenameId)] = safeName
+      return next
+    })
+    closeRegularTaskRename()
+    setLogSuccess(`Task display name changed to ${safeName}.`)
+  }
+
+  function restoreRegularTaskName() {
+    if (regularTaskRenameId === null) return
+    const taskId = regularTaskRenameId
+    setTaskDisplayAliases(previous => {
+      const next = { ...previous }
+      delete next[String(taskId)]
+      return next
+    })
+    closeRegularTaskRename()
+    setLogSuccess('The original HRS task name was restored.')
+  }
+
   const resetMissionForm = () => {
     setMissionName('')
     setMissionHrsTaskId(null)
@@ -15791,14 +15855,14 @@ export default function App() {
                   applyRecentQuickLogFilters(item)
                 }}
                 onContextMenu={event => {
-                  if (!item.sharedMissionId) return
+                  if (!item.sharedMissionId && item.regularTaskId === null) return
                   event.preventDefault()
                   setRecentQuickLogContextId(item.id)
                 }}
                 title={
                   item.sharedMissionId
                     ? `${item.customerLabel} -> ${item.taskLabel}. Right click to rename.`
-                    : `${item.customerLabel} -> ${item.taskLabel}`
+                    : `${item.customerLabel} -> ${item.taskLabel}. Right click to change the display name.`
                 }
               >
                 <span className="quicklog-recent-route">
@@ -15806,16 +15870,27 @@ export default function App() {
                 </span>
               </button>
             </Popover.Target>
-            {item.sharedMissionId && (
+            {(item.sharedMissionId || item.regularTaskId !== null) && (
               <Popover.Dropdown className="quicklog-recent-context-menu">
-                <button
-                  type="button"
-                  className="quicklog-recent-context-action"
-                  onClick={() => openSharedTaskRename(item.sharedMissionId!)}
-                >
-                  <IconPencil size={15} />
-                  <span>Rename shared task</span>
-                </button>
+                {item.sharedMissionId ? (
+                  <button
+                    type="button"
+                    className="quicklog-recent-context-action"
+                    onClick={() => openSharedTaskRename(item.sharedMissionId!)}
+                  >
+                    <IconPencil size={15} />
+                    <span>Rename shared task</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="quicklog-recent-context-action"
+                    onClick={() => openRegularTaskRename(item.regularTaskId!)}
+                  >
+                    <IconPencil size={15} />
+                    <span>Change display name</span>
+                  </button>
+                )}
               </Popover.Dropdown>
             )}
           </Popover>
@@ -16234,6 +16309,7 @@ export default function App() {
       taskLabel: string
       isVirtual: boolean
       sharedMissionId: string | null
+      regularTaskId: number | null
     }> = []
     const seenRoutes = new Set<string>()
     for (const item of [...allReportItems]
@@ -16259,7 +16335,10 @@ export default function App() {
       const rawCustomer = mission?.customerName || sourceTask?.customerName || meta?.customerName || 'Customer'
       const project = sourceTask?.projectName || meta?.projectName || item.projectInstance || 'Project'
       const taskValue = mission ? getMissionOptionValue(mission.id) : meta?.taskName || item.taskName
-      const taskLabel = mission?.name || meta?.taskName || item.taskName
+      const originalTaskLabel = mission?.name || meta?.taskName || item.taskName
+      const taskLabel = mission
+        ? originalTaskLabel
+        : getRegularTaskDisplayName(item.taskId, originalTaskLabel)
       const routeKey = [project, rawCustomer, taskValue].map(normalizeText).join('|')
       if (seenRoutes.has(routeKey)) continue
       seenRoutes.add(routeKey)
@@ -16271,12 +16350,20 @@ export default function App() {
         taskValue,
         taskLabel,
         isVirtual: Boolean(mission),
-        sharedMissionId: mission?.shared ? mission.id : null
+        sharedMissionId: mission?.shared ? mission.id : null,
+        regularTaskId: mission ? null : item.taskId
       })
       if (distinctItems.length >= 4) break
     }
     return distinctItems
-  }, [allReportItems, taskMetaById, allProjectMissions, jiraCustomerAliases, reportMissionMap])
+  }, [
+    allReportItems,
+    taskMetaById,
+    allProjectMissions,
+    jiraCustomerAliases,
+    reportMissionMap,
+    taskDisplayAliases
+  ])
 
   const clockHistoryTotalMinutes = useMemo(
     () => clockHistoryItems.reduce((sum, item) => sum + parseHoursHHMMToMinutes(item.hours_HHMM), 0),
@@ -16513,6 +16600,23 @@ export default function App() {
       // Ignore unavailable local storage.
     }
   }, [reportMissionMap])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(TASK_DISPLAY_ALIASES_STORAGE_KEY, JSON.stringify(taskDisplayAliases))
+    } catch {
+      // Ignore unavailable local storage.
+    }
+  }, [taskDisplayAliases])
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== TASK_DISPLAY_ALIASES_STORAGE_KEY) return
+      setTaskDisplayAliases(safeGetLocalStorageStringRecord(TASK_DISPLAY_ALIASES_STORAGE_KEY))
+    }
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [])
 
 	  const getReportCustomerAliasKey = (customer: string) => getCustomerAliasKey(customer)
 
@@ -19423,11 +19527,80 @@ export default function App() {
     </Modal>
   )
 
+  const regularTaskRenameTarget =
+    regularTaskRenameId === null ? null : taskMetaById.get(regularTaskRenameId) ?? null
+  const regularTaskRenameModal = (
+    <Modal
+      opened={regularTaskRenameId !== null}
+      onClose={closeRegularTaskRename}
+      title="Change task display name"
+      centered
+      size="sm"
+      classNames={isFloating ? { content: 'floating-modal' } : undefined}
+    >
+      <Stack gap="sm">
+        {regularTaskRenameTarget ? (
+          <Stack gap={2}>
+            <Text size="sm" c="dimmed">
+              {getCustomerDisplayName(regularTaskRenameTarget.customerName)}
+              {regularTaskRenameTarget.projectName
+                ? ` · ${regularTaskRenameTarget.projectName}`
+                : ''}
+            </Text>
+            <Text size="xs" c="dimmed">
+              Original HRS name: {regularTaskRenameTarget.taskName}
+            </Text>
+          </Stack>
+        ) : null}
+        <TextInput
+          label="Display name"
+          value={regularTaskRenameDraft}
+          onChange={event => {
+            setRegularTaskRenameDraft(event.currentTarget.value)
+            if (regularTaskRenameError) setRegularTaskRenameError(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') saveRegularTaskRename()
+          }}
+          autoFocus
+        />
+        <Alert color="cyan" variant="light" radius="md">
+          This changes only the name shown in HRS Desktop on this device. Reports sent to HRS and
+          Supabase always keep the original task name and task ID.
+        </Alert>
+        {regularTaskRenameError ? (
+          <Alert color="red" variant="light" radius="md">
+            {regularTaskRenameError}
+          </Alert>
+        ) : null}
+        <Group justify="space-between" align="center" wrap="wrap">
+          <Button
+            variant="subtle"
+            color="gray"
+            onClick={restoreRegularTaskName}
+            disabled={!regularTaskRenameTarget || !taskDisplayAliases[String(regularTaskRenameId)]}
+          >
+            Restore original
+          </Button>
+          <Group gap="xs">
+            <Button variant="subtle" onClick={closeRegularTaskRename}>
+              Cancel
+            </Button>
+            <Button onClick={saveRegularTaskRename} disabled={!regularTaskRenameDraft.trim()}>
+              Save display name
+            </Button>
+          </Group>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   if (isFloating) {
     return (
       <Box className="floating-shell">
         {quickFictiveTaskModal}
         {sharedTaskRenameModal}
+        {regularTaskRenameModal}
         <Modal
           opened={floatingStartOpen}
           onClose={closeFloatingStart}
@@ -19668,6 +19841,7 @@ export default function App() {
       >
         {quickFictiveTaskModal}
         {sharedTaskRenameModal}
+        {regularTaskRenameModal}
         {reportsDetailedExportModal}
         <Stack gap="sm" className="tray-content">
           {window.hrs && (
@@ -23335,6 +23509,7 @@ export default function App() {
     <Box className="app-shell">
       {quickFictiveTaskModal}
       {sharedTaskRenameModal}
+      {regularTaskRenameModal}
       <Container size="lg" className="app-container">
         <Stack gap="xl">
           <Stack gap="sm" className="page-header">

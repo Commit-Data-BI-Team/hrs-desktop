@@ -25,6 +25,21 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:setCredentials', email, token),
   clearJiraCredentials: () => ipcRenderer.invoke('jira:clearCredentials'),
   getJiraEpics: () => ipcRenderer.invoke('jira:getEpics'),
+  getJiraBoards: (projectKey: string) => ipcRenderer.invoke('jira:getBoards', projectKey),
+  getJiraSprints: (boardId: number) => ipcRenderer.invoke('jira:getSprints', boardId),
+  getJiraBacklogIssues: (boardId: number) =>
+    ipcRenderer.invoke('jira:getBacklogIssues', boardId),
+  getJiraSprintIssues: (boardId: number, sprintId: number) =>
+    ipcRenderer.invoke('jira:getSprintIssues', boardId, sprintId),
+  moveJiraIssuesToSprint: (payload: { sprintId: number; issueKeys: string[] }) =>
+    ipcRenderer.invoke('jira:moveIssuesToSprint', payload),
+  moveJiraIssuesToBacklog: (issueKeys: string[]) =>
+    ipcRenderer.invoke('jira:moveIssuesToBacklog', issueKeys),
+  rankJiraIssues: (payload: {
+    issueKeys: string[]
+    rankBeforeIssue?: string | null
+    rankAfterIssue?: string | null
+  }) => ipcRenderer.invoke('jira:rankIssues', payload),
   searchJiraUsers: (query: string) => ipcRenderer.invoke('jira:searchUsers', query),
   getJiraTransitions: (issueKey: string) =>
     ipcRenderer.invoke('jira:getTransitions', issueKey),
@@ -331,6 +346,7 @@ contextBridge.exposeInMainWorld('hrs', {
   openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
+  openSprintWindow: () => ipcRenderer.invoke('app:openSprintWindow'),
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') =>
     ipcRenderer.invoke('app:setNativeThemeMode', mode),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),

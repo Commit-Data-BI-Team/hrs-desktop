@@ -188,6 +188,10 @@ type JiraSearchIssue = {
     summary?: string
     status?: {
       name?: string | null
+      statusCategory?: {
+        key?: string | null
+        name?: string | null
+      } | null
     } | null
     aggregatetimetracking?: {
       originalEstimateSeconds?: number | null
@@ -271,6 +275,33 @@ type JiraWorkItem = {
 type JiraEpic = {
   key: string
   summary: string
+}
+
+type JiraAgileBoard = {
+  id: number
+  name: string
+  type: string
+  projectKey: string | null
+}
+
+type JiraSprint = {
+  id: number
+  name: string
+  state: 'active' | 'future' | 'closed'
+  goal: string | null
+  startDate: string | null
+  endDate: string | null
+  originBoardId: number | null
+}
+
+type JiraSprintIssue = {
+  key: string
+  summary: string
+  statusName: string
+  statusCategoryKey: 'todo' | 'indeterminate' | 'done'
+  assigneeName: string | null
+  timespent: number
+  estimateSeconds: number
 }
 
 type JiraIssueCreatePayload = {
@@ -427,6 +458,76 @@ const E2E_WORK_ITEMS_BY_EPIC: Record<string, JiraWorkItem[]> = {
       lastWorklog: null
     }
   ]
+}
+
+const E2E_SPRINT_BOARDS: JiraAgileBoard[] = [
+  { id: 101, name: 'VDA Scrum', type: 'scrum', projectKey: 'VDA' },
+  { id: 202, name: 'LSM Scrum', type: 'scrum', projectKey: 'LSM' }
+]
+
+const E2E_SPRINTS: Record<number, JiraSprint[]> = {
+  101: [
+    {
+      id: 1001,
+      name: 'VDA Sprint 12',
+      state: 'active',
+      goal: 'Ship reporting improvements',
+      startDate: '2026-09-01T08:00:00.000Z',
+      endDate: '2026-09-14T17:00:00.000Z',
+      originBoardId: 101
+    }
+  ],
+  202: [
+    {
+      id: 2001,
+      name: 'LSM Sprint 3',
+      state: 'active',
+      goal: 'Deliver LSM milestones',
+      startDate: '2026-09-01T08:00:00.000Z',
+      endDate: '2026-09-14T17:00:00.000Z',
+      originBoardId: 202
+    }
+  ]
+}
+
+let e2eSprintBacklog: Record<number, JiraSprintIssue[]> = {
+  101: [
+    {
+      key: 'VDA-600',
+      summary: 'Backlog discovery',
+      statusName: 'To Do',
+      statusCategoryKey: 'todo',
+      assigneeName: 'Dror Rahamim',
+      timespent: 0,
+      estimateSeconds: 8 * 3600
+    }
+  ],
+  202: [
+    {
+      key: 'LSM-30',
+      summary: 'LSM backlog item',
+      statusName: 'To Do',
+      statusCategoryKey: 'todo',
+      assigneeName: null,
+      timespent: 0,
+      estimateSeconds: 4 * 3600
+    }
+  ]
+}
+
+let e2eSprintIssues: Record<number, JiraSprintIssue[]> = {
+  1001: [
+    {
+      key: 'VDA-601',
+      summary: 'Active sprint task',
+      statusName: 'In Progress',
+      statusCategoryKey: 'indeterminate',
+      assigneeName: 'Vitaly Shechtman',
+      timespent: 2 * 3600,
+      estimateSeconds: 8 * 3600
+    }
+  ],
+  2001: []
 }
 
 function validateEpicKey(value: unknown): string {
@@ -785,6 +886,92 @@ function clearAllWorkItemCaches() {
   jiraStore.set('workItemsLight', {})
 }
 
+function validateAgileId(value: unknown, _label: string) {
+  return validateNumberRange(value, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+}
+
+function validateIssueKeyList(value: unknown, label: string) {
+  if (!Array.isArray(value) || !value.length || value.length > 50) {
+    throw new Error(`Invalid ${label}: expected 1-50 issue keys`)
+  }
+  return Array.from(new Set(value.map(issueKey => validateJiraIssueKey(issueKey))))
+}
+
+function normalizeSprintStatusCategory(
+  categoryKey: string | null | undefined,
+  statusName: string | null | undefined
+): JiraSprintIssue['statusCategoryKey'] {
+  const normalizedCategory = (categoryKey ?? '').toLowerCase()
+  if (normalizedCategory === 'done') return 'done'
+  if (normalizedCategory === 'indeterminate') return 'indeterminate'
+  if (normalizedCategory === 'new') return 'todo'
+  const normalizedStatus = (statusName ?? '').toLowerCase()
+  if (/done|closed|resolved|complete/.test(normalizedStatus)) return 'done'
+  if (/progress|review|testing|blocked/.test(normalizedStatus)) return 'indeterminate'
+  return 'todo'
+}
+
+function normalizeSprintIssue(issue: JiraSearchIssue): JiraSprintIssue {
+  const statusName = issue.fields?.status?.name?.trim() || 'To Do'
+  return {
+    key: validateJiraIssueKey(issue.key),
+    summary: issue.fields?.summary?.trim() || issue.key,
+    statusName,
+    statusCategoryKey: normalizeSprintStatusCategory(
+      issue.fields?.status?.statusCategory?.key,
+      statusName
+    ),
+    assigneeName: issue.fields?.assignee?.displayName?.trim() || null,
+    timespent:
+      issue.fields?.timespent ?? issue.fields?.timetracking?.timeSpentSeconds ?? 0,
+    estimateSeconds:
+      issue.fields?.timeoriginalestimate ??
+      issue.fields?.timetracking?.originalEstimateSeconds ??
+      0
+  }
+}
+
+async function fetchAgileValues<T>(path: string, limit = 200): Promise<T[]> {
+  const values: T[] = []
+  let startAt = 0
+  while (values.length < limit) {
+    const separator = path.includes('?') ? '&' : '?'
+    const data = (await jiraRequest(
+      `${path}${separator}startAt=${startAt}&maxResults=100`
+    )) as {
+      values?: T[]
+      startAt?: number
+      maxResults?: number
+      total?: number
+      isLast?: boolean
+    }
+    const page = data.values ?? []
+    values.push(...page.slice(0, limit - values.length))
+    if (!page.length || data.isLast) break
+    startAt += page.length
+    if (data.total !== undefined && startAt >= data.total) break
+  }
+  return values
+}
+
+async function fetchAgileIssues(path: string, limit = 500): Promise<JiraSprintIssue[]> {
+  const issues: JiraSearchIssue[] = []
+  let startAt = 0
+  const fields = 'summary,status,assignee,timespent,timeoriginalestimate,timetracking'
+  while (issues.length < limit) {
+    const separator = path.includes('?') ? '&' : '?'
+    const data = (await jiraRequest(
+      `${path}${separator}startAt=${startAt}&maxResults=100&fields=${encodeURIComponent(fields)}`
+    )) as JiraSearchResponse
+    const page = data.issues ?? []
+    issues.push(...page.slice(0, limit - issues.length))
+    if (!page.length) break
+    startAt += page.length
+    if (data.total !== undefined && startAt >= data.total) break
+  }
+  return issues.map(normalizeSprintIssue)
+}
+
 function validateCreateIssuePayload(payload: unknown): JiraIssueCreatePayload {
   const safe = validateExactObject<{
     parentIssueKey?: unknown
@@ -1034,6 +1221,7 @@ export function registerJiraIpc() {
     ipcMain.handle('jira:getTransitions', async (_event, issueKey: unknown) => {
       validateJiraIssueKey(issueKey)
       return [
+        { id: '11', name: 'To Do', toStatusName: 'To Do' },
         { id: '21', name: 'In Progress', toStatusName: 'In Progress' },
         { id: '31', name: 'Done', toStatusName: 'Done' }
       ]
@@ -1148,9 +1336,131 @@ export function registerJiraIpc() {
         ['issueKey', 'transitionId'],
         'Jira transition'
       )
-      validateJiraIssueKey(safe.issueKey)
+      const issueKey = validateJiraIssueKey(safe.issueKey)
       const transitionId = validateStringLength(safe.transitionId, 1, 32)
       if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+      const nextStatus =
+        transitionId === '31'
+          ? { statusName: 'Done', statusCategoryKey: 'done' as const }
+          : transitionId === '21'
+            ? { statusName: 'In Progress', statusCategoryKey: 'indeterminate' as const }
+            : { statusName: 'To Do', statusCategoryKey: 'todo' as const }
+      for (const issues of [
+        ...Object.values(e2eSprintBacklog),
+        ...Object.values(e2eSprintIssues)
+      ]) {
+        const issue = issues.find(item => item.key === issueKey)
+        if (issue) Object.assign(issue, nextStatus)
+      }
+      return true
+    })
+    ipcMain.handle('jira:getBoards', async (_event, projectKey: unknown) => {
+      const key = validateStringLength(projectKey, 1, 15).toUpperCase()
+      return E2E_SPRINT_BOARDS.filter(board => board.projectKey === key)
+    })
+    ipcMain.handle('jira:getSprints', async (_event, boardId: unknown) => {
+      const id = validateNumberRange(boardId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+      return E2E_SPRINTS[id] ?? []
+    })
+    ipcMain.handle('jira:getBacklogIssues', async (_event, boardId: unknown) => {
+      const id = validateNumberRange(boardId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+      return e2eSprintBacklog[id] ?? []
+    })
+    ipcMain.handle(
+      'jira:getSprintIssues',
+      async (_event, boardId: unknown, sprintId: unknown) => {
+        validateNumberRange(boardId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+        const id = validateNumberRange(sprintId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+        return e2eSprintIssues[id] ?? []
+      }
+    )
+    ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
+        payload ?? {},
+        ['sprintId', 'issueKeys'],
+        'Jira sprint move'
+      )
+      const sprintId = validateNumberRange(safe.sprintId, 1, Number.MAX_SAFE_INTEGER, {
+        integer: true
+      })
+      if (!Array.isArray(safe.issueKeys) || !safe.issueKeys.length || safe.issueKeys.length > 50) {
+        throw new Error('Invalid Jira sprint issue list.')
+      }
+      const keys = safe.issueKeys.map(validateJiraIssueKey)
+      const moved: JiraSprintIssue[] = []
+      for (const key of keys) {
+        for (const [boardId, issues] of Object.entries(e2eSprintBacklog)) {
+          const index = issues.findIndex(issue => issue.key === key)
+          if (index >= 0) {
+            moved.push(...issues.splice(index, 1))
+            e2eSprintBacklog[Number(boardId)] = issues
+          }
+        }
+        for (const [existingSprintId, issues] of Object.entries(e2eSprintIssues)) {
+          const index = issues.findIndex(issue => issue.key === key)
+          if (index >= 0) {
+            moved.push(...issues.splice(index, 1))
+            e2eSprintIssues[Number(existingSprintId)] = issues
+          }
+        }
+      }
+      e2eSprintIssues[sprintId] = [
+        ...(e2eSprintIssues[sprintId] ?? []),
+        ...moved
+      ]
+      return true
+    })
+    ipcMain.handle('jira:moveIssuesToBacklog', async (_event, issueKeys: unknown) => {
+      if (!Array.isArray(issueKeys) || !issueKeys.length || issueKeys.length > 50) {
+        throw new Error('Invalid Jira backlog issue list.')
+      }
+      const keys = issueKeys.map(validateJiraIssueKey)
+      for (const key of keys) {
+        let moved: JiraSprintIssue | null = null
+        for (const [sprintId, issues] of Object.entries(e2eSprintIssues)) {
+          const index = issues.findIndex(issue => issue.key === key)
+          if (index >= 0) {
+            moved = issues.splice(index, 1)[0]
+            e2eSprintIssues[Number(sprintId)] = issues
+            break
+          }
+        }
+        if (!moved) continue
+        const board = E2E_SPRINT_BOARDS.find(item => item.projectKey === key.split('-')[0])
+        if (board) e2eSprintBacklog[board.id] = [...(e2eSprintBacklog[board.id] ?? []), moved]
+      }
+      return true
+    })
+    ipcMain.handle('jira:rankIssues', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{
+        issueKeys?: unknown
+        rankBeforeIssue?: unknown
+        rankAfterIssue?: unknown
+      }>(
+        payload ?? {},
+        ['issueKeys', 'rankBeforeIssue', 'rankAfterIssue'],
+        'Jira issue ranking'
+      )
+      if (!Array.isArray(safe.issueKeys) || safe.issueKeys.length !== 1) {
+        throw new Error('Invalid Jira ranking issue list.')
+      }
+      const issueKey = validateJiraIssueKey(safe.issueKeys[0])
+      const before = safe.rankBeforeIssue
+        ? validateJiraIssueKey(safe.rankBeforeIssue)
+        : null
+      const after = safe.rankAfterIssue ? validateJiraIssueKey(safe.rankAfterIssue) : null
+      for (const issues of [
+        ...Object.values(e2eSprintBacklog),
+        ...Object.values(e2eSprintIssues)
+      ]) {
+        const from = issues.findIndex(issue => issue.key === issueKey)
+        if (from < 0) continue
+        const [issue] = issues.splice(from, 1)
+        const anchor = before ?? after
+        const anchorIndex = anchor ? issues.findIndex(item => item.key === anchor) : -1
+        const destination = anchorIndex < 0 ? issues.length : anchorIndex + (after ? 1 : 0)
+        issues.splice(destination, 0, issue)
+      }
       return true
     })
     return
@@ -1234,6 +1544,141 @@ export function registerJiraIpc() {
     }))
     setCachedValue(cacheKey, epics, 30 * 60 * 1000)
     return epics
+  })
+
+  ipcMain.handle('jira:getBoards', async (_event, projectKey: unknown) => {
+    const key = validateStringLength(projectKey, 1, 15).toUpperCase()
+    if (!PROJECT_KEYS.includes(key)) throw new Error(`Unsupported Jira project: ${key}`)
+    const params = new URLSearchParams({
+      projectKeyOrId: key,
+      type: 'scrum',
+      orderBy: 'name'
+    })
+    const values = await fetchAgileValues<{
+      id?: number
+      name?: string
+      type?: string
+      location?: { projectKey?: string | null } | null
+    }>(`/rest/agile/1.0/board?${params.toString()}`, 100)
+    return values
+      .filter(board => Number.isInteger(board.id) && board.id && board.name)
+      .map(board => ({
+        id: board.id!,
+        name: board.name!,
+        type: board.type || 'scrum',
+        projectKey: board.location?.projectKey?.trim().toUpperCase() || key
+      })) satisfies JiraAgileBoard[]
+  })
+
+  ipcMain.handle('jira:getSprints', async (_event, boardId: unknown) => {
+    const id = validateAgileId(boardId, 'Jira board ID')
+    const values = await fetchAgileValues<{
+      id?: number
+      name?: string
+      state?: string
+      goal?: string | null
+      startDate?: string | null
+      endDate?: string | null
+      originBoardId?: number | null
+    }>(`/rest/agile/1.0/board/${id}/sprint?state=active,future`, 100)
+    return values
+      .filter(
+        sprint =>
+          Number.isInteger(sprint.id) &&
+          sprint.id &&
+          sprint.name &&
+          ['active', 'future', 'closed'].includes(sprint.state ?? '')
+      )
+      .map(sprint => ({
+        id: sprint.id!,
+        name: sprint.name!,
+        state: sprint.state as JiraSprint['state'],
+        goal: sprint.goal?.trim() || null,
+        startDate: sprint.startDate ?? null,
+        endDate: sprint.endDate ?? null,
+        originBoardId: sprint.originBoardId ?? id
+      })) satisfies JiraSprint[]
+  })
+
+  ipcMain.handle('jira:getBacklogIssues', async (_event, boardId: unknown) => {
+    const id = validateAgileId(boardId, 'Jira board ID')
+    return fetchAgileIssues(`/rest/agile/1.0/board/${id}/backlog`)
+  })
+
+  ipcMain.handle(
+    'jira:getSprintIssues',
+    async (_event, boardId: unknown, sprintId: unknown) => {
+      const safeBoardId = validateAgileId(boardId, 'Jira board ID')
+      const safeSprintId = validateAgileId(sprintId, 'Jira sprint ID')
+      return fetchAgileIssues(
+        `/rest/agile/1.0/board/${safeBoardId}/sprint/${safeSprintId}/issue`
+      )
+    }
+  )
+
+  ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
+      payload ?? {},
+      ['sprintId', 'issueKeys'],
+      'Jira sprint move'
+    )
+    const sprintId = validateAgileId(safe.sprintId, 'Jira sprint ID')
+    const issueKeys = validateIssueKeyList(safe.issueKeys, 'Jira sprint issues')
+    await jiraRequest(`/rest/agile/1.0/sprint/${sprintId}/issue`, {
+      method: 'POST',
+      body: JSON.stringify({ issues: issueKeys })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:moveIssuesToBacklog', async (_event, issueKeys: unknown) => {
+    const keys = validateIssueKeyList(issueKeys, 'Jira backlog issues')
+    await jiraRequest('/rest/agile/1.0/backlog/issue', {
+      method: 'POST',
+      body: JSON.stringify({ issues: keys })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:rankIssues', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{
+      issueKeys?: unknown
+      rankBeforeIssue?: unknown
+      rankAfterIssue?: unknown
+    }>(
+      payload ?? {},
+      ['issueKeys', 'rankBeforeIssue', 'rankAfterIssue'],
+      'Jira issue ranking'
+    )
+    const issueKeys = validateIssueKeyList(safe.issueKeys, 'Jira ranking issues')
+    const rankBeforeIssue = validateOptionalString(safe.rankBeforeIssue, {
+      min: 1,
+      max: 64,
+      allowNull: true
+    })
+    const rankAfterIssue = validateOptionalString(safe.rankAfterIssue, {
+      min: 1,
+      max: 64,
+      allowNull: true
+    })
+    if (!rankBeforeIssue && !rankAfterIssue) {
+      throw new Error('Choose an issue before or after which to rank the card.')
+    }
+    await jiraRequest('/rest/agile/1.0/issue/rank', {
+      method: 'PUT',
+      body: JSON.stringify({
+        issues: issueKeys,
+        ...(rankBeforeIssue
+          ? { rankBeforeIssue: validateJiraIssueKey(rankBeforeIssue) }
+          : {}),
+        ...(rankAfterIssue
+          ? { rankAfterIssue: validateJiraIssueKey(rankAfterIssue) }
+          : {})
+      })
+    })
+    return true
   })
 
   ipcMain.handle('jira:searchUsers', async (_event, query: unknown) => {

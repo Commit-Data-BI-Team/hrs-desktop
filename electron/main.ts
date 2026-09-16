@@ -64,6 +64,7 @@ let trayWindow: BrowserWindow | null = null
 let reportsWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let meetingsWindow: BrowserWindow | null = null
+let sprintWindow: BrowserWindow | null = null
 let activeLoginWindow: BrowserWindow | null = null
 let activeLoginPromise: Promise<boolean> | null = null
 let tray: Tray | null = null
@@ -105,6 +106,7 @@ const TRAY_WINDOW_SCREEN_MARGIN = 8
 const reportsWindowSize = { width: 1220, height: 860 }
 const settingsWindowSize = { width: 700, height: 780 }
 const meetingsWindowSize = { width: 1220, height: 860 }
+const sprintWindowSize = { width: 1420, height: 900 }
 const MAIN_LOG_MAX_BYTES = 2 * 1024 * 1024
 const MAIN_LOG_ROTATIONS = 4
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -321,7 +323,15 @@ function emitUpdateState(next: AppUpdateState) {
     currentVersion: app.getVersion()
   }
   latestUpdateState = normalized
-  const targets = [mainWindow, trayWindow, reportsWindow, settingsWindow, meetingsWindow, floatingWindow]
+  const targets = [
+    mainWindow,
+    trayWindow,
+    reportsWindow,
+    settingsWindow,
+    meetingsWindow,
+    sprintWindow,
+    floatingWindow
+  ]
   for (const target of targets) {
     if (!target || target.isDestroyed()) continue
     target.webContents.send('app:updateState', normalized)
@@ -718,6 +728,7 @@ function applyNativeLiquidGlassToAllWindows() {
   applyNativeLiquidGlassToWindow(reportsWindow, 'reports')
   applyNativeLiquidGlassToWindow(settingsWindow, 'settings')
   applyNativeLiquidGlassToWindow(meetingsWindow, 'meetings')
+  applyNativeLiquidGlassToWindow(sprintWindow, 'sprints')
 }
 
 function forgetNativeLiquidGlassForWindow(window: BrowserWindow | null) {
@@ -907,7 +918,7 @@ function getFloatingOptions() {
 
 function loadRendererWindow(
   window: BrowserWindow,
-  mode: 'main' | 'floating' | 'tray' | 'reports' | 'settings' | 'meetings'
+  mode: 'main' | 'floating' | 'tray' | 'reports' | 'settings' | 'meetings' | 'sprints'
 ) {
   window.webContents.once('did-finish-load', () => {
     applyNativeLiquidGlassToWindow(window, mode)
@@ -917,7 +928,7 @@ function loadRendererWindow(
   const devServerUrl = !useFile
     ? process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173/'
     : null
-  const query =
+  const query: Record<string, string> | null =
     mode === 'floating'
       ? { floating: '1' }
       : mode === 'tray'
@@ -928,7 +939,9 @@ function loadRendererWindow(
             ? { settings: '1' }
             : mode === 'meetings'
               ? { meetings: '1' }
-            : null
+              : mode === 'sprints'
+                ? { sprints: '1' }
+                : null
   if (devServerUrl) {
     const baseUrl = devServerUrl.endsWith('/') ? devServerUrl.slice(0, -1) : devServerUrl
     const url = query ? `${baseUrl}?${new URLSearchParams(query).toString()}` : baseUrl
@@ -1121,7 +1134,7 @@ function createTrayWindow() {
 }
 
 function createDetachedWindow(
-  mode: 'reports' | 'settings' | 'meetings',
+  mode: 'reports' | 'settings' | 'meetings' | 'sprints',
   width: number,
   height: number,
   title: string
@@ -1166,6 +1179,7 @@ function createDetachedWindow(
     if (mode === 'reports') reportsWindow = null
     if (mode === 'settings') settingsWindow = null
     if (mode === 'meetings') meetingsWindow = null
+    if (mode === 'sprints') sprintWindow = null
   })
   loadRendererWindow(window, mode)
   return window
@@ -1214,6 +1228,21 @@ function openMeetingsWindow() {
   if (meetingsWindow.isMinimized()) meetingsWindow.restore()
   meetingsWindow.focus()
   void checkForUpdatesOnOpen('meetings window')
+}
+
+function openSprintWindow() {
+  if (!sprintWindow || sprintWindow.isDestroyed()) {
+    sprintWindow = createDetachedWindow(
+      'sprints',
+      sprintWindowSize.width,
+      sprintWindowSize.height,
+      'HRS Sprint Board'
+    )
+  }
+  sprintWindow.show()
+  if (sprintWindow.isMinimized()) sprintWindow.restore()
+  sprintWindow.focus()
+  void checkForUpdatesOnOpen('sprint window')
 }
 
 function getTrayWindowPosition() {
@@ -1486,6 +1515,10 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('app:openMeetingsWindow', () => {
     openMeetingsWindow()
+    return true
+  })
+  ipcMain.handle('app:openSprintWindow', () => {
+    openSprintWindow()
     return true
   })
   ipcMain.handle('app:openFloatingTimer', () => {

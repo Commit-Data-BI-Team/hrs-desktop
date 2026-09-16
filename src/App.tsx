@@ -71,7 +71,8 @@ import {
   IconEye,
   IconTicket,
   IconBrandSlack,
-  IconFileSpreadsheet
+  IconFileSpreadsheet,
+  IconLayoutKanban
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -103,6 +104,7 @@ import {
   sanitizeReportFilePart,
   type DetailedReportEntry
 } from './reportExport'
+import { SprintBoard } from './SprintBoard'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -3803,14 +3805,24 @@ export default function App() {
     return new URLSearchParams(window.location.search).get('meetings') === '1'
   }, [])
 
+  const isSprintWindow = useMemo(() => {
+    if (typeof window === 'undefined') return false
+    return new URLSearchParams(window.location.search).get('sprints') === '1'
+  }, [])
+
   const isMainWindow =
-    !isFloating && !isTray && !isReportsWindow && !isSettingsWindow && !isMeetingsWindow
+    !isFloating &&
+    !isTray &&
+    !isReportsWindow &&
+    !isSettingsWindow &&
+    !isMeetingsWindow &&
+    !isSprintWindow
   const shouldLoadLogData = isMainWindow || isTray || isReportsWindow
   const shouldLoadWorkLogs = shouldLoadLogData || isFloating
   const shouldLoadJiraEpics = isMainWindow || isReportsWindow || isFloating
   const shouldLoadTrayReportJira = isTray && loggedIn
   const shouldLoadJiraBudgetData = shouldLoadJiraEpics || shouldLoadTrayReportJira
-  const isAuxWindow = isSettingsWindow || isMeetingsWindow
+  const isAuxWindow = isSettingsWindow || isMeetingsWindow || isSprintWindow
 
   const platform = useMemo(() => {
     if (typeof navigator === 'undefined') return 'other'
@@ -3850,8 +3862,13 @@ export default function App() {
     } else {
       document.body.classList.remove('meetings-mode')
     }
+    if (isSprintWindow) {
+      document.body.classList.add('sprints-mode')
+    } else {
+      document.body.classList.remove('sprints-mode')
+    }
     document.documentElement.setAttribute('data-platform', platform)
-  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, platform])
+  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, isSprintWindow, platform])
 
   useEffect(() => {
     if (!isFloating) return
@@ -4072,6 +4089,19 @@ export default function App() {
     try {
       if (window.hrs?.openMeetingsWindow) {
         await window.hrs.openMeetingsWindow()
+        return
+      }
+      await window.hrs.openMainWindow()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setBridgeError(message)
+    }
+  }
+
+  async function openSprintWindow() {
+    try {
+      if (window.hrs?.openSprintWindow) {
+        await window.hrs.openSprintWindow()
         return
       }
       await window.hrs.openMainWindow()
@@ -19819,6 +19849,21 @@ export default function App() {
                     <IconChartBar size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
+                <Tooltip label="Jira Sprint Board" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant="subtle"
+                    onClick={() => {
+                      void openSprintWindow()
+                    }}
+                    aria-label="Jira Sprint Board"
+                    title="Jira Sprint Board"
+                  >
+                    <IconLayoutKanban size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
                 <div className="tray-settings-update-anchor">
                   {shouldShowUpdateBubble ? (
                     <span className="tray-update-available-bubble" role="status">
@@ -22479,6 +22524,24 @@ export default function App() {
               )}
             </Stack>
           </Card>
+        </Container>
+      </Box>
+    )
+  }
+
+  if (isSprintWindow) {
+    return renderLiquidGlassFrame(
+      <Box className="app-shell sprint-shell">
+        <Container fluid className="sprint-container">
+          <SprintBoard
+            jiraStatus={jiraStatus}
+            linkedIssueKeys={allProjectMissions
+              .map(mission => mission.jiraIssueKey?.trim() ?? '')
+              .filter(Boolean)}
+            onOpenSettings={() => {
+              void openSettingsWindow()
+            }}
+          />
         </Container>
       </Box>
     )

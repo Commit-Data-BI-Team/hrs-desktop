@@ -123,6 +123,33 @@ type JiraEpic = {
   summary: string
 }
 
+export type JiraAgileBoard = {
+  id: number
+  name: string
+  type: string
+  projectKey: string | null
+}
+
+export type JiraSprint = {
+  id: number
+  name: string
+  state: 'active' | 'future' | 'closed'
+  goal: string | null
+  startDate: string | null
+  endDate: string | null
+  originBoardId: number | null
+}
+
+export type JiraSprintIssue = {
+  key: string
+  summary: string
+  statusName: string
+  statusCategoryKey: 'todo' | 'indeterminate' | 'done'
+  assigneeName: string | null
+  timespent: number
+  estimateSeconds: number
+}
+
 type JiraWorkItem = {
   key: string
   summary: string
@@ -615,6 +642,20 @@ type HrsApi = {
   setJiraCredentials: (email: string, token: string) => Promise<boolean>
   clearJiraCredentials: () => Promise<boolean>
   getJiraEpics: () => Promise<JiraEpic[]>
+  getJiraBoards: (projectKey: string) => Promise<JiraAgileBoard[]>
+  getJiraSprints: (boardId: number) => Promise<JiraSprint[]>
+  getJiraBacklogIssues: (boardId: number) => Promise<JiraSprintIssue[]>
+  getJiraSprintIssues: (boardId: number, sprintId: number) => Promise<JiraSprintIssue[]>
+  moveJiraIssuesToSprint: (payload: {
+    sprintId: number
+    issueKeys: string[]
+  }) => Promise<boolean>
+  moveJiraIssuesToBacklog: (issueKeys: string[]) => Promise<boolean>
+  rankJiraIssues: (payload: {
+    issueKeys: string[]
+    rankBeforeIssue?: string | null
+    rankAfterIssue?: string | null
+  }) => Promise<boolean>
   searchJiraUsers: (query: string) => Promise<JiraDirectoryUser[]>
   getJiraTransitions: (issueKey: string) => Promise<JiraTransition[]>
   getJiraRecentComments: (issueKey: string) => Promise<IntegrationRecentMessage[]>
@@ -937,6 +978,7 @@ type HrsApi = {
   openReportsWindow: () => Promise<boolean>
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
+  openSprintWindow: () => Promise<boolean>
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') => Promise<{
     nativeLiquidGlass: boolean
     supported: boolean

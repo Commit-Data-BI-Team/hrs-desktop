@@ -91,6 +91,7 @@ import {
   getSharedProjectCapMinutes,
   getSharedProjectKey,
   mergeProjectUsageContributors,
+  resolveOverallProjectUsage,
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from './sharedProjects'
@@ -14185,30 +14186,29 @@ export default function App() {
       Math.max(0, selectedQuickLogMission.projectCappedHours ?? 0) * 60
     )
     if (projectCapMinutes > 0) {
-      const usedMinutes = selectedQuickLogCombinedSharedProjectUsage.ready
-        ? Math.round(selectedQuickLogCombinedSharedProjectUsage.usedSeconds / 60)
-        : selectedQuickLogProjectUsage
-          ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
-          : getProjectUsedMinutesFromReports(
-              selectedQuickLogUsageCustomer,
-              selectedQuickLogUsageProject,
-              allReportItems
-            )
-      const employees = selectedQuickLogCombinedSharedProjectUsage.ready
-        ? selectedQuickLogCombinedSharedProjectUsage.employees.map(employee => ({
-            employeeId: employee.employeeId,
-            employeeName: employee.employeeName,
-            minutes: Math.round(employee.seconds / 60)
-          }))
-        : selectedQuickLogProjectUsage
-          ? selectedQuickLogProjectUsage.employees.map(employee => ({
+      // Supabase's project usage includes regular HRS rows plus every shared task in the
+      // project. The local reconstruction is only a startup fallback and can be incomplete
+      // when the current client has not loaded every task belonging to the project.
+      const resolvedProjectUsage = resolveOverallProjectUsage(
+        selectedQuickLogProjectUsage,
+        selectedQuickLogCombinedSharedProjectUsage
+      )
+      const usedMinutes = resolvedProjectUsage
+        ? Math.round(resolvedProjectUsage.usedSeconds / 60)
+        : getProjectUsedMinutesFromReports(
+            selectedQuickLogUsageCustomer,
+            selectedQuickLogUsageProject,
+            allReportItems
+          )
+      const employees = resolvedProjectUsage
+        ? resolvedProjectUsage.employees.map(employee => ({
               employeeId: employee.employeeId,
               employeeName: employee.employeeName,
               minutes: Math.round(employee.seconds / 60)
             }))
-          : usedMinutes > 0
-            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-            : []
+        : usedMinutes > 0
+          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+          : []
       const percent = (usedMinutes / projectCapMinutes) * 100
       gauges.push({
         kind: 'project',

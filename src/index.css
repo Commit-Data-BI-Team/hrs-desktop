@@ -5424,7 +5424,8 @@ body.sprints-mode {
   padding: 10px;
 }
 
-.sprint-board-root.is-compact .sprint-only-select {
+.sprint-board-root.is-compact .sprint-only-select,
+.sprint-board-root.is-compact .sprint-reporter-select {
   flex-basis: 100%;
   min-width: 0;
   max-width: none;
@@ -5455,6 +5456,12 @@ body.sprints-mode {
   flex: 1 1 520px;
   min-width: min(360px, 100%);
   max-width: 760px;
+}
+
+.sprint-reporter-select {
+  flex: 1 1 240px;
+  min-width: min(220px, 100%);
+  max-width: 320px;
 }
 
 .sprint-goal-copy {

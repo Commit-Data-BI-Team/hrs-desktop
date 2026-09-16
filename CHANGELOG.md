@@ -9,6 +9,7 @@
 - Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
 - Shows the selected sprint's Israel-local start and end dates in both compact and expanded views.
 - Shows calendar days remaining until the sprint end and combined mission hours across all sprint tasks, including total Supabase hours used versus the combined task budgets.
+- Added a searchable **Reporter** filter sourced from Supabase hours, with each employee's combined sprint hours in the selector and card filtering across every status column.
 - Preloads the selected sprint, Jira missions, and Supabase employee totals while other tray tabs are open, caches the last complete view for instant rendering, and refreshes details quietly every minute without clearing the screen into loading states.
 - Lets authenticated employees move Jira items from **To Do** to **In Progress** directly from the Sprint Board.
 - Added per-reporter **Mark done** confirmations stored in Supabase, including the exact Israel-local confirmation date and time beside every reporting employee.

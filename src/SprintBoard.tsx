@@ -237,6 +237,7 @@ export function SprintBoard({
   const [sprintSelection, setSprintSelection] = useState<string | null>(
     initialCache.sprintSelection
   )
+  const [reporterFilter, setReporterFilter] = useState<string | null>(null)
   const [compactColumn, setCompactColumn] = useState<SprintColumn>('indeterminate')
   const [backlogIssues, setBacklogIssues] = useState<JiraSprintIssue[]>(
     initialView?.backlogIssues ?? []
@@ -514,6 +515,61 @@ export function SprintBoard({
     }),
     [backlogIssues, sprintIssues]
   )
+  const reporterOptions = useMemo(() => {
+    const reporters = new Map<number, { employeeName: string; seconds: number }>()
+    const visibleIssueKeys = new Set([...backlogIssues, ...sprintIssues].map(issue => issue.key))
+    for (const [issueKey, usage] of Object.entries(supabaseUsage)) {
+      if (!visibleIssueKeys.has(issueKey)) continue
+      for (const employee of usage.employees) {
+        const existing = reporters.get(employee.employeeId)
+        reporters.set(employee.employeeId, {
+          employeeName: employee.employeeName,
+          seconds: (existing?.seconds ?? 0) + employee.seconds
+        })
+      }
+    }
+    return Array.from(reporters.entries())
+      .map(([employeeId, reporter]) => ({
+        value: String(employeeId),
+        label: `${reporter.employeeName} · ${formatSeconds(reporter.seconds)}`,
+        employeeName: reporter.employeeName
+      }))
+      .sort((left, right) => left.employeeName.localeCompare(right.employeeName))
+  }, [backlogIssues, sprintIssues, supabaseUsage])
+  const filteredIssuesByColumn = useMemo<Record<SprintColumn, JiraSprintIssue[]>>(() => {
+    if (!reporterFilter) return issuesByColumn
+    const employeeId = Number(reporterFilter)
+    const matchesReporter = (issue: JiraSprintIssue) =>
+      supabaseUsage[issue.key]?.employees.some(employee => employee.employeeId === employeeId) ??
+      false
+    return {
+      backlog: issuesByColumn.backlog.filter(matchesReporter),
+      todo: issuesByColumn.todo.filter(matchesReporter),
+      indeterminate: issuesByColumn.indeterminate.filter(matchesReporter),
+      done: issuesByColumn.done.filter(matchesReporter)
+    }
+  }, [issuesByColumn, reporterFilter, supabaseUsage])
+
+  useEffect(() => {
+    if (!sprintSelection) {
+      setReporterFilter(null)
+      return
+    }
+    setReporterFilter(localStorage.getItem(`hrs-sprint-reporter:${sprintSelection}`))
+  }, [sprintSelection])
+
+  useEffect(() => {
+    if (!reporterFilter || !reporterOptions.length) return
+    if (reporterOptions.some(option => option.value === reporterFilter)) return
+    setReporterFilter(null)
+  }, [reporterFilter, reporterOptions])
+
+  function changeReporterFilter(value: string | null) {
+    setReporterFilter(value)
+    if (!sprintSelection) return
+    if (value) localStorage.setItem(`hrs-sprint-reporter:${sprintSelection}`, value)
+    else localStorage.removeItem(`hrs-sprint-reporter:${sprintSelection}`)
+  }
   const sprintHourTotals = useMemo(() => {
     return sprintIssues.reduce(
       (totals, issue) => {
@@ -1168,6 +1224,21 @@ export function SprintBoard({
             rightSection={!compact && loadingCatalog && !catalog.length ? <Loader size={14} /> : undefined}
             className="sprint-only-select"
           />
+          <Select
+            label="Reporter"
+            placeholder="All reporters"
+            data={reporterOptions.map(option => ({
+              value: option.value,
+              label: option.label
+            }))}
+            value={reporterFilter}
+            onChange={changeReporterFilter}
+            searchable
+            clearable
+            disabled={!reporterOptions.length}
+            nothingFoundMessage="No Supabase reporters"
+            className="sprint-reporter-select"
+          />
           {selectedSprint ? (
             <Stack gap={3} className="sprint-goal-copy">
               <Badge size="xs" color={isPastSprint ? 'gray' : 'teal'}>
@@ -1259,7 +1330,7 @@ export function SprintBoard({
           onChange={value => setCompactColumn(value as SprintColumn)}
           data={visibleColumns.map(column => ({
             value: column,
-            label: `${COLUMN_LABELS[column]} ${issuesByColumn[column].length}`
+            label: `${COLUMN_LABELS[column]} ${filteredIssuesByColumn[column].length}`
           }))}
           className="sprint-compact-columns-switcher"
         />
@@ -1270,7 +1341,7 @@ export function SprintBoard({
         aria-busy={loadingIssues || mutationLoading}
       >
         {displayedColumns.map(column => {
-          const issues = issuesByColumn[column]
+          const issues = filteredIssuesByColumn[column]
           return (
             <section
               key={column}

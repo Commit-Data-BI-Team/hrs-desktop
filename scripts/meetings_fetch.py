@@ -38,6 +38,7 @@ GRAPH_EXPLORER_SCOPES = (
     "openid profile"
 )
 DUO_ACTION_REQUIRED_SIGNAL = "__HRS_DUO_ACTION_REQUIRED__"
+DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS = 30
 OAUTH_CAPTURE_PREFIX = "__HRS_GRAPH_OAUTH_FRAGMENT__"
 WINDOWS_TZ_MAP = {
     "Israel Standard Time": "Asia/Jerusalem",
@@ -905,10 +906,9 @@ def click_stay_signed_in_confirmation(driver) -> bool:
 def microsoft_sign_in_error_message(driver) -> str | None:
     """Return a safe, actionable message for a visible Microsoft sign-in failure."""
     try:
-        body_text = " ".join(
-            (driver.find_element(By.TAG_NAME, "body").text or "").lower().split()
-        )
-    except (NoSuchElementException, NoSuchWindowException, WebDriverException):
+        body = driver.find_element(By.TAG_NAME, "body")
+        body_text = " ".join((getattr(body, "text", "") or "").lower().split())
+    except (AttributeError, NoSuchElementException, NoSuchWindowException, WebDriverException):
         return None
 
     if any(
@@ -962,10 +962,9 @@ def raise_for_microsoft_sign_in_error(driver) -> None:
 def duo_request_state(driver, action: str) -> tuple[str, str | None]:
     """Inspect the DUO prompt after clicking Push/Call without exposing account data."""
     try:
-        body_text = " ".join(
-            (driver.find_element(By.TAG_NAME, "body").text or "").lower().split()
-        )
-    except (NoSuchElementException, NoSuchWindowException, WebDriverException):
+        body = driver.find_element(By.TAG_NAME, "body")
+        body_text = " ".join((getattr(body, "text", "") or "").lower().split())
+    except (AttributeError, NoSuchElementException, NoSuchWindowException, WebDriverException):
         return "pending", None
 
     if any(
@@ -1091,9 +1090,12 @@ def extract_access_token_from_all_windows(driver) -> str | None:
     return None
 
 
-def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 10) -> str | None:
+def wait_for_microsoft_oauth_redirect(
+    driver, timeout_seconds: int = DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS
+) -> str | None:
     deadline = time.time() + timeout_seconds
     last_log = 0.0
+    last_graph_query = 0.0
     while time.time() < deadline:
         raise_for_microsoft_sign_in_error(driver)
         raise_for_duo_error(driver)
@@ -1101,6 +1103,22 @@ def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 10) -> str 
         if token:
             log("Microsoft Graph token captured after DUO approval.")
             return token
+        now = time.time()
+        if now - last_graph_query >= 2:
+            try:
+                if find_graph_explorer_window(driver):
+                    # Current Graph Explorer versions use MSAL authorization-code flow and
+                    # can keep their cache opaque. An actual Graph query exposes the usable
+                    # bearer token in Chrome's network events without reading display text.
+                    trigger_graph_query(driver, timeout_seconds=0.5, quiet=True)
+                    last_graph_query = now
+                    token = extract_access_token_from_performance_log(driver)
+                    if token:
+                        log("Microsoft Graph token captured from Graph Explorer request.")
+                        return token
+            except (WebDriverException, ProtocolError, OSError) as exc:
+                if not is_browser_transport_error(exc):
+                    raise
         try:
             if click_stay_signed_in_confirmation(driver):
                 time.sleep(0.25)
@@ -1458,16 +1476,19 @@ def trigger_token_request(driver) -> None:
     open_access_token_panel(driver)
 
 
-def trigger_graph_query(driver) -> bool:
+def trigger_graph_query(
+    driver, timeout_seconds: float = 4, quiet: bool = False
+) -> bool:
     selectors = [
         (By.XPATH, "//button[contains(., 'Run query') or contains(., 'Run Query')]"),
         (By.CSS_SELECTOR, "button[aria-label*='Run query' i]"),
         (By.CSS_SELECTOR, "button[data-testid*='run' i]"),
     ]
-    if click_first_available(driver, selectors, 4):
+    if click_first_available(driver, selectors, timeout_seconds):
         log("Triggered an authenticated Graph Explorer request.")
         return True
-    log("Graph Explorer run-query control not found. Continuing token recovery.")
+    if not quiet:
+        log("Graph Explorer run-query control not found. Continuing token recovery.")
     return False
 
 
@@ -1689,29 +1710,17 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
             log("Using existing Microsoft session.")
             return access_token
 
-        # Use OAuth in this window first. This makes the complete token available in the
-        # redirect fragment on every OS; Graph Explorer's access-token panel intentionally
-        # renders a shortened value and is not a reliable token source on Windows.
-        log("Starting direct Microsoft Graph authorization in the background.")
-        driver.get(build_direct_graph_authorize_url())
-        WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-        access_token = wait_for_access_token_in_current_url(driver, 4)
-        if access_token:
-            return access_token
-        login_window_found = find_login_window(driver)
-        sign_in_clicked = login_window_found
-
-        if not login_window_found:
-            log("Direct authorization did not expose Microsoft login. Falling back to Graph Explorer sign-in.")
-            driver.get(GRAPH_EXPLORER_URL)
-            WebDriverWait(driver, 30).until(EC.presence_of_element_located((By.TAG_NAME, "body")))
-            sign_in_clicked = click_graph_sign_in(driver)
-            if sign_in_clicked:
-                log("Clicked Graph Explorer sign-in.")
-                time.sleep(2)
-                login_window_found = wait_for_login_window(driver, 20)
-            else:
-                log("Sign-in button not found. Checking existing session.")
+        # Start from Graph Explorer's own MSAL flow. It owns the PKCE verifier and can
+        # exchange Microsoft's post-DUO authorization code. A hand-built implicit-flow
+        # URL now returns to Graph Explorer without a token in this tenant.
+        log("Starting Graph Explorer Microsoft sign-in in the background.")
+        sign_in_clicked = click_graph_sign_in(driver)
+        if sign_in_clicked:
+            log("Clicked Graph Explorer sign-in.")
+            login_window_found = wait_for_login_window(driver, 20)
+        else:
+            login_window_found = False
+            log("Graph Explorer sign-in button not found. Checking existing session.")
 
         if sign_in_clicked:
             if not login_window_found:
@@ -1873,11 +1882,17 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                             raise
 
                 if duo_clicked:
-                    log("Waiting up to 10 seconds for DUO approval.")
-                    access_token = wait_for_microsoft_oauth_redirect(driver, 10)
+                    log(
+                        "Waiting up to "
+                        f"{DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS} seconds for "
+                        "DUO approval and the Microsoft redirect."
+                    )
+                    access_token = wait_for_microsoft_oauth_redirect(
+                        driver, DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS
+                    )
                     if not access_token:
                         raise RuntimeError(
-                            "DUO approval did not complete the Microsoft sign-in within 10 seconds. Start meeting sync again, approve immediately, and keep Duo Mobile open."
+                            "DUO was approved, but Graph Explorer did not complete its Microsoft token exchange within 30 seconds. Try meeting sync again."
                         )
                 elif not auth_window_closed:
                     click_stay_signed_in_confirmation(driver)

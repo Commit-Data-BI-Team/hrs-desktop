@@ -1,4 +1,5 @@
 import base64
+import inspect
 import io
 import json
 import os
@@ -16,6 +17,7 @@ if SCRIPTS not in sys.path:
 from selenium.common.exceptions import NoSuchElementException
 
 from meetings_fetch import (
+    DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS,
     OAUTH_CAPTURE_PREFIX,
     extract_access_token_from_performance_entries,
     extract_access_token_from_oauth_capture,
@@ -25,6 +27,7 @@ from meetings_fetch import (
     looks_like_graph_access_token,
     microsoft_sign_in_error_message,
     request_duo_action,
+    wait_for_microsoft_oauth_redirect,
 )
 
 
@@ -126,7 +129,23 @@ class FakeSignInDriver:
         return FakeBody(self.text)
 
 
+class FakeClosingWindowDriver:
+    def find_element(self, _by, _selector):
+        return None
+
+
 class MeetingsTokenCaptureTests(unittest.TestCase):
+    def test_tolerates_transient_blank_page_while_microsoft_popup_closes(self):
+        self.assertIsNone(microsoft_sign_in_error_message(FakeClosingWindowDriver()))
+
+    def test_duo_redirect_wait_uses_the_extended_timeout(self):
+        timeout = inspect.signature(
+            wait_for_microsoft_oauth_redirect
+        ).parameters["timeout_seconds"].default
+
+        self.assertEqual(DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS, 30)
+        self.assertEqual(timeout, DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS)
+
     @patch(
         "meetings_fetch.sys.stdin",
         new_callable=lambda: io.StringIO(

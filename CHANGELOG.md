@@ -26,6 +26,7 @@
 - Replaced the large **Update Jira & Slack** launcher and gauge-level icons with one permanent message bubble beside Task, available for both regular HRS tasks and shared tasks.
 - Shared-task selection now automatically enables Jira logging and selects that task's created Jira issue; switching shared tasks switches the work item as well.
 - Changed the task-side Jira/Slack bubble to open a smooth in-tray slide-over sheet, preserving the tray's size and scroll position instead of expanding and repositioning the window.
+- Suppressed native tray resize/reposition requests while the Jira/Slack sheet mounts, animates, and unmounts, preventing the tray from appearing to close and reopen.
 
 ## 1.0.18
 

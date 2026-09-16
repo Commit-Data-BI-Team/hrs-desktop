@@ -2500,6 +2500,8 @@ export default function App() {
   const [integrationSuccess, setIntegrationSuccess] = useState<string | null>(null)
   const [integrationComposerOpen, setIntegrationComposerOpen] = useState(false)
   const [integrationQuickLogLinked, setIntegrationQuickLogLinked] = useState(false)
+  const integrationSheetResizeLockedRef = useRef(false)
+  const integrationSheetResizeUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const integrationTextareaRef = useRef<HTMLTextAreaElement>(null)
   const integrationMentionRangeRef = useRef<{ start: number; end: number } | null>(null)
   const integrationMentionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -6457,6 +6459,7 @@ export default function App() {
     message?: string
     followQuickLog?: boolean
   }) {
+    if (isTray) integrationSheetResizeLockedRef.current = true
     const nextCustomer = context?.customer?.trim() || customerName?.trim() || null
     const nextIssueKey = context?.issueKey?.trim().toUpperCase() || null
     setIntegrationDeliveryCheckpoint(null)
@@ -13184,6 +13187,7 @@ export default function App() {
       if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = null
+        if (integrationSheetResizeLockedRef.current) return
         const shellStyle = window.getComputedStyle(shell)
         const shellFrameHeight =
           Number.parseFloat(shellStyle.paddingTop || '0') +
@@ -14024,6 +14028,30 @@ export default function App() {
     }
     window.addEventListener('keydown', closeOnEscape)
     return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [isTray, integrationComposerOpen])
+
+  useEffect(() => {
+    if (!isTray) return
+    if (integrationSheetResizeUnlockTimerRef.current) {
+      window.clearTimeout(integrationSheetResizeUnlockTimerRef.current)
+      integrationSheetResizeUnlockTimerRef.current = null
+    }
+    if (integrationComposerOpen) {
+      integrationSheetResizeLockedRef.current = true
+      return
+    }
+    if (!integrationSheetResizeLockedRef.current) return
+    integrationSheetResizeUnlockTimerRef.current = window.setTimeout(() => {
+      integrationSheetResizeUnlockTimerRef.current = null
+      integrationSheetResizeLockedRef.current = false
+      window.dispatchEvent(new Event('resize'))
+    }, 340)
+    return () => {
+      if (integrationSheetResizeUnlockTimerRef.current) {
+        window.clearTimeout(integrationSheetResizeUnlockTimerRef.current)
+        integrationSheetResizeUnlockTimerRef.current = null
+      }
+    }
   }, [isTray, integrationComposerOpen])
 
   const selectedQuickLogProjectKey =

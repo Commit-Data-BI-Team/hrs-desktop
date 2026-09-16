@@ -4180,6 +4180,7 @@ html[data-platform='windows'] .tray-shell-enter {
   pointer-events: none;
   overflow: hidden;
   border-radius: 16px;
+  contain: layout paint;
 }
 
 .tray-integration-sheet-backdrop {

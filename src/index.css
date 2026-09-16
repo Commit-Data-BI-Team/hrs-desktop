@@ -4173,9 +4173,57 @@ html[data-platform='windows'] .tray-shell-enter {
   box-shadow: 0 0 0 1px rgba(76, 167, 224, 0.18), 0 10px 26px rgba(6, 40, 73, 0.22);
 }
 
-.tray-integration-inline-shell {
-  padding-top: 8px;
-  transform-origin: top center;
+.tray-integration-sheet-layer {
+  position: fixed;
+  inset: 34px 8px 8px;
+  z-index: 80;
+  pointer-events: none;
+  overflow: hidden;
+  border-radius: 16px;
+}
+
+.tray-integration-sheet-backdrop {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  appearance: none;
+  padding: 0;
+  border: 0;
+  border-radius: inherit;
+  background: rgba(2, 8, 14, 0.58);
+  backdrop-filter: blur(3px) saturate(0.82);
+  -webkit-backdrop-filter: blur(3px) saturate(0.82);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.tray-integration-sheet {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 1;
+  width: min(388px, calc(100vw - 20px));
+  padding: 8px 5px 10px 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  pointer-events: auto;
+  scrollbar-width: thin;
+  background:
+    linear-gradient(90deg, rgba(4, 12, 20, 0.2), rgba(7, 17, 28, 0.97) 8%),
+    var(--tray-bg);
+  border-left: 1px solid rgba(104, 203, 255, 0.23);
+  box-shadow: -22px 0 48px rgba(0, 0, 0, 0.38);
+}
+
+.tray-integration-sheet .tray-integration-composer-card {
+  animation: none;
+  min-height: calc(100% - 2px);
+}
+
+.tray-integration-sheet .tray-communicate-panel {
+  min-height: 100%;
 }
 
 .tray-integration-composer-card {
@@ -4212,6 +4260,14 @@ html[data-platform='windows'] .tray-shell-enter {
     opacity: 1;
     transform: translateY(0) scale(1);
     filter: blur(0);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tray-integration-sheet-layer,
+  .tray-integration-sheet {
+    transition: none !important;
+    animation: none !important;
   }
 }
 
@@ -5152,7 +5208,7 @@ html[data-platform='windows'] .tray-calendar {
   position: absolute;
   top: -3px;
   right: 0;
-  z-index: 3;
+  z-index: 90;
   width: 24px;
   min-width: 24px;
   height: 24px;

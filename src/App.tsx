@@ -27,6 +27,7 @@ import {
   TextInput,
   Textarea,
   Text,
+  Transition,
   Tooltip,
   ThemeIcon,
   useMantineColorScheme
@@ -14014,6 +14015,17 @@ export default function App() {
     slackStatus?.configured
   ])
 
+  useEffect(() => {
+    if (!isTray || !integrationComposerOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setIntegrationComposerOpen(false)
+      setIntegrationMentionOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [isTray, integrationComposerOpen])
+
   const selectedQuickLogProjectKey =
     selectedQuickLogUsageCustomer && selectedQuickLogUsageProject
       ? `${dayjs(reportMonth).format('YYYY-MM')}:${getSharedProjectKey(
@@ -20269,15 +20281,35 @@ export default function App() {
                       withAsterisk
                     />
 
-                    <Collapse
-                      in={integrationComposerOpen}
-                      transitionDuration={320}
-                      transitionTimingFunction="cubic-bezier(0.2, 0.8, 0.2, 1)"
+                    <Transition
+                      mounted={integrationComposerOpen}
+                      transition="slide-left"
+                      duration={280}
+                      timingFunction="cubic-bezier(0.22, 0.82, 0.28, 1)"
                     >
-                      <div className="tray-integration-inline-shell">
-                        {renderIntegrationUpdatePanel()}
-                      </div>
-                    </Collapse>
+                      {transitionStyles => (
+                        <div
+                          className="tray-integration-sheet-layer"
+                          style={transitionStyles}
+                          role="dialog"
+                          aria-modal="true"
+                          aria-label="Update Jira and Slack"
+                        >
+                          <button
+                            type="button"
+                            className="tray-integration-sheet-backdrop"
+                            aria-label="Close Jira and Slack update"
+                            onClick={() => {
+                              setIntegrationComposerOpen(false)
+                              setIntegrationMentionOpen(false)
+                            }}
+                          />
+                          <div className="tray-integration-sheet">
+                            {renderIntegrationUpdatePanel()}
+                          </div>
+                        </div>
+                      )}
+                    </Transition>
 
                     {jiraConfigured && (
                       <Stack gap="xs" className="tray-jira-section">

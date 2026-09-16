@@ -25,6 +25,7 @@
 - Made each reporting indicator clickable: the chosen category stays bright while unrelated calendar days dim, and clicking it again restores the complete month.
 - Replaced the large **Update Jira & Slack** launcher and gauge-level icons with one permanent message bubble beside Task, available for both regular HRS tasks and shared tasks.
 - Shared-task selection now automatically enables Jira logging and selects that task's created Jira issue; switching shared tasks switches the work item as well.
+- Changed the task-side Jira/Slack bubble to open a smooth in-tray slide-over sheet, preserving the tray's size and scroll position instead of expanding and repositioning the window.
 
 ## 1.0.18
 

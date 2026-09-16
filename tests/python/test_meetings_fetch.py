@@ -1,4 +1,6 @@
 import base64
+import inspect
+import io
 import json
 import os
 import sys
@@ -15,12 +17,17 @@ if SCRIPTS not in sys.path:
 from selenium.common.exceptions import NoSuchElementException
 
 from meetings_fetch import (
+    DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS,
     OAUTH_CAPTURE_PREFIX,
     extract_access_token_from_performance_entries,
     extract_access_token_from_oauth_capture,
     find_duo_action_button,
     chrome_binary_version,
+    duo_request_state,
     looks_like_graph_access_token,
+    microsoft_sign_in_error_message,
+    request_duo_action,
+    wait_for_microsoft_oauth_redirect,
 )
 
 
@@ -109,7 +116,86 @@ class FakeOAuthDriver:
         return self.values
 
 
+class FakeBody:
+    def __init__(self, text):
+        self.text = text
+
+
+class FakeSignInDriver:
+    def __init__(self, text):
+        self.text = text
+
+    def find_element(self, _by, _selector):
+        return FakeBody(self.text)
+
+
+class FakeClosingWindowDriver:
+    def find_element(self, _by, _selector):
+        return None
+
+
 class MeetingsTokenCaptureTests(unittest.TestCase):
+    def test_tolerates_transient_blank_page_while_microsoft_popup_closes(self):
+        self.assertIsNone(microsoft_sign_in_error_message(FakeClosingWindowDriver()))
+
+    def test_duo_redirect_wait_uses_the_extended_timeout(self):
+        timeout = inspect.signature(
+            wait_for_microsoft_oauth_redirect
+        ).parameters["timeout_seconds"].default
+
+        self.assertEqual(DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS, 30)
+        self.assertEqual(timeout, DUO_MICROSOFT_REDIRECT_TIMEOUT_SECONDS)
+
+    @patch(
+        "meetings_fetch.sys.stdin",
+        new_callable=lambda: io.StringIO(
+            '{"action":"passcode","passcode":"123456"}\n'
+        ),
+    )
+    def test_reads_duo_passcode_without_logging_or_storing_it(self, _stdin):
+        self.assertEqual(request_duo_action(), ("passcode", "123456"))
+
+    @patch(
+        "meetings_fetch.sys.stdin",
+        new_callable=lambda: io.StringIO(
+            '{"action":"passcode","passcode":"not-a-code"}\n'
+        ),
+    )
+    def test_rejects_invalid_duo_passcode(self, _stdin):
+        with self.assertRaisesRegex(RuntimeError, "valid numeric DUO passcode"):
+            request_duo_action()
+
+    def test_confirms_duo_push_delivery_and_manual_open_hint(self):
+        state, message = duo_request_state(
+            FakeSignInDriver(
+                "Pushed a login request to your device. Please open Duo Mobile and check for Duo Push requests manually."
+            ),
+            "push",
+        )
+
+        self.assertEqual(state, "manual")
+        self.assertIsNone(message)
+
+    def test_reports_expired_duo_prompt_instead_of_claiming_delivery(self):
+        state, message = duo_request_state(FakeSignInDriver("Login timed out."), "push")
+
+        self.assertEqual(state, "error")
+        self.assertIn("DUO login window expired", message)
+
+    def test_reports_incorrect_microsoft_credentials_immediately(self):
+        message = microsoft_sign_in_error_message(
+            FakeSignInDriver(
+                "Your account or password is incorrect. If you don't remember your password, reset it now."
+            )
+        )
+
+        self.assertIn("rejected the saved username or password", message)
+
+    def test_does_not_treat_regular_microsoft_page_as_sign_in_error(self):
+        self.assertIsNone(
+            microsoft_sign_in_error_message(FakeSignInDriver("Approve sign in request"))
+        )
+
     def test_accepts_long_opaque_graph_access_tokens_but_not_abbreviated_values(self):
         self.assertTrue(looks_like_graph_access_token("opaque_" + "x" * 220))
         self.assertFalse(looks_like_graph_access_token("eyJ.short.parts"))

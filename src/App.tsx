@@ -27,6 +27,7 @@ import {
   TextInput,
   Textarea,
   Text,
+  Transition,
   Tooltip,
   ThemeIcon,
   useMantineColorScheme
@@ -52,6 +53,7 @@ import {
   IconInfoCircle,
   IconBellRinging,
   IconPhoneCall,
+  IconKey,
   IconPin,
   IconMessageCircle,
   IconSend,
@@ -69,7 +71,8 @@ import {
   IconEye,
   IconTicket,
   IconBrandSlack,
-  IconFileSpreadsheet
+  IconFileSpreadsheet,
+  IconLayoutKanban
 } from '@tabler/icons-react'
 import { DatePicker, DatePickerInput, TimeInput } from '@mantine/dates'
 import type { DayOfWeek } from '@mantine/dates'
@@ -88,6 +91,7 @@ import {
   getSharedProjectCapMinutes,
   getSharedProjectKey,
   mergeProjectUsageContributors,
+  resolveOverallProjectUsage,
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from './sharedProjects'
@@ -101,6 +105,7 @@ import {
   sanitizeReportFilePart,
   type DetailedReportEntry
 } from './reportExport'
+import { SprintBoard } from './SprintBoard'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
 type WorkLog = {
@@ -379,6 +384,7 @@ type JiraStatus = {
   email: string | null
   baseUrl: string
   projectKey: string
+  projectKeys?: string[]
   projectName?: string
   hasCredentials: boolean
 }
@@ -596,6 +602,8 @@ type AppUpdateState = {
   releaseDate?: string
   changelog?: string[]
   percent?: number
+  manualInstallRequired?: boolean
+  manualInstallUrl?: string
 }
 
 type MeetingsFetchPhase = 'idle' | 'init' | 'auth' | 'query' | 'finalize' | 'done' | 'error'
@@ -734,6 +742,7 @@ const AGENDA_UI_ENABLED = false
 const HRS_CREDENTIAL_RESET_REQUEST_KEY = 'hrs-credential-reset-request'
 const REPORT_CUSTOMER_ALIASES_STORAGE_KEY = 'hrs-report-customer-aliases-v1'
 const REPORT_MISSION_MAP_STORAGE_KEY = 'hrs-report-mission-map-v1'
+const RECENT_SHORTCUT_ALIASES_STORAGE_KEY = 'hrs-recent-shortcut-aliases-v2'
 const MEETING_EXCLUDED_SUBJECTS_STORAGE_KEY = 'hrs-meeting-excluded-subjects-v1'
 const EMPLOYEE_REPORT_ALL_VALUE = '__all_employees__'
 const EXCLUDED_EMPLOYEE_NAMES = new Set(['ronen amsalem'])
@@ -2115,6 +2124,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 export default function App() {
   const { colorScheme, setColorScheme } = useMantineColorScheme()
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode())
+  const [mainView, setMainView] = useState<'default' | 'sprints'>('default')
   const oledEnabled = themeMode === 'oled'
   const liquidGlassEnabled = themeMode === 'liquid'
   const liquidGlassSceneRef = useRef<HTMLDivElement>(null)
@@ -2410,6 +2420,9 @@ export default function App() {
   const [appUpdateState, setAppUpdateState] = useState<AppUpdateState>({ state: 'idle' })
   const [appUpdateActionLoading, setAppUpdateActionLoading] = useState(false)
   const [israeliHolidays, setIsraeliHolidays] = useState<IsraeliHoliday[]>([])
+  const [trayCalendarStatusFilter, setTrayCalendarStatusFilter] = useState<
+    'incomplete' | 'unreported' | null
+  >(null)
   const [jiraActiveOnly, setJiraActiveOnly] = useState(true)
   const [jiraReportedOnly, setJiraReportedOnly] = useState(true)
   const [jiraMappingProject, setJiraMappingProject] = useState<string | null>(null)
@@ -2426,6 +2439,9 @@ export default function App() {
   const [sharedFictiveTaskUsage, setSharedFictiveTaskUsage] = useState<
     Record<string, SharedFictiveTaskUsage>
   >({})
+  const [quickUsageDetailsOpen, setQuickUsageDetailsOpen] = useState<
+    Record<'project' | 'task', boolean>
+  >({ project: false, task: false })
   const [pendingReportSyncMonths, setPendingReportSyncMonths] = useState<string[]>([])
   const pendingReportSyncMonthsRef = useRef<string[]>([])
   const reportReconciliationPromisesRef = useRef(
@@ -2440,7 +2456,6 @@ export default function App() {
   const [slackMessage, setSlackMessage] = useState<string | null>(null)
   const [slackMappingCustomer, setSlackMappingCustomer] = useState<string | null>(null)
   const [slackMappingChannel, setSlackMappingChannel] = useState<string | null>(null)
-  const [slackManualChannelId, setSlackManualChannelId] = useState('')
   const [integrationDestination, setIntegrationDestination] =
     useState<IntegrationDestination>('both')
   const [integrationCustomer, setIntegrationCustomer] = useState<string | null>(null)
@@ -2492,7 +2507,12 @@ export default function App() {
   const [integrationError, setIntegrationError] = useState<string | null>(null)
   const [integrationSuccess, setIntegrationSuccess] = useState<string | null>(null)
   const [integrationComposerOpen, setIntegrationComposerOpen] = useState(false)
+  const [integrationRoutingOpen, setIntegrationRoutingOpen] = useState(false)
+  const [integrationHistoryOpen, setIntegrationHistoryOpen] = useState(false)
+  const [integrationToolsOpen, setIntegrationToolsOpen] = useState(false)
   const [integrationQuickLogLinked, setIntegrationQuickLogLinked] = useState(false)
+  const integrationSheetResizeLockedRef = useRef(false)
+  const integrationSheetResizeUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
   const integrationTextareaRef = useRef<HTMLTextAreaElement>(null)
   const integrationMentionRangeRef = useRef<{ start: number; end: number } | null>(null)
   const integrationMentionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -2527,6 +2547,15 @@ export default function App() {
   const [sharedTaskRenameDraft, setSharedTaskRenameDraft] = useState('')
   const [sharedTaskRenameSaving, setSharedTaskRenameSaving] = useState(false)
   const [sharedTaskRenameError, setSharedTaskRenameError] = useState<string | null>(null)
+  const [regularTaskRenameTarget, setRegularTaskRenameTarget] = useState<{
+    aliasKey: string
+    taskId: number
+    originalDisplayName: string
+    customerLabel: string
+    projectName: string
+  } | null>(null)
+  const [regularTaskRenameDraft, setRegularTaskRenameDraft] = useState('')
+  const [regularTaskRenameError, setRegularTaskRenameError] = useState<string | null>(null)
   const [jiraLogLoadingKey, setJiraLogLoadingKey] = useState<string | null>(null)
   const [jiraLoggedEntries, setJiraLoggedEntries] = useState<JiraLoggedEntries>({})
   const [jiraLogModalOpen, setJiraLogModalOpen] = useState(false)
@@ -2564,11 +2593,13 @@ export default function App() {
   const [meetingsDuoPromptActive, setMeetingsDuoPromptActive] = useState(false)
   const [meetingsDuoActionRequired, setMeetingsDuoActionRequired] = useState(false)
   const [meetingsDuoActionSending, setMeetingsDuoActionSending] = useState<
-    'push' | 'call' | null
+    'push' | 'call' | 'passcode' | null
   >(null)
   const [meetingsDuoSelectedAction, setMeetingsDuoSelectedAction] = useState<
-    'push' | 'call' | null
+    'push' | 'call' | 'passcode' | null
   >(null)
+  const [meetingsDuoPasscodeOpen, setMeetingsDuoPasscodeOpen] = useState(false)
+  const [meetingsDuoPasscode, setMeetingsDuoPasscode] = useState('')
   const [meetingsCollapsed, setMeetingsCollapsed] = useState(false)
   const [trayMeetingsSettingsOpen, setTrayMeetingsSettingsOpen] = useState(true)
   const [trayMeetingsProgressOpen, setTrayMeetingsProgressOpen] = useState(false)
@@ -2708,6 +2739,7 @@ export default function App() {
     | 'agenda'
     | 'employees'
     | 'reports'
+    | 'sprints'
     | 'settings'
   >('log')
   const [employeesAccessChecked, setEmployeesAccessChecked] = useState(false)
@@ -2730,6 +2762,9 @@ export default function App() {
   )
   const [reportMissionMap, setReportMissionMap] = useState<Record<string, string>>(() =>
     safeGetLocalStorageStringRecord(REPORT_MISSION_MAP_STORAGE_KEY)
+  )
+  const [recentShortcutAliases, setRecentShortcutAliases] = useState<Record<string, string>>(() =>
+    safeGetLocalStorageStringRecord(RECENT_SHORTCUT_ALIASES_STORAGE_KEY)
   )
   const [editingCustomerAliasKey, setEditingCustomerAliasKey] = useState<string | null>(null)
   const [customerAliasDraft, setCustomerAliasDraft] = useState('')
@@ -3273,6 +3308,8 @@ export default function App() {
       setMeetingsDuoActionRequired(true)
       setMeetingsDuoActionSending(null)
       setMeetingsDuoSelectedAction(null)
+      setMeetingsDuoPasscodeOpen(false)
+      setMeetingsDuoPasscode('')
       setMeetingsDuoPromptActive(false)
       setMeetingsProgress('Choose a DUO verification method.')
       setMeetingsFetchPhase(prev => advanceMeetingsFetchPhase(prev, 'auth'))
@@ -3292,11 +3329,14 @@ export default function App() {
       })
       const normalized = message.toLowerCase()
       const isActualDuoPrompt =
-        normalized.includes('sent duo push request') ||
-        normalized.includes('requested duo phone call') ||
+        normalized.includes('duo push request confirmed') ||
+        normalized.includes('duo phone call request confirmed') ||
         normalized.includes("waiting for duo approval on user's phone") ||
         normalized.includes('waiting for duo approval on your phone') ||
-        normalized.includes('waiting for duo phone call approval')
+        normalized.includes('waiting for duo approval in duo mobile') ||
+        normalized.includes('open duo mobile manually') ||
+        normalized.includes('waiting for duo phone call approval') ||
+        normalized.includes('duo passcode accepted')
       const hasMovedPastDuo =
         normalized.includes('after duo approval') ||
         normalized.includes('after duo redirect') ||
@@ -3311,18 +3351,23 @@ export default function App() {
       if (isActualDuoPrompt) {
         setMeetingsDuoActionRequired(false)
         setMeetingsDuoActionSending(null)
-        if (
-          normalized.includes('requested duo phone call') ||
+        if (normalized.includes('duo passcode accepted')) {
+          setMeetingsDuoSelectedAction('passcode')
+        } else if (
+          normalized.includes('duo phone call request confirmed') ||
           normalized.includes('waiting for duo phone call approval')
         ) {
           setMeetingsDuoSelectedAction('call')
         } else if (
-          normalized.includes('sent duo push request') ||
-          normalized.includes('waiting for duo approval')
+          normalized.includes('duo push request confirmed') ||
+          normalized.includes('waiting for duo approval') ||
+          normalized.includes('open duo mobile manually')
         ) {
           setMeetingsDuoSelectedAction('push')
         }
         setMeetingsDuoPromptActive(true)
+        setMeetingsDuoPasscodeOpen(false)
+        setMeetingsDuoPasscode('')
       } else if (hasMovedPastDuo) {
         setMeetingsDuoActionRequired(false)
         setMeetingsDuoActionSending(null)
@@ -3782,7 +3827,12 @@ export default function App() {
   }, [])
 
   const isMainWindow =
-    !isFloating && !isTray && !isReportsWindow && !isSettingsWindow && !isMeetingsWindow
+    !isFloating &&
+    !isTray &&
+    !isReportsWindow &&
+    !isSettingsWindow &&
+    !isMeetingsWindow
+  const isSprintView = isMainWindow && mainView === 'sprints'
   const shouldLoadLogData = isMainWindow || isTray || isReportsWindow
   const shouldLoadWorkLogs = shouldLoadLogData || isFloating
   const shouldLoadJiraEpics = isMainWindow || isReportsWindow || isFloating
@@ -3828,8 +3878,28 @@ export default function App() {
     } else {
       document.body.classList.remove('meetings-mode')
     }
+    if (isSprintView) {
+      document.body.classList.add('sprints-mode')
+    } else {
+      document.body.classList.remove('sprints-mode')
+    }
     document.documentElement.setAttribute('data-platform', platform)
-  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, platform])
+  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, isSprintView, platform])
+
+  useEffect(() => {
+    if (!isMainWindow || !window.hrs?.getRequestedMainView) return
+    let active = true
+    void window.hrs.getRequestedMainView().then(view => {
+      if (active) setMainView(view)
+    })
+    const dispose = window.hrs.onMainViewRequested?.(view => {
+      setMainView(view)
+    })
+    return () => {
+      active = false
+      dispose?.()
+    }
+  }, [isMainWindow])
 
   useEffect(() => {
     if (!isFloating) return
@@ -3959,7 +4029,7 @@ export default function App() {
 
   const appReady = useMemo(() => {
     if (isFloating) return true
-    if (isAuxWindow) {
+    if (isAuxWindow || isSprintView) {
       return preferencesLoaded && jiraStatusLoaded
     }
     if (
@@ -3982,6 +4052,7 @@ export default function App() {
   }, [
     isFloating,
     isAuxWindow,
+    isSprintView,
     isTray,
     bootComplete,
     preferencesLoaded,
@@ -4050,6 +4121,19 @@ export default function App() {
     try {
       if (window.hrs?.openMeetingsWindow) {
         await window.hrs.openMeetingsWindow()
+        return
+      }
+      await window.hrs.openMainWindow()
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      setBridgeError(message)
+    }
+  }
+
+  async function openSprintWindow() {
+    try {
+      if (window.hrs?.openSprintWindow) {
+        await window.hrs.openSprintWindow()
         return
       }
       await window.hrs.openMainWindow()
@@ -4238,6 +4322,7 @@ export default function App() {
       | 'agenda'
       | 'employees'
       | 'reports'
+      | 'sprints'
       | 'settings'
   ) {
     if (nextPanel === 'agenda' && !AGENDA_UI_ENABLED) {
@@ -4282,7 +4367,7 @@ export default function App() {
     options: { force?: boolean; reason?: 'enter' | 'focus' | 'timer' } = {}
   ) {
     if (!loggedIn) return
-    if (panel === 'agenda' || panel === 'settings' || panel === 'clockify') return
+    if (panel === 'agenda' || panel === 'settings' || panel === 'clockify' || panel === 'sprints') return
     const key = `${panel}:${dayjs(reportMonth).format('YYYY-MM')}:${reportSource}`
     const now = Date.now()
     const minAge = options.reason === 'focus' ? 20_000 : 0
@@ -5571,16 +5656,15 @@ export default function App() {
     if (!window.hrs?.setSlackCustomerMapping || !slackMappingCustomer) {
       return
     }
-    const manualChannelId = slackManualChannelId.trim().toUpperCase()
     const channel = slackMappingChannel
       ? slackChannels.find(item => item.id === slackMappingChannel)
       : null
-    const channelId = channel?.id ?? manualChannelId
-    const channelName = channel?.name ?? manualChannelId
-    if (!channelId) {
-      setSlackError('Choose a Slack channel or paste a private channel ID.')
+    if (!channel) {
+      setSlackError('Choose a Slack channel from the picker.')
       return
     }
+    const channelId = channel.id
+    const channelName = channel.name
     if (!/^[A-Z0-9]+$/.test(channelId)) {
       setSlackError('Slack channel ID should contain only uppercase letters and numbers.')
       return
@@ -5595,8 +5679,7 @@ export default function App() {
         channelName
       })
       await loadSlackStatus()
-      setSlackManualChannelId('')
-      setSlackMessage(`Mapped ${slackMappingCustomer} to ${channel ? `#${channel.name}` : channelId}.`)
+      setSlackMessage(`Mapped ${slackMappingCustomer} to #${channel.name}.`)
     } catch (err) {
       setSlackError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -5848,6 +5931,7 @@ export default function App() {
     setIntegrationTransitionId(null)
     setIntegrationError(null)
     setIntegrationSuccess(null)
+    setIntegrationHistoryOpen(false)
     requestAnimationFrame(() => integrationTextareaRef.current?.focus())
   }
 
@@ -6438,6 +6522,7 @@ export default function App() {
     message?: string
     followQuickLog?: boolean
   }) {
+    if (isTray) integrationSheetResizeLockedRef.current = true
     const nextCustomer = context?.customer?.trim() || customerName?.trim() || null
     const nextIssueKey = context?.issueKey?.trim().toUpperCase() || null
     setIntegrationDeliveryCheckpoint(null)
@@ -6445,6 +6530,9 @@ export default function App() {
     setIntegrationSuccess(null)
     setIntegrationReplyTarget(null)
     setIntegrationDestination('both')
+    setIntegrationRoutingOpen(false)
+    setIntegrationHistoryOpen(false)
+    setIntegrationToolsOpen(false)
     setIntegrationQuickLogLinked(Boolean(context?.followQuickLog))
     if (context?.message !== undefined) setIntegrationMessageText(context.message)
     if (nextCustomer) {
@@ -6549,17 +6637,17 @@ export default function App() {
       <Stack gap="xs" className="tray-communicate-panel is-inline">
         <Card radius="md" withBorder className="tray-integration-composer-card">
           <Stack gap="xs">
-            <Group justify="space-between" align="center">
+            <Group justify="space-between" align="center" className="integration-sheet-header">
               <div>
                 <Text fw={700} size="sm">
                   {integrationReplyTarget
                     ? `Reply to ${integrationReplyTarget.authorName}`
-                    : 'Send update'}
+                    : 'Update Jira & Slack'}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {integrationReplyTarget
                     ? `Replying on ${integrationReplyTarget.source === 'jira' ? 'Jira' : 'Slack'}.`
-                    : 'Send the same customer update to Jira and Slack together.'}
+                    : 'Write once and send to both destinations.'}
                 </Text>
               </div>
               <ActionIcon
@@ -6580,7 +6668,7 @@ export default function App() {
                 <Text size="xs" fw={700}>
                   {integrationReplyTarget
                     ? `Reply only in ${integrationReplyTarget.source === 'jira' ? 'Jira' : 'Slack'}`
-                    : 'New messages send to both'}
+                    : integrationCustomer || 'Customer update'}
                 </Text>
                 <Group gap={6} wrap="nowrap">
                   {(!integrationReplyTarget || integrationReplyTarget.source === 'jira') && (
@@ -6593,16 +6681,40 @@ export default function App() {
               </Group>
             </Card>
 
-            <Select
-              label="Customer"
-              placeholder="Choose customer"
-              data={customers}
-              value={integrationCustomer}
-              onChange={selectIntegrationCustomer}
-              searchable
-              clearable
-              size="xs"
-            />
+            <div className="integration-routing-section">
+              <Button
+                fullWidth
+                size="xs"
+                variant="subtle"
+                className="integration-disclosure-button"
+                rightSection={
+                  integrationRoutingOpen
+                    ? <IconChevronDown size={14} />
+                    : <IconChevronRight size={14} />
+                }
+                aria-expanded={integrationRoutingOpen}
+                onClick={() => setIntegrationRoutingOpen(value => !value)}
+              >
+                <span className="integration-disclosure-copy">
+                  <strong>Delivery</strong>
+                  <small>
+                    {integrationCustomer || 'Customer'} · {integrationJiraIssueKey || 'Jira'} ·{' '}
+                    {channelOptions.find(option => option.value === integrationSlackChannelId)?.label || 'Slack'}
+                  </small>
+                </span>
+              </Button>
+              <Collapse in={integrationRoutingOpen} transitionDuration={160}>
+                <Stack gap="xs" pt="xs">
+                  <Select
+                    label="Customer"
+                    placeholder="Choose customer"
+                    data={customers}
+                    value={integrationCustomer}
+                    onChange={selectIntegrationCustomer}
+                    searchable
+                    clearable
+                    size="xs"
+                  />
 
             {integrationUsesJira() && (
               <Card radius="md" withBorder className="integration-destination-card">
@@ -6678,8 +6790,31 @@ export default function App() {
                 </Stack>
               </Card>
             )}
+                </Stack>
+              </Collapse>
+            </div>
 
-            <Card radius="md" withBorder className="integration-recent-card">
+            <div className="integration-history-section">
+              <Button
+                fullWidth
+                size="xs"
+                variant="subtle"
+                className="integration-disclosure-button"
+                rightSection={
+                  integrationHistoryOpen
+                    ? <IconChevronDown size={14} />
+                    : <IconChevronRight size={14} />
+                }
+                aria-expanded={integrationHistoryOpen}
+                onClick={() => setIntegrationHistoryOpen(value => !value)}
+              >
+                <span className="integration-disclosure-copy">
+                  <strong>Conversation</strong>
+                  <small>{integrationRecentMessages.length} recent message{integrationRecentMessages.length === 1 ? '' : 's'}</small>
+                </span>
+              </Button>
+              <Collapse in={integrationHistoryOpen} transitionDuration={160}>
+            <Card radius="md" withBorder className="integration-recent-card" mt="xs">
               <Stack gap={8}>
                 <Group justify="space-between" align="center" wrap="nowrap">
                   <div>
@@ -7115,12 +7250,33 @@ export default function App() {
                 )}
               </Stack>
             </Card>
+              </Collapse>
+            </div>
 
             <div
               className={`integration-main-composer${
                 integrationReplyTarget ? ' is-hidden-for-reply' : ''
               }`}
             >
+            <Button
+              fullWidth
+              size="xs"
+              variant="subtle"
+              className="integration-disclosure-button integration-tools-toggle"
+              rightSection={
+                integrationToolsOpen
+                  ? <IconChevronDown size={14} />
+                  : <IconChevronRight size={14} />
+              }
+              aria-expanded={integrationToolsOpen}
+              onClick={() => setIntegrationToolsOpen(value => !value)}
+            >
+              <span className="integration-disclosure-copy">
+                <strong>Writing tools</strong>
+                <small>Formatting, RTL, images, and files</small>
+              </span>
+            </Button>
+            <Collapse in={integrationToolsOpen} transitionDuration={160}>
             <Group
               justify="space-between"
               align="center"
@@ -7214,6 +7370,7 @@ export default function App() {
                 </Button>
               </Group>
             </Group>
+            </Collapse>
 
             <Popover
               opened={!integrationReplyTarget && integrationMentionOpen}
@@ -7260,7 +7417,7 @@ export default function App() {
                   {directoryBadge('slack')}
                 </Group>
                 {integrationMentionCandidates.length ? (
-                  <Stack gap={4}>
+                  <Stack gap="xs">
                     {integrationMentionCandidates.map(candidate => {
                       const favorite = isIntegrationFavorite(candidate)
                       return (
@@ -7681,62 +7838,16 @@ export default function App() {
                   nothingFoundMessage="No channels loaded"
                 />
               </SimpleGrid>
-              <TextInput
-                label="Private channel ID"
-                placeholder="Paste channel ID if it does not appear above"
-                value={slackManualChannelId}
-                onChange={event => {
-                  setSlackManualChannelId(event.currentTarget.value)
-                  if (event.currentTarget.value.trim()) setSlackMappingChannel(null)
-                }}
-                size={compact ? 'xs' : 'sm'}
-              />
-              <Text size="xs" c="dimmed">
-                For private channels, add the bot to the channel and paste the channel ID if Slack
-                does not return it in the picker.
-              </Text>
-              <Text size="xs" c="dimmed">
-                @ suggestions require the users:read bot scope; users:read.email enables reliable
-                Jira-to-Slack identity matching, files:write enables attachments, and
-                channels:history / groups:history load recent public / private channel messages.
-                After changing scopes, reinstall the Slack app to the workspace and reconnect its token.
-              </Text>
               <Group justify="flex-end">
                 <Button
                   size={compact ? 'xs' : 'sm'}
                   onClick={() => void saveSlackCustomerMapping()}
                   loading={slackLoading}
-                  disabled={!slackMappingCustomer || (!slackMappingChannel && !slackManualChannelId.trim())}
+                  disabled={!slackMappingCustomer || !slackMappingChannel}
                 >
                   Save mapping
                 </Button>
               </Group>
-              <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
-                <Stack gap={6}>
-                  <Text fw={700} size={compact ? 'xs' : 'sm'}>
-                    Posted to Slack
-                  </Text>
-                  {[
-                    'Customer and mapped channel',
-                    'Event type: task created or hours logged',
-                    'Reporter name',
-                    'Fictive task name when selected',
-                    'Original HRS task',
-                    'Logged hours and date',
-                    'Capped task usage when available',
-                    'Jira work item when available',
-                    'User comment'
-                  ].map(item => (
-                    <Checkbox
-                      key={item}
-                      size={compact ? 'xs' : 'sm'}
-                      checked
-                      disabled
-                      label={item}
-                    />
-                  ))}
-                </Stack>
-              </Card>
               {mappings.length > 0 && (
                 <Stack gap={6}>
                   {mappings.map(mapping => (
@@ -7778,40 +7889,6 @@ export default function App() {
               </Group>
             </>
           )}
-
-          <Card radius="md" withBorder className="slack-scope-guide">
-            <Stack gap={6}>
-              <Group justify="space-between" align="center" wrap="nowrap">
-                <Text size="xs" fw={700}>Slack bot permissions</Text>
-                <Badge size="xs" variant="light" color="violet">Bot scopes</Badge>
-              </Group>
-              <Text size="xs" c="dimmed">
-                api.slack.com/apps → the app whose bot user is hrs_desktop → OAuth &amp;
-                Permissions → Scopes → Bot Token Scopes → Add an OAuth Scope.
-              </Text>
-              <Group gap={6} wrap="wrap" className="slack-scope-list">
-                {[
-                  'chat:write',
-                  'users:read',
-                  'users:read.email',
-                  'files:write',
-                  'channels:history',
-                  'groups:history'
-                ].map(scope => (
-                  <Badge key={scope} size="xs" variant="outline" color="blue">
-                    {scope}
-                  </Badge>
-                ))}
-              </Group>
-              <Text size="xs" c="dimmed">
-                Then click Reinstall to Workspace, approve the permissions, copy the refreshed Bot
-                User OAuth Token, and reconnect it here. Invite hrs_desktop to private channels.
-              </Text>
-              <Text size="xs" className="slack-apps-url">
-                https://api.slack.com/apps
-              </Text>
-            </Stack>
-          </Card>
 
           {slackMessage && (
             <Alert color="teal" variant="light" radius="md">
@@ -8034,16 +8111,30 @@ export default function App() {
     } catch {}
   }
 
-  async function selectMeetingsDuoAction(action: 'push' | 'call') {
+  async function selectMeetingsDuoAction(
+    action: 'push' | 'call' | 'passcode',
+    passcode?: string
+  ) {
     if (!meetingsDuoActionRequired || meetingsDuoActionSending) return
+    if (action === 'passcode' && !/^\d{4,10}$/.test(passcode ?? '')) {
+      setMeetingsError('Enter the numeric passcode shown in Duo Mobile.')
+      return
+    }
     setMeetingsDuoActionSending(action)
     setMeetingsDuoSelectedAction(action)
     setMeetingsError(null)
     setMeetingsProgress(
-      action === 'call' ? 'Requesting a DUO phone call…' : 'Sending a DUO push…'
+      action === 'call'
+        ? 'Requesting a DUO phone call…'
+        : action === 'passcode'
+          ? 'Verifying DUO passcode…'
+          : 'Sending a DUO push…'
     )
     try {
-      await window.hrs.selectMeetingsDuoAction(action)
+      await window.hrs.selectMeetingsDuoAction(action, passcode ?? null)
+      if (action === 'passcode') {
+        setMeetingsDuoPasscode('')
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       setMeetingsDuoActionSending(null)
@@ -8121,8 +8212,15 @@ export default function App() {
       setTrayMeetingsProgressOpen(false)
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
+      const credentialsRejected = /Microsoft rejected the saved username or password/i.test(message)
+      if (credentialsRejected) {
+        setMeetingsPassword('')
+        setMeetingsCredentialsOpen(true)
+      }
       setMeetingsError(message)
-      setMeetingsProgress('Fetch failed.')
+      setMeetingsProgress(
+        credentialsRejected ? 'Update the Microsoft password and try again.' : 'Fetch failed.'
+      )
       setMeetingsFetchPhase('error')
       setMeetingsDuoPromptActive(false)
       setMeetingsDuoActionRequired(false)
@@ -9155,7 +9253,7 @@ export default function App() {
     }
   }
 
-  async function runUpdateAction(action: 'check' | 'download' | 'install') {
+  async function runUpdateAction(action: 'check' | 'download' | 'install' | 'manual-install') {
     if (!window?.hrs) return
     setAppUpdateActionLoading(true)
     try {
@@ -9163,8 +9261,10 @@ export default function App() {
         await window.hrs.checkForUpdates()
       } else if (action === 'download') {
         await window.hrs.downloadUpdate()
-      } else {
+      } else if (action === 'install') {
         await window.hrs.installUpdate()
+      } else {
+        await window.hrs.openManualUpdateInstaller()
       }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -9183,7 +9283,7 @@ export default function App() {
       case 'checking':
         return 'blue'
       case 'error':
-        return 'red'
+        return appUpdateState.manualInstallRequired ? 'orange' : 'red'
       case 'disabled':
         return 'gray'
       default:
@@ -9204,7 +9304,7 @@ export default function App() {
       case 'ready':
         return appUpdateState.version ? `Ready v${appUpdateState.version}` : 'Ready'
       case 'error':
-        return 'Update error'
+        return appUpdateState.manualInstallRequired ? 'Full installer required' : 'Update error'
       case 'disabled':
         return 'Disabled'
       default:
@@ -9214,6 +9314,10 @@ export default function App() {
 
   const currentVersionLabel = appUpdateState.currentVersion || appVersion || 'Unknown'
   const updateVersionLabel = appUpdateState.version || null
+  const shouldShowUpdateBubble =
+    (['available', 'downloading', 'ready'] as AppUpdateState['state'][]).includes(
+      appUpdateState.state
+    ) || Boolean(appUpdateState.manualInstallRequired)
   const updateChangelogItems = useMemo(
     () =>
       (appUpdateState.changelog ?? [])
@@ -9222,6 +9326,25 @@ export default function App() {
         .slice(0, 8),
     [appUpdateState.changelog]
   )
+  const manualMacUpdateAction = appUpdateState.manualInstallRequired ? (
+    <Alert color="orange" variant="light" radius="md" title="One-time macOS installation">
+      <Stack gap="xs">
+        <Text size="xs">
+          This installed copy has an incompatible legacy signature. Download and replace the app
+          once with the full macOS installer; your saved settings and credentials are preserved.
+        </Text>
+        <Button
+          size="xs"
+          color="orange"
+          variant="light"
+          onClick={() => void runUpdateAction('manual-install')}
+          loading={appUpdateActionLoading}
+        >
+          Download full Mac installer
+        </Button>
+      </Stack>
+    </Alert>
+  ) : null
 
   async function updateJiraMapping(customer: string, epicKey: string | null) {
     try {
@@ -10068,7 +10191,9 @@ export default function App() {
     const effectiveFromTime = overrides?.fromTime ?? fromTime
     const effectiveToTime = overrides?.toTime ?? toTime
     const effectiveReportingFrom = overrides?.reportingFrom ?? reportingFrom
-    const shouldLogToJira = overrides?.logToJira ?? logToJira
+    const shouldLogToJira = effectiveMission?.virtual
+      ? true
+      : overrides?.logToJira ?? logToJira
     const effectiveCustomerName =
       effectiveMission?.customerName?.trim() || effectiveTask?.customerName || customerName
     const effectiveProjectName =
@@ -11627,7 +11752,7 @@ export default function App() {
       setFloatingStartError('Select a task before starting the timer.')
       return
     }
-    if (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey))) {
+    if (jiraLoggingEnabled && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey))) {
       setFloatingStartError(
         jiraConfigured ? 'Select a Jira work item or disable Jira logging.' : 'Connect Jira first.'
       )
@@ -13119,6 +13244,7 @@ export default function App() {
       if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame)
       resizeFrame = window.requestAnimationFrame(() => {
         resizeFrame = null
+        if (integrationSheetResizeLockedRef.current) return
         const shellStyle = window.getComputedStyle(shell)
         const shellFrameHeight =
           Number.parseFloat(shellStyle.paddingTop || '0') +
@@ -13462,14 +13588,21 @@ export default function App() {
       return
     }
     if (logToJira) {
-      setJiraIssueKey(null)
+      const selectedMissionId = getMissionIdFromTaskValue(debouncedTaskName)
+      const selectedMissionIssueKey = selectedMissionId
+        ? allProjectMissions
+            .find(mission => mission.id === selectedMissionId)
+            ?.jiraIssueKey?.trim()
+            .toUpperCase() ?? null
+        : null
+      setJiraIssueKey(selectedMissionIssueKey)
       setJiraIssues([])
       void loadJiraWorkItems(mappedEpicKey)
       return
     }
     setJiraLoadingIssues(false)
     setJiraIssueLoadError(null)
-  }, [jiraConfigured, mappedEpicKey, logToJira])
+  }, [jiraConfigured, mappedEpicKey, logToJira, debouncedTaskName, allProjectMissions])
 
   useEffect(() => {
     if (!logToJira) return
@@ -13863,6 +13996,8 @@ export default function App() {
     if (!missionId) return null
     return allProjectMissions.find(mission => mission.id === missionId) ?? null
   }, [debouncedTaskName, allProjectMissions])
+  const isFictiveTaskSelected = Boolean(selectedQuickLogMission?.virtual)
+  const jiraLoggingEnabled = isFictiveTaskSelected || logToJira
 
   const selectedQuickLogMissionTaskId = useMemo(() => {
     const originalTaskId = selectedQuickLogMission?.hrsTaskIds?.[0]
@@ -13875,6 +14010,9 @@ export default function App() {
     selectedQuickLogMission?.customerName?.trim() || customerName?.trim() || ''
   const selectedQuickLogUsageProject =
     selectedQuickLogMission?.projectName?.trim() || projectName?.trim() || ''
+  useEffect(() => {
+    setQuickUsageDetailsOpen({ project: false, task: false })
+  }, [selectedQuickLogMission?.id, selectedQuickLogUsageCustomer, selectedQuickLogUsageProject])
   const selectedQuickLogParentJiraKey = getMappedJiraParentForNames([
     selectedQuickLogUsageCustomer,
     selectedQuickLogUsageProject,
@@ -13885,6 +14023,35 @@ export default function App() {
     selectedQuickLogMission?.jiraIssueKey,
     selectedQuickLogParentJiraKey
   )
+  const quickLogJiraIssueOptions = useMemo(() => {
+    const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase()
+    if (!missionIssueKey || jiraIssueOptions.some(option => option.value === missionIssueKey)) {
+      return jiraIssueOptions
+    }
+    return [
+      {
+        value: missionIssueKey,
+        label: `${missionIssueKey} · ${selectedQuickLogMission.name}`
+      },
+      ...jiraIssueOptions
+    ]
+  }, [jiraIssueOptions, selectedQuickLogMission])
+  const autoJiraMissionRef = useRef<string | null>(null)
+
+  useEffect(() => {
+    const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase()
+    if (selectedQuickLogMission?.virtual && missionIssueKey) {
+      autoJiraMissionRef.current = selectedQuickLogMission.id
+      setJiraIssueKey(missionIssueKey)
+      setLogToJira(true)
+      return
+    }
+    if (autoJiraMissionRef.current && !selectedQuickLogMission) {
+      autoJiraMissionRef.current = null
+      setJiraIssueKey(null)
+      setLogToJira(false)
+    }
+  }, [selectedQuickLogMission?.id, selectedQuickLogMission?.jiraIssueKey])
 
   useEffect(() => {
     if (!integrationComposerOpen || !integrationQuickLogLinked) return
@@ -13913,6 +14080,41 @@ export default function App() {
     jiraConfigured,
     slackStatus?.configured
   ])
+
+  useEffect(() => {
+    if (!isTray || !integrationComposerOpen) return
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key !== 'Escape') return
+      setIntegrationComposerOpen(false)
+      setIntegrationMentionOpen(false)
+    }
+    window.addEventListener('keydown', closeOnEscape)
+    return () => window.removeEventListener('keydown', closeOnEscape)
+  }, [isTray, integrationComposerOpen])
+
+  useEffect(() => {
+    if (!isTray) return
+    if (integrationSheetResizeUnlockTimerRef.current) {
+      window.clearTimeout(integrationSheetResizeUnlockTimerRef.current)
+      integrationSheetResizeUnlockTimerRef.current = null
+    }
+    if (integrationComposerOpen) {
+      integrationSheetResizeLockedRef.current = true
+      return
+    }
+    if (!integrationSheetResizeLockedRef.current) return
+    integrationSheetResizeUnlockTimerRef.current = window.setTimeout(() => {
+      integrationSheetResizeUnlockTimerRef.current = null
+      integrationSheetResizeLockedRef.current = false
+      window.dispatchEvent(new Event('resize'))
+    }, 340)
+    return () => {
+      if (integrationSheetResizeUnlockTimerRef.current) {
+        window.clearTimeout(integrationSheetResizeUnlockTimerRef.current)
+        integrationSheetResizeUnlockTimerRef.current = null
+      }
+    }
+  }, [isTray, integrationComposerOpen])
 
   const selectedQuickLogProjectKey =
     selectedQuickLogUsageCustomer && selectedQuickLogUsageProject
@@ -13984,30 +14186,29 @@ export default function App() {
       Math.max(0, selectedQuickLogMission.projectCappedHours ?? 0) * 60
     )
     if (projectCapMinutes > 0) {
-      const usedMinutes = selectedQuickLogCombinedSharedProjectUsage.ready
-        ? Math.round(selectedQuickLogCombinedSharedProjectUsage.usedSeconds / 60)
-        : selectedQuickLogProjectUsage
-          ? Math.round(selectedQuickLogProjectUsage.usedSeconds / 60)
-          : getProjectUsedMinutesFromReports(
-              selectedQuickLogUsageCustomer,
-              selectedQuickLogUsageProject,
-              allReportItems
-            )
-      const employees = selectedQuickLogCombinedSharedProjectUsage.ready
-        ? selectedQuickLogCombinedSharedProjectUsage.employees.map(employee => ({
-            employeeId: employee.employeeId,
-            employeeName: employee.employeeName,
-            minutes: Math.round(employee.seconds / 60)
-          }))
-        : selectedQuickLogProjectUsage
-          ? selectedQuickLogProjectUsage.employees.map(employee => ({
+      // Supabase's project usage includes regular HRS rows plus every shared task in the
+      // project. The local reconstruction is only a startup fallback and can be incomplete
+      // when the current client has not loaded every task belonging to the project.
+      const resolvedProjectUsage = resolveOverallProjectUsage(
+        selectedQuickLogProjectUsage,
+        selectedQuickLogCombinedSharedProjectUsage
+      )
+      const usedMinutes = resolvedProjectUsage
+        ? Math.round(resolvedProjectUsage.usedSeconds / 60)
+        : getProjectUsedMinutesFromReports(
+            selectedQuickLogUsageCustomer,
+            selectedQuickLogUsageProject,
+            allReportItems
+          )
+      const employees = resolvedProjectUsage
+        ? resolvedProjectUsage.employees.map(employee => ({
               employeeId: employee.employeeId,
               employeeName: employee.employeeName,
               minutes: Math.round(employee.seconds / 60)
             }))
-          : usedMinutes > 0
-            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-            : []
+        : usedMinutes > 0
+          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+          : []
       const percent = (usedMinutes / projectCapMinutes) * 100
       gauges.push({
         kind: 'project',
@@ -14624,9 +14825,10 @@ export default function App() {
 
   const quickMeetingButtonStep = useMemo(() => {
     if (meetingsDuoWaiting) {
+      if (meetingsDuoSelectedAction === 'passcode') return '2/4 DUO passcode accepted'
       return meetingsDuoSelectedAction === 'call'
         ? '2/4 Answer DUO phone call'
-        : '2/4 Approve DUO on phone'
+        : '2/4 Approve in DUO Mobile'
     }
     if (meetingsLoading) {
       if (meetingsFetchPhase === 'init') return '1/4 Start browser'
@@ -14648,7 +14850,8 @@ export default function App() {
 
   const quickMeetingButtonSubline = useMemo(() => {
     if (meetingsDuoWaiting) {
-      return meetingsDuoSelectedAction === 'call' ? 'Answer the call' : 'Check your phone'
+      if (meetingsDuoSelectedAction === 'passcode') return 'Completing Microsoft login'
+      return meetingsDuoSelectedAction === 'call' ? 'Answer the call' : 'Open DUO Mobile now'
     }
     if (meetingsFetchPhase === 'done' && meetingsUpdatedAt) {
       return dayjs(meetingsUpdatedAt).format('DD/MM HH:mm')
@@ -14661,7 +14864,50 @@ export default function App() {
     meetingsUpdatedAt
   ])
 
-  const meetingsDuoActionButtons = (
+  const meetingsDuoActionButtons = meetingsDuoPasscodeOpen ? (
+    <span className="quick-duo-passcode" role="group" aria-label="Enter DUO passcode">
+      <TextInput
+        size="xs"
+        value={meetingsDuoPasscode}
+        onChange={event =>
+          setMeetingsDuoPasscode(event.currentTarget.value.replace(/\D/g, '').slice(0, 10))
+        }
+        onKeyDown={event => {
+          if (event.key === 'Enter') {
+            void selectMeetingsDuoAction('passcode', meetingsDuoPasscode)
+          }
+        }}
+        inputMode="numeric"
+        autoComplete="one-time-code"
+        placeholder="Duo passcode"
+        aria-label="DUO passcode"
+        disabled={meetingsDuoActionSending !== null}
+      />
+      <Button
+        size="xs"
+        variant="light"
+        leftSection={
+          meetingsDuoActionSending === 'passcode' ? <Loader size={12} /> : <IconKey size={14} />
+        }
+        disabled={!/^\d{4,10}$/.test(meetingsDuoPasscode) || meetingsDuoActionSending !== null}
+        onClick={() => void selectMeetingsDuoAction('passcode', meetingsDuoPasscode)}
+      >
+        Verify
+      </Button>
+      <Button
+        size="xs"
+        variant="subtle"
+        disabled={meetingsDuoActionSending !== null}
+        onClick={() => {
+          setMeetingsDuoPasscodeOpen(false)
+          setMeetingsDuoPasscode('')
+          setMeetingsError(null)
+        }}
+      >
+        Back
+      </Button>
+    </span>
+  ) : (
     <span
       className="quick-duo-actions"
       role="group"
@@ -14699,7 +14945,86 @@ export default function App() {
       >
         Make a call
       </Button>
+      <Button
+        size="xs"
+        variant="subtle"
+        className="quick-duo-action-button is-passcode"
+        leftSection={<IconKey size={14} />}
+        disabled={meetingsDuoActionSending !== null}
+        onClick={() => {
+          setMeetingsDuoPasscodeOpen(true)
+          setMeetingsError(null)
+        }}
+      >
+        Use Duo passcode
+      </Button>
     </span>
+  )
+
+  const TrayCalendarStatusLegend = ({ inMeetingBar = false }: { inMeetingBar?: boolean }) => (
+    <div
+      className={`tray-calendar-status-legend${inMeetingBar ? ' is-in-meeting-bar' : ''}`}
+      aria-label="Calendar reporting status legend"
+    >
+      <Tooltip
+        label="Reported workdays below the required daily hours"
+        withArrow
+        openDelay={150}
+        withinPortal
+      >
+        <button
+          type="button"
+          className={[
+            'tray-calendar-status-item',
+            'is-incomplete',
+            trayCalendarStatusFilter === 'incomplete' ? 'is-active' : ''
+          ]
+            .join(' ')
+            .trim()}
+          aria-pressed={trayCalendarStatusFilter === 'incomplete'}
+          onClick={() =>
+            setTrayCalendarStatusFilter(current =>
+              current === 'incomplete' ? null : 'incomplete'
+            )
+          }
+        >
+          <span className="tray-calendar-status-dot" aria-hidden="true" />
+          <span>Missing hours</span>
+          <span className="tray-calendar-status-count">
+            {trayCalendarStatusCounts.incomplete}
+          </span>
+        </button>
+      </Tooltip>
+      <Tooltip
+        label="Past required workdays with no reported hours; weekends and holidays are excluded"
+        withArrow
+        openDelay={150}
+        withinPortal
+      >
+        <button
+          type="button"
+          className={[
+            'tray-calendar-status-item',
+            'is-unreported',
+            trayCalendarStatusFilter === 'unreported' ? 'is-active' : ''
+          ]
+            .join(' ')
+            .trim()}
+          aria-pressed={trayCalendarStatusFilter === 'unreported'}
+          onClick={() =>
+            setTrayCalendarStatusFilter(current =>
+              current === 'unreported' ? null : 'unreported'
+            )
+          }
+        >
+          <span className="tray-calendar-status-dot" aria-hidden="true" />
+          <span>Unreported days</span>
+          <span className="tray-calendar-status-count">
+            {trayCalendarStatusCounts.unreported}
+          </span>
+        </button>
+      </Tooltip>
+    </div>
   )
 
   const quickLogMeetingsPanel = (
@@ -14772,17 +15097,7 @@ export default function App() {
             {meetingSubjectFilterContent}
           </Popover.Dropdown>
         </Popover>
-	        <Button
-	          size="xs"
-	          variant="light"
-	          className="quick-floating-timer-button"
-	          leftSection={<IconClock size={15} stroke={2.2} />}
-          onClick={() => {
-	            void openFloatingTimer()
-	          }}
-	        >
-	          Clockify
-	        </Button>
+        <TrayCalendarStatusLegend inMeetingBar />
       </Group>
 
       {meetingsError && (
@@ -15275,6 +15590,8 @@ export default function App() {
       })
       void loadJiraWorkItems(selectedParentIssueKey, true)
       await loadProjectManagementConfig()
+      setJiraIssueKey(createdIssue.key.trim().toUpperCase())
+      setLogToJira(true)
       setTaskName(getMissionOptionValue(sharedMission.id))
       setSuppressTaskAutoSelect(false)
       setQuickFictiveModalOpen(false)
@@ -15380,6 +15697,66 @@ export default function App() {
     }
   }
 
+  function openRegularTaskRename(item: {
+    aliasKey: string
+    regularTaskId: number | null
+    originalDisplayName: string
+    customerLabel: string
+    projectName: string
+  }) {
+    if (item.regularTaskId === null) return
+    setRecentQuickLogContextId(null)
+    setRegularTaskRenameTarget({
+      aliasKey: item.aliasKey,
+      taskId: item.regularTaskId,
+      originalDisplayName: item.originalDisplayName,
+      customerLabel: item.customerLabel,
+      projectName: item.projectName
+    })
+    setRegularTaskRenameDraft(
+      recentShortcutAliases[item.aliasKey]?.trim() || item.originalDisplayName
+    )
+    setRegularTaskRenameError(null)
+  }
+
+  function closeRegularTaskRename() {
+    setRegularTaskRenameTarget(null)
+    setRegularTaskRenameDraft('')
+    setRegularTaskRenameError(null)
+  }
+
+  function saveRegularTaskRename() {
+    if (!regularTaskRenameTarget) return
+    const safeName = regularTaskRenameDraft.trim()
+    if (!safeName) {
+      setRegularTaskRenameError('Enter a display name.')
+      return
+    }
+    setRecentShortcutAliases(previous => {
+      const next = { ...previous }
+      if (safeName === regularTaskRenameTarget.originalDisplayName) {
+        delete next[regularTaskRenameTarget.aliasKey]
+      } else {
+        next[regularTaskRenameTarget.aliasKey] = safeName
+      }
+      return next
+    })
+    closeRegularTaskRename()
+    setLogSuccess(`Shortcut display name changed to ${safeName}.`)
+  }
+
+  function restoreRegularTaskName() {
+    if (!regularTaskRenameTarget) return
+    const aliasKey = regularTaskRenameTarget.aliasKey
+    setRecentShortcutAliases(previous => {
+      const next = { ...previous }
+      delete next[aliasKey]
+      return next
+    })
+    closeRegularTaskRename()
+    setLogSuccess('The original shortcut name was restored.')
+  }
+
   const resetMissionForm = () => {
     setMissionName('')
     setMissionHrsTaskId(null)
@@ -15459,6 +15836,7 @@ export default function App() {
         {selectedQuickLogUsageGauges.map(gauge => {
           const width = `${Math.min(Math.max(gauge.percent, 0), 100)}%`
           const percentLabel = `${Math.round(gauge.percent)}%`
+          const detailsOpen = quickUsageDetailsOpen[gauge.kind]
           return (
             <div
               className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
@@ -15483,24 +15861,29 @@ export default function App() {
                   {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
                   {percentLabel}
                 </Text>
-                <Tooltip label="Send project update" withArrow withinPortal>
+                {gauge.employees.length > 0 ? (
                   <ActionIcon
                     size="sm"
                     variant="subtle"
-                    className="quick-fictive-usage-action"
-                    aria-label="Send project update"
+                    className="quick-fictive-usage-toggle"
+                    aria-label={`${detailsOpen ? 'Hide' : 'Show'} ${
+                      gauge.kind === 'project' ? 'overall project' : 'shared task'
+                    } contributors`}
+                    aria-expanded={detailsOpen}
                     onClick={() =>
-                      openIntegrationUpdate({
-                        customer: selectedQuickLogUsageCustomer,
-                        issueKey: selectedQuickLogJiraTarget,
-                        message: `${gauge.title}: `,
-                        followQuickLog: true
-                      })
+                      setQuickUsageDetailsOpen(previous => ({
+                        ...previous,
+                        [gauge.kind]: !previous[gauge.kind]
+                      }))
                     }
                   >
-                    <IconMessageCircle size={14} />
+                    {detailsOpen ? (
+                      <IconChevronDown size={15} />
+                    ) : (
+                      <IconChevronRight size={15} />
+                    )}
                   </ActionIcon>
-                </Tooltip>
+                ) : null}
               </div>
               <div
                 className="quick-fictive-usage-track"
@@ -15511,7 +15894,7 @@ export default function App() {
                   style={{ '--quick-fictive-progress': width } as CSSProperties}
                 />
               </div>
-              {gauge.employees.length > 0 && (
+              <Collapse in={detailsOpen && gauge.employees.length > 0} transitionDuration={160}>
                 <div className="quick-fictive-usage-employees">
                   {gauge.employees.map(employee => {
                     const share = gauge.usedMinutes > 0
@@ -15536,11 +15919,115 @@ export default function App() {
                     )
                   })}
                 </div>
-              )}
+              </Collapse>
             </div>
           )
         })}
       </div>
+    )
+  }
+
+  function renderQuickLogJiraControls() {
+    if (!jiraConfigured && !isFictiveTaskSelected) return null
+    const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase() ?? ''
+    if (isFictiveTaskSelected) {
+      const requiredOptions = quickLogJiraIssueOptions.length
+        ? quickLogJiraIssueOptions
+        : missionIssueKey
+          ? [{ value: missionIssueKey, label: missionIssueKey }]
+          : []
+      return (
+        <div className="quick-jira-required-item">
+          <Select
+            label="Jira work item"
+            placeholder={jiraConfigured ? 'Mapped Jira work item' : 'Connect Jira in Settings'}
+            data={requiredOptions}
+            value={missionIssueKey || null}
+            onChange={() => undefined}
+            allowDeselect={false}
+            disabled
+            size="xs"
+          />
+        </div>
+      )
+    }
+    const jiraEnabled = isFictiveTaskSelected || logToJira
+    return (
+      <Card radius="md" withBorder className="quick-jira-inline-card">
+        <Stack gap={6}>
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Stack gap={1} style={{ minWidth: 0 }}>
+              <Text size="xs" fw={800}>
+                Jira worklog
+              </Text>
+              <Text size="xs" c="dimmed" lineClamp={1}>
+                {isFictiveTaskSelected
+                  ? 'Required for this shared task'
+                  : jiraEnabled
+                    ? 'Enabled for this report'
+                    : 'Optional for regular HRS tasks'}
+              </Text>
+            </Stack>
+            {isFictiveTaskSelected ? (
+              <Badge size="xs" color="teal" variant="light" leftSection={<IconCheck size={11} />}>
+                Required
+              </Badge>
+            ) : (
+              <Switch
+                size="xs"
+                checked={logToJira}
+                onChange={event => {
+                  const next = event.currentTarget.checked
+                  setLogToJira(next)
+                  if (next && !jiraIssueKey && quickLogJiraIssueOptions.length) {
+                    setJiraIssueKey(quickLogJiraIssueOptions[0].value)
+                  }
+                }}
+                label="Log to Jira"
+              />
+            )}
+          </Group>
+
+          {isFictiveTaskSelected && !jiraConfigured ? (
+            <Alert color="red" variant="light" radius="sm">
+              Connect Jira before logging this shared task.
+            </Alert>
+          ) : null}
+
+          {jiraConfigured &&
+          jiraEnabled &&
+          (isFictiveTaskSelected || (customerName && mappedEpicKey)) ? (
+            <Select
+              label="Work item"
+              description={
+                isFictiveTaskSelected
+                  ? `Automatically linked to ${selectedQuickLogMission?.name ?? 'the shared task'}.`
+                  : undefined
+              }
+              placeholder="Choose an issue"
+              data={quickLogJiraIssueOptions}
+              value={(isFictiveTaskSelected ? missionIssueKey : jiraIssueKey) || null}
+              onChange={value => {
+                if (isFictiveTaskSelected) return
+                setJiraIssueKey(value)
+                if (!value) setLogToJira(false)
+              }}
+              searchable={!isFictiveTaskSelected}
+              clearable={!isFictiveTaskSelected}
+              allowDeselect={!isFictiveTaskSelected}
+              nothingFoundMessage="No work items found"
+              disabled={jiraLoadingIssues || isFictiveTaskSelected}
+              size="xs"
+            />
+          ) : null}
+
+          {jiraConfigured && jiraEnabled && !isFictiveTaskSelected && customerName && !mappedEpicKey ? (
+            <Text size="xs" c="dimmed">
+              Map this customer to a Jira epic to select a work item.
+            </Text>
+          ) : null}
+        </Stack>
+      </Card>
     )
   }
 
@@ -15566,31 +16053,42 @@ export default function App() {
                   applyRecentQuickLogFilters(item)
                 }}
                 onContextMenu={event => {
-                  if (!item.sharedMissionId) return
+                  if (!item.sharedMissionId && item.regularTaskId === null) return
                   event.preventDefault()
                   setRecentQuickLogContextId(item.id)
                 }}
                 title={
                   item.sharedMissionId
-                    ? `${item.customerLabel} -> ${item.taskLabel}. Right click to rename.`
-                    : `${item.customerLabel} -> ${item.taskLabel}`
+                    ? `${item.displayLabel}. Right click to rename.`
+                    : `${item.displayLabel}. Right click to change this shortcut label.`
                 }
               >
                 <span className="quicklog-recent-route">
-                  {item.customerLabel} <span aria-hidden="true">-&gt;</span> {item.taskLabel}
+                  {item.displayLabel}
                 </span>
               </button>
             </Popover.Target>
-            {item.sharedMissionId && (
+            {(item.sharedMissionId || item.regularTaskId !== null) && (
               <Popover.Dropdown className="quicklog-recent-context-menu">
-                <button
-                  type="button"
-                  className="quicklog-recent-context-action"
-                  onClick={() => openSharedTaskRename(item.sharedMissionId!)}
-                >
-                  <IconPencil size={15} />
-                  <span>Rename shared task</span>
-                </button>
+                {item.sharedMissionId ? (
+                  <button
+                    type="button"
+                    className="quicklog-recent-context-action"
+                    onClick={() => openSharedTaskRename(item.sharedMissionId!)}
+                  >
+                    <IconPencil size={15} />
+                    <span>Rename shared task</span>
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    className="quicklog-recent-context-action"
+                    onClick={() => openRegularTaskRename(item)}
+                  >
+                    <IconPencil size={15} />
+                    <span>Change display name</span>
+                  </button>
+                )}
               </Popover.Dropdown>
             )}
           </Popover>
@@ -15819,7 +16317,7 @@ export default function App() {
                 />
                 <TextInput
                   label="Jira issue key"
-                  placeholder="VDA-123"
+                  placeholder="VDA-123 or LSM-123"
                   value={missionJiraIssueKey}
                   onChange={event => setMissionJiraIssueKey(event.currentTarget.value)}
                   size={compact ? 'xs' : 'sm'}
@@ -16007,8 +16505,12 @@ export default function App() {
       customerLabel: string
       taskValue: string
       taskLabel: string
+      aliasKey: string
+      originalDisplayName: string
+      displayLabel: string
       isVirtual: boolean
       sharedMissionId: string | null
+      regularTaskId: number | null
     }> = []
     const seenRoutes = new Set<string>()
     for (const item of [...allReportItems]
@@ -16034,24 +16536,42 @@ export default function App() {
       const rawCustomer = mission?.customerName || sourceTask?.customerName || meta?.customerName || 'Customer'
       const project = sourceTask?.projectName || meta?.projectName || item.projectInstance || 'Project'
       const taskValue = mission ? getMissionOptionValue(mission.id) : meta?.taskName || item.taskName
-      const taskLabel = mission?.name || meta?.taskName || item.taskName
+      const originalTaskLabel = mission?.name || meta?.taskName || item.taskName
+      const taskLabel = originalTaskLabel
       const routeKey = [project, rawCustomer, taskValue].map(normalizeText).join('|')
+      const aliasKey = [project, rawCustomer, String(item.taskId)].map(normalizeText).join('|')
+      const customerLabel = getCustomerDisplayName(rawCustomer)
+      const originalDisplayName = `${customerLabel} -> ${originalTaskLabel}`
+      const displayLabel = mission
+        ? originalDisplayName
+        : recentShortcutAliases[aliasKey]?.trim() || originalDisplayName
       if (seenRoutes.has(routeKey)) continue
       seenRoutes.add(routeKey)
       distinctItems.push({
         id: `${item.dateKey}-${item.dayIndex}-${item.taskId}-${mission?.id ?? 'hrs'}`,
         projectName: project,
         customerName: rawCustomer,
-        customerLabel: getCustomerDisplayName(rawCustomer),
+        customerLabel,
         taskValue,
         taskLabel,
+        aliasKey,
+        originalDisplayName,
+        displayLabel,
         isVirtual: Boolean(mission),
-        sharedMissionId: mission?.shared ? mission.id : null
+        sharedMissionId: mission?.shared ? mission.id : null,
+        regularTaskId: mission ? null : item.taskId
       })
       if (distinctItems.length >= 4) break
     }
     return distinctItems
-  }, [allReportItems, taskMetaById, allProjectMissions, jiraCustomerAliases, reportMissionMap])
+  }, [
+    allReportItems,
+    taskMetaById,
+    allProjectMissions,
+    jiraCustomerAliases,
+    reportMissionMap,
+    recentShortcutAliases
+  ])
 
   const clockHistoryTotalMinutes = useMemo(
     () => clockHistoryItems.reduce((sum, item) => sum + parseHoursHHMMToMinutes(item.hours_HHMM), 0),
@@ -16288,6 +16808,28 @@ export default function App() {
       // Ignore unavailable local storage.
     }
   }, [reportMissionMap])
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        RECENT_SHORTCUT_ALIASES_STORAGE_KEY,
+        JSON.stringify(recentShortcutAliases)
+      )
+    } catch {
+      // Ignore unavailable local storage.
+    }
+  }, [recentShortcutAliases])
+
+  useEffect(() => {
+    const handleStorage = (event: StorageEvent) => {
+      if (event.key !== RECENT_SHORTCUT_ALIASES_STORAGE_KEY) return
+      setRecentShortcutAliases(
+        safeGetLocalStorageStringRecord(RECENT_SHORTCUT_ALIASES_STORAGE_KEY)
+      )
+    }
+    window.addEventListener('storage', handleStorage)
+    return () => window.removeEventListener('storage', handleStorage)
+  }, [])
 
 	  const getReportCustomerAliasKey = (customer: string) => getCustomerAliasKey(customer)
 
@@ -17224,6 +17766,52 @@ export default function App() {
     () => parseWeekendDays(monthlyReport?.weekend ?? 'Fri-Sat'),
     [monthlyReport]
   )
+
+  const trayCalendarStatusCounts = useMemo(() => {
+    const monthStart = dayjs(reportMonth).startOf('month')
+    const today = dayjs().startOf('day')
+    const lastRelevantDay = monthStart.endOf('month').isBefore(today, 'day')
+      ? monthStart.endOf('month')
+      : today
+    if (lastRelevantDay.isBefore(monthStart, 'day')) {
+      return {
+        incomplete: 0,
+        unreported: 0,
+        incompleteDays: new Set<string>(),
+        unreportedDays: new Set<string>()
+      }
+    }
+
+    let incomplete = 0
+    let unreported = 0
+    const incompleteDays = new Set<string>()
+    const unreportedDays = new Set<string>()
+    let cursor = monthStart
+    while (cursor.isBefore(lastRelevantDay, 'day') || cursor.isSame(lastRelevantDay, 'day')) {
+      const key = cursor.format('YYYY-MM-DD')
+      const info = reportsByDate.get(key)
+      const hasReports = Boolean(info?.day.reports.length)
+      const isWeekend = weekendDays.includes(cursor.day() as DayOfWeek)
+      const isIsraeliNoWorkHoliday = Boolean(
+        israeliHolidaysByDate.get(key)?.some(holiday => holiday.yomTov)
+      )
+      const isHoliday = Boolean(info?.day.isHoliday) || isIsraeliNoWorkHoliday
+      const targetMinutes = getDayTargetMinutes(info?.day)
+
+      if (!isWeekend && !isHoliday && targetMinutes > 0) {
+        if (!hasReports) {
+          unreported += 1
+          unreportedDays.add(key)
+        } else if ((info?.totalMinutes ?? 0) < targetMinutes) {
+          incomplete += 1
+          incompleteDays.add(key)
+        }
+      }
+      cursor = cursor.add(1, 'day')
+    }
+
+    return { incomplete, unreported, incompleteDays, unreportedDays }
+  }, [reportMonth, reportsByDate, weekendDays, israeliHolidaysByDate])
 
   const handleFloatingLog = async () => {
     if (!taskIdForLog) {
@@ -19152,11 +19740,81 @@ export default function App() {
     </Modal>
   )
 
+  const regularTaskRenameModal = (
+    <Modal
+      opened={Boolean(regularTaskRenameTarget)}
+      onClose={closeRegularTaskRename}
+      title="Change shortcut display name"
+      centered
+      size="sm"
+      classNames={isFloating ? { content: 'floating-modal' } : undefined}
+    >
+      <Stack gap="sm">
+        {regularTaskRenameTarget ? (
+          <Stack gap={2}>
+            <Text size="sm" c="dimmed">
+              {regularTaskRenameTarget.customerLabel}
+              {regularTaskRenameTarget.projectName
+                ? ` · ${regularTaskRenameTarget.projectName}`
+                : ''}
+            </Text>
+            <Text size="xs" c="dimmed">
+              Original shortcut: {regularTaskRenameTarget.originalDisplayName}
+            </Text>
+          </Stack>
+        ) : null}
+        <TextInput
+          label="Shortcut display name"
+          value={regularTaskRenameDraft}
+          onChange={event => {
+            setRegularTaskRenameDraft(event.currentTarget.value)
+            if (regularTaskRenameError) setRegularTaskRenameError(null)
+          }}
+          onKeyDown={event => {
+            if (event.key === 'Enter') saveRegularTaskRename()
+          }}
+          autoFocus
+        />
+        <Alert color="cyan" variant="light" radius="md">
+          This replaces the entire label of this recent shortcut only. Task selectors, reports,
+          HRS logging, and Supabase synchronization keep the original customer, task name, and ID.
+        </Alert>
+        {regularTaskRenameError ? (
+          <Alert color="red" variant="light" radius="md">
+            {regularTaskRenameError}
+          </Alert>
+        ) : null}
+        <Group justify="space-between" align="center" wrap="wrap">
+          <Button
+            variant="subtle"
+            color="gray"
+            onClick={restoreRegularTaskName}
+            disabled={
+              !regularTaskRenameTarget ||
+              !recentShortcutAliases[regularTaskRenameTarget.aliasKey]
+            }
+          >
+            Restore original
+          </Button>
+          <Group gap="xs">
+            <Button variant="subtle" onClick={closeRegularTaskRename}>
+              Cancel
+            </Button>
+            <Button onClick={saveRegularTaskRename} disabled={!regularTaskRenameDraft.trim()}>
+              Save display name
+            </Button>
+          </Group>
+        </Group>
+      </Stack>
+    </Modal>
+  )
+
   if (isFloating) {
     return (
       <Box className="floating-shell">
         {quickFictiveTaskModal}
         {sharedTaskRenameModal}
+        {regularTaskRenameModal}
         <Modal
           opened={floatingStartOpen}
           onClose={closeFloatingStart}
@@ -19222,27 +19880,40 @@ export default function App() {
               }}
             />
             {renderQuickFictiveUsageBar(true)}
-            <Switch
-              checked={logToJira}
-              onChange={event => {
-                const next = event.currentTarget.checked
-                setLogToJira(next)
-                if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                  setJiraIssueKey(jiraIssueOptions[0].value)
-                }
-              }}
-              label="Log to Jira"
-            />
-            {logToJira && (
+            {isFictiveTaskSelected ? (
+              <Badge variant="light" color="teal" leftSection={<IconCheck size={12} />}>
+                Jira worklog required
+              </Badge>
+            ) : (
+              <Switch
+                checked={logToJira}
+                onChange={event => {
+                  const next = event.currentTarget.checked
+                  setLogToJira(next)
+                  if (next && !jiraIssueKey && jiraIssueOptions.length) {
+                    setJiraIssueKey(jiraIssueOptions[0].value)
+                  }
+                }}
+                label="Log to Jira"
+              />
+            )}
+            {jiraLoggingEnabled && (
               <>
                 {jiraConfigured && mappedEpicKey ? (
                   <Select
                     label="Jira work item"
                     placeholder="Select Jira work item"
-                    data={jiraIssueOptions}
-                    value={jiraIssueKey}
-                    onChange={value => setJiraIssueKey(value)}
-                    searchable
+                    data={quickLogJiraIssueOptions}
+                    value={
+                      (isFictiveTaskSelected
+                        ? selectedQuickLogMission?.jiraIssueKey
+                        : jiraIssueKey) ?? null
+                    }
+                    onChange={value => {
+                      if (!isFictiveTaskSelected) setJiraIssueKey(value)
+                    }}
+                    searchable={!isFictiveTaskSelected}
+                    disabled={isFictiveTaskSelected}
                     comboboxProps={{
                       withinPortal: true,
                       floatingStrategy: 'fixed',
@@ -19397,6 +20068,7 @@ export default function App() {
       >
         {quickFictiveTaskModal}
         {sharedTaskRenameModal}
+        {regularTaskRenameModal}
         {reportsDetailedExportModal}
         <Stack gap="sm" className="tray-content">
           {window.hrs && (
@@ -19590,10 +20262,23 @@ export default function App() {
                     <IconChartBar size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
+                <Tooltip label="Jira Sprint Board" withArrow openDelay={120} withinPortal>
+                  <ActionIcon
+                    className="tray-nav-icon-btn"
+                    size={38}
+                    radius="md"
+                    variant={trayPanel === 'sprints' ? 'light' : 'subtle'}
+                    onClick={() => {
+                      switchTrayPanel('sprints')
+                    }}
+                    aria-label="Jira Sprint Board"
+                    title="Jira Sprint Board"
+                  >
+                    <IconLayoutKanban size={18} stroke={2.2} />
+                  </ActionIcon>
+                </Tooltip>
                 <div className="tray-settings-update-anchor">
-                  {(['available', 'downloading', 'ready'] as AppUpdateState['state'][]).includes(
-                    appUpdateState.state
-                  ) ? (
+                  {shouldShowUpdateBubble ? (
                     <span className="tray-update-available-bubble" role="status">
                       Update Available
                     </span>
@@ -19617,8 +20302,32 @@ export default function App() {
               </div>
 
               <div className={`tray-panel-body${trayPanel === 'clockify' ? ' is-clockify' : ''}`}>
+                <div
+                  className={`tray-sprint-preloaded-panel${
+                    trayPanel === 'sprints' ? ' is-visible' : ''
+                  }`}
+                  aria-hidden={trayPanel !== 'sprints'}
+                >
+                  <SprintBoard
+                    compact
+                    jiraStatus={jiraStatus}
+                    linkedIssueKeys={allProjectMissions
+                      .map(mission => mission.jiraIssueKey?.trim() ?? '')
+                      .filter(Boolean)}
+                    supabaseConnected={Boolean(supabaseStatus?.email)}
+                    canEdit={supabaseStatus?.profile?.role === 'manager'}
+                    currentEmployeeId={supabaseStatus?.profile?.employee_id ?? null}
+                    currentEmployeeName={
+                      supabaseStatus?.profile?.display_name || supabaseStatus?.email || null
+                    }
+                    onExpand={() => {
+                      void openSprintWindow()
+                    }}
+                    onClose={() => switchTrayPanel('log')}
+                  />
+                </div>
                 {trayPanel === 'log' ? (
-                  <Stack gap="xs">
+                  <Stack gap={4}>
                     {quickLogMeetingsPanel}
                     <div className="tray-calendar-shell">
                       {(() => {
@@ -19643,7 +20352,11 @@ export default function App() {
                           weeks.push(cells.slice(index, index + 7))
                         }
                         return (
-                          <div className="tray-calendar" role="grid" aria-label="Quick log calendar">
+                          <div
+                            className={`tray-calendar${trayCalendarStatusFilter ? ' has-status-filter' : ''}`}
+                            role="grid"
+                            aria-label="Quick log calendar"
+                          >
                             <div className="tray-calendar-weekdays" role="row">
                               {['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'].map(label => (
                                 <span key={label} className="tray-calendar-weekday" role="columnheader">
@@ -19665,7 +20378,13 @@ export default function App() {
                                       ? calendarReportsByDate.get(dayCell.key)
                                       : undefined
                                     const hasReports = Boolean(info?.day.reports.length)
-                                    const isHoliday = Boolean(info?.day.isHoliday)
+                                    const dayHolidays = israeliHolidaysByDate.get(dayCell.key) ?? []
+                                    const hasIsraeliHoliday = dayHolidays.length > 0
+                                    const isIsraeliNoWorkHoliday = dayHolidays.some(
+                                      holiday => holiday.yomTov
+                                    )
+                                    const isHoliday =
+                                      Boolean(info?.day.isHoliday) || isIsraeliNoWorkHoliday
                                     const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
                                     const isFuture = dateValue.isAfter(dayjs(), 'day')
                                     const dayTargetMinutes = getDayTargetMinutes(info?.day)
@@ -19706,9 +20425,16 @@ export default function App() {
                                     const dayMeetings = meetingsVisibleByDate.get(dayCell.key) ?? []
                                     const hasMeetings = dayMeetings.length > 0
                                     const hasManyMeetings = dayMeetings.length > 1
-                                    const dayHolidays = israeliHolidaysByDate.get(dayCell.key) ?? []
-                                    const hasIsraeliHoliday = dayHolidays.length > 0
                                     const hasDayHoverContent = hasReports || hasMeetings || hasIsraeliHoliday
+                                    const isStatusMatch =
+                                      trayCalendarStatusFilter === 'incomplete'
+                                        ? trayCalendarStatusCounts.incompleteDays.has(dayCell.key)
+                                        : trayCalendarStatusFilter === 'unreported'
+                                          ? trayCalendarStatusCounts.unreportedDays.has(dayCell.key)
+                                          : false
+                                    const isStatusDimmed = Boolean(
+                                      trayCalendarStatusFilter && !isStatusMatch
+                                    )
                                     return (
                                       <HoverCard
                                         key={dayCell.key}
@@ -19742,7 +20468,9 @@ export default function App() {
                                                 isWeekend ? 'is-weekend' : '',
                                                 heatmapActive ? 'heatmap' : '',
                                                 isSelected ? 'is-selected' : '',
-                                                isToday ? 'is-today' : ''
+                                                isToday ? 'is-today' : '',
+                                                isStatusMatch ? 'is-status-match' : '',
+                                                isStatusDimmed ? 'is-status-dimmed' : ''
                                               ]
                                                 .join(' ')
                                                 .trim()}
@@ -19908,31 +20636,66 @@ export default function App() {
                         disabled={lockCustomer}
                         size="xs"
                       />
-                      <Select
-                        label="Task"
-                        placeholder="Choose a task"
-                        data={taskOptions}
-                        value={taskName}
-                        onChange={value => {
-                          handleQuickLogTaskChange(value, {
-                            markTouched: true,
-                            manageAutoSelect: true
-                          })
-                        }}
-                        renderOption={taskSelectRenderOption}
-                        classNames={{
-                          dropdown: 'task-select-dropdown',
-                          option: 'task-select-mantine-option'
-                        }}
-                        styles={traySelectStyles}
-                        searchable
-                        clearable
-                        nothingFoundMessage="No matching task"
-                        maxDropdownHeight={180}
-                        disabled={lockTask}
-                        size="xs"
-                      />
+                      <div className="tray-task-field-with-update">
+                        <Select
+                          label="Task"
+                          placeholder="Choose a task"
+                          data={taskOptions}
+                          value={taskName}
+                          onChange={value => {
+                            handleQuickLogTaskChange(value, {
+                              markTouched: true,
+                              manageAutoSelect: true
+                            })
+                          }}
+                          renderOption={taskSelectRenderOption}
+                          classNames={{
+                            dropdown: 'task-select-dropdown',
+                            option: 'task-select-mantine-option'
+                          }}
+                          styles={traySelectStyles}
+                          searchable
+                          clearable
+                          nothingFoundMessage="No matching task"
+                          maxDropdownHeight={180}
+                          disabled={lockTask}
+                          size="xs"
+                        />
+                        <Tooltip
+                          label={integrationComposerOpen ? 'Close Jira & Slack update' : 'Update Jira & Slack'}
+                          withArrow
+                          withinPortal
+                        >
+                          <ActionIcon
+                            size="sm"
+                            variant={integrationComposerOpen ? 'filled' : 'light'}
+                            className={`tray-task-update-bubble${integrationComposerOpen ? ' is-open' : ''}`}
+                            aria-label={
+                              integrationComposerOpen
+                                ? 'Close Jira and Slack update'
+                                : 'Update Jira and Slack'
+                            }
+                            disabled={!selectedQuickLogUsageCustomer && !customerName}
+                            onClick={() => {
+                              if (integrationComposerOpen) {
+                                setIntegrationComposerOpen(false)
+                                setIntegrationMentionOpen(false)
+                                return
+                              }
+                              openIntegrationUpdate({
+                                customer: selectedQuickLogUsageCustomer || customerName,
+                                issueKey: selectedQuickLogJiraTarget,
+                                message: comment.trim(),
+                                followQuickLog: true
+                              })
+                            }}
+                          >
+                            <IconMessageCircle size={14} />
+                          </ActionIcon>
+                        </Tooltip>
+                      </div>
                     </SimpleGrid>
+                    {renderQuickLogJiraControls()}
                     {renderQuickFictiveUsageBar(true)}
 
                     <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
@@ -19967,80 +20730,35 @@ export default function App() {
                       withAsterisk
                     />
 
-                    <Button
-                      size="xs"
-                      variant={integrationComposerOpen ? 'filled' : 'light'}
-                      className={`tray-integration-launch${integrationComposerOpen ? ' is-open' : ''}`}
-                      leftSection={<IconMessageCircle size={14} />}
-                      disabled={!selectedQuickLogUsageCustomer && !customerName}
-                      onClick={() => {
-                        if (integrationComposerOpen) {
-                          setIntegrationComposerOpen(false)
-                          setIntegrationMentionOpen(false)
-                          return
-                        }
-                        openIntegrationUpdate({
-                          customer: selectedQuickLogUsageCustomer || customerName,
-                          issueKey: selectedQuickLogJiraTarget,
-                          message: comment.trim(),
-                          followQuickLog: true
-                        })
-                      }}
+                    <Transition
+                      mounted={integrationComposerOpen}
+                      transition="slide-left"
+                      duration={280}
+                      timingFunction="cubic-bezier(0.22, 0.82, 0.28, 1)"
                     >
-                      {integrationComposerOpen
-                        ? 'Close Jira + Slack update'
-                        : 'Update Jira & Slack'}
-                    </Button>
-
-                    <Collapse
-                      in={integrationComposerOpen}
-                      transitionDuration={320}
-                      transitionTimingFunction="cubic-bezier(0.2, 0.8, 0.2, 1)"
-                    >
-                      <div className="tray-integration-inline-shell">
-                        {renderIntegrationUpdatePanel()}
-                      </div>
-                    </Collapse>
-
-                    {jiraConfigured && (
-                      <Stack gap="xs" className="tray-jira-section">
-                        <Group justify="space-between" align="center">
-                          <Text size="xs" c="dimmed">
-                            Jira work item
-                          </Text>
-                          <Switch
-                            size="xs"
-                            checked={logToJira}
-                            onChange={event => {
-                              const next = event.currentTarget.checked
-                              setLogToJira(next)
-                              if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                                setJiraIssueKey(jiraIssueOptions[0].value)
-                              }
+                      {transitionStyles => (
+                        <div
+                          className="tray-integration-sheet-layer"
+                          style={transitionStyles}
+                          role="dialog"
+                          aria-modal="true"
+                          aria-label="Update Jira and Slack"
+                        >
+                          <button
+                            type="button"
+                            className="tray-integration-sheet-backdrop"
+                            aria-label="Close Jira and Slack update"
+                            onClick={() => {
+                              setIntegrationComposerOpen(false)
+                              setIntegrationMentionOpen(false)
                             }}
-                            label="Log to Jira"
                           />
-                        </Group>
-
-                        {customerName && mappedEpicKey && (
-                          <Select
-                            label="Jira work item"
-                            placeholder="Choose an issue"
-                            data={jiraIssueOptions}
-                            value={jiraIssueKey}
-                            onChange={value => {
-                              setJiraIssueKey(value)
-                              if (!value) setLogToJira(false)
-                            }}
-                            searchable
-                            clearable
-                            nothingFoundMessage="No work items found"
-                            disabled={jiraLoadingIssues}
-                            size="xs"
-                          />
-                        )}
-                      </Stack>
-                    )}
+                          <div className="tray-integration-sheet">
+                            {renderIntegrationUpdatePanel()}
+                          </div>
+                        </div>
+                      )}
+                    </Transition>
 
                     {logError && (
                       <Alert color="red" variant="light" radius="md">
@@ -20063,7 +20781,8 @@ export default function App() {
                         !duration ||
                         !logDate ||
                         comment.trim().length < 3 ||
-                        (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                        (jiraLoggingEnabled &&
+                          (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
                       }
                       onClick={() => {
                         if (taskIdForLog && duration) {
@@ -21473,7 +22192,7 @@ export default function App() {
                     </Card>
                     )}
                   </Stack>
-                ) : (
+                ) : trayPanel === 'sprints' ? null : (
                   <Stack gap="xs" className="tray-settings-panel">
                     <Card radius="md" withBorder className="tray-settings-card tray-theme-settings-card">
                       <Stack gap="xs">
@@ -21839,6 +22558,7 @@ export default function App() {
                                 Changelog will appear here when release notes are available.
                               </Text>
                             )}
+                            {manualMacUpdateAction}
                             <Group justify="space-between" align="center">
                               <Button
                                 size="xs"
@@ -21846,6 +22566,7 @@ export default function App() {
                                 onClick={() => {
                                   void runUpdateAction('check')
                                 }}
+                                disabled={appUpdateState.manualInstallRequired}
                                 loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
                               >
                                 Check now
@@ -22144,6 +22865,31 @@ export default function App() {
     )
   }
 
+  if (isSprintView) {
+    return renderLiquidGlassFrame(
+      <Box className="app-shell sprint-shell">
+        <Container fluid className="sprint-container">
+          <SprintBoard
+            jiraStatus={jiraStatus}
+            linkedIssueKeys={allProjectMissions
+              .map(mission => mission.jiraIssueKey?.trim() ?? '')
+              .filter(Boolean)}
+            supabaseConnected={Boolean(supabaseStatus?.email)}
+            canEdit={supabaseStatus?.profile?.role === 'manager'}
+            currentEmployeeId={supabaseStatus?.profile?.employee_id ?? null}
+            currentEmployeeName={
+              supabaseStatus?.profile?.display_name || supabaseStatus?.email || null
+            }
+            onClose={() => {
+              setMainView('default')
+              void window.hrs.closeSprintWindow()
+            }}
+          />
+        </Container>
+      </Box>
+    )
+  }
+
   if (isSettingsWindow) {
     return renderLiquidGlassFrame(
       <Box className="app-shell settings-shell">
@@ -22418,12 +23164,14 @@ export default function App() {
                       Changelog will appear here when release notes are available.
                     </Text>
                   )}
+                  {manualMacUpdateAction}
                   <Group justify="space-between" align="center">
                     <Button
                       variant="light"
                       onClick={() => {
                         void runUpdateAction('check')
                       }}
+                      disabled={appUpdateState.manualInstallRequired}
                       loading={appUpdateActionLoading && appUpdateState.state === 'checking'}
                     >
                       Check now
@@ -22915,6 +23663,7 @@ export default function App() {
     <Box className="app-shell">
       {quickFictiveTaskModal}
       {sharedTaskRenameModal}
+      {regularTaskRenameModal}
       <Container size="lg" className="app-container">
         <Stack gap="xl">
           <Stack gap="sm" className="page-header">
@@ -24658,18 +25407,29 @@ export default function App() {
                               <Text size="sm" c="dimmed">
                                 Jira work item
                               </Text>
-                              <Switch
-                                size="sm"
-                                checked={logToJira}
-                                onChange={event => {
-                                  const next = event.currentTarget.checked
-                                  setLogToJira(next)
-                                  if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                                    setJiraIssueKey(jiraIssueOptions[0].value)
-                                  }
-                                }}
-                                label="Log to Jira"
-                              />
+                              {isFictiveTaskSelected ? (
+                                <Badge
+                                  size="sm"
+                                  color="teal"
+                                  variant="light"
+                                  leftSection={<IconCheck size={12} />}
+                                >
+                                  Required
+                                </Badge>
+                              ) : (
+                                <Switch
+                                  size="sm"
+                                  checked={logToJira}
+                                  onChange={event => {
+                                    const next = event.currentTarget.checked
+                                    setLogToJira(next)
+                                    if (next && !jiraIssueKey && jiraIssueOptions.length) {
+                                      setJiraIssueKey(jiraIssueOptions[0].value)
+                                    }
+                                  }}
+                                  label="Log to Jira"
+                                />
+                              )}
                             </Group>
 
                             {!customerName && (
@@ -24684,20 +25444,25 @@ export default function App() {
                               </Text>
                             )}
 
-                            {customerName && mappedEpicKey && (
+                            {customerName && mappedEpicKey && jiraLoggingEnabled && (
                               <Select
                                 label="Jira work item"
                                 placeholder="Choose an issue"
-                                data={jiraIssueOptions}
-                                value={jiraIssueKey}
+                                data={quickLogJiraIssueOptions}
+                                value={
+                                  (isFictiveTaskSelected
+                                    ? selectedQuickLogMission?.jiraIssueKey
+                                    : jiraIssueKey) ?? null
+                                }
                                 onChange={value => {
+                                  if (isFictiveTaskSelected) return
                                   setJiraIssueKey(value)
                                   if (!value) setLogToJira(false)
                                 }}
-                                searchable
-                                clearable
+                                searchable={!isFictiveTaskSelected}
+                                clearable={!isFictiveTaskSelected}
                                 nothingFoundMessage="No work items found"
-                                disabled={jiraLoadingIssues}
+                                disabled={jiraLoadingIssues || isFictiveTaskSelected}
                               />
                             )}
 
@@ -24772,7 +25537,7 @@ export default function App() {
                               !duration ||
                               !logDate ||
                               comment.trim().length < 3 ||
-                              (logToJira &&
+                              (jiraLoggingEnabled &&
                                 (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
                             }
                             onClick={() => {
@@ -25952,7 +26717,7 @@ export default function App() {
           <Group justify="space-between" align="center">
             <Text size="sm">Jira logging</Text>
             <Text size="sm" fw={600}>
-              {logToJira ? 'On' : 'Off'}
+              {jiraLoggingEnabled ? 'On' : 'Off'}
             </Text>
           </Group>
 

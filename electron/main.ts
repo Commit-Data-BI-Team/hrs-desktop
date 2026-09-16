@@ -4,6 +4,7 @@ import {
   ipcMain,
   nativeImage,
   session,
+  shell,
   Tray,
   Menu,
   screen,
@@ -104,6 +105,8 @@ const TRAY_WINDOW_SCREEN_MARGIN = 8
 const reportsWindowSize = { width: 1220, height: 860 }
 const settingsWindowSize = { width: 700, height: 780 }
 const meetingsWindowSize = { width: 1220, height: 860 }
+const mainWindowSize = { width: 1200, height: 800 }
+const sprintViewSize = { width: 1420, height: 900 }
 const MAIN_LOG_MAX_BYTES = 2 * 1024 * 1024
 const MAIN_LOG_ROTATIONS = 4
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -133,6 +136,8 @@ type AppUpdateState = {
   releaseDate?: string
   changelog?: string[]
   percent?: number
+  manualInstallRequired?: boolean
+  manualInstallUrl?: string
 }
 
 type UpdaterLike = {
@@ -152,7 +157,10 @@ let updateCheckTimer: NodeJS.Timeout | null = null
 let updaterConfigured = false
 let latestUpdateState: AppUpdateState = { state: 'idle', currentVersion: app.getVersion() }
 let appUpdater: UpdaterLike | null = null
+let updateCheckInFlight: Promise<unknown | null> | null = null
+let updaterSetupPromise: Promise<void> | null = null
 let nativeThemeMode: ThemeMode = 'dark'
+let requestedMainView: 'default' | 'sprints' = 'default'
 const nativeLiquidGlassViewIds = new Map<number, number>()
 const macNativeGlassWindowOptions: Partial<BrowserWindowConstructorOptions> =
   process.platform === 'darwin'
@@ -269,8 +277,45 @@ function formatUpdaterError(error: unknown): string {
   if (/authentication token is correct/i.test(redacted) || /unauthorized|forbidden/i.test(redacted)) {
     return 'Update feed requires authentication. Configure a public update feed for end users.'
   }
+  if (isMacSignatureValidationError(error)) {
+    return 'This Mac installation uses an older incompatible signature. Install the full macOS update once; automatic updates will resume after the app is distributed with a consistent Developer ID signature.'
+  }
 
   return redacted.length > 260 ? `${redacted.slice(0, 257)}...` : redacted
+}
+
+function isMacSignatureValidationError(error: unknown) {
+  if (process.platform !== 'darwin') return false
+  const message = error instanceof Error ? error.message : String(error)
+  return (
+    /code signature at url/i.test(message) ||
+    /did not pass validation/i.test(message) ||
+    /specified code requirement/i.test(message)
+  )
+}
+
+function getManualMacInstallerUrl(version: string | undefined) {
+  const normalizedVersion = version?.trim()
+  if (!normalizedVersion || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(normalizedVersion)) {
+    return `https://github.com/${DEFAULT_GITHUB_UPDATE_OWNER}/${DEFAULT_GITHUB_UPDATE_REPO}/releases/latest`
+  }
+  const architectureSuffix = process.arch === 'arm64' ? '-arm64' : ''
+  return `https://github.com/${DEFAULT_GITHUB_UPDATE_OWNER}/${DEFAULT_GITHUB_UPDATE_REPO}/releases/download/v${normalizedVersion}/HRS-Desktop-${normalizedVersion}${architectureSuffix}.dmg`
+}
+
+function emitUpdaterError(error: unknown) {
+  const manualInstallRequired = isMacSignatureValidationError(error)
+  emitUpdateState({
+    state: 'error',
+    message: formatUpdaterError(error),
+    version: latestUpdateState.version,
+    releaseDate: latestUpdateState.releaseDate,
+    changelog: latestUpdateState.changelog,
+    manualInstallRequired,
+    manualInstallUrl: manualInstallRequired
+      ? getManualMacInstallerUrl(latestUpdateState.version)
+      : undefined
+  })
 }
 
 function emitUpdateState(next: AppUpdateState) {
@@ -279,7 +324,14 @@ function emitUpdateState(next: AppUpdateState) {
     currentVersion: app.getVersion()
   }
   latestUpdateState = normalized
-  const targets = [mainWindow, trayWindow, reportsWindow, settingsWindow, meetingsWindow, floatingWindow]
+  const targets = [
+    mainWindow,
+    trayWindow,
+    reportsWindow,
+    settingsWindow,
+    meetingsWindow,
+    floatingWindow
+  ]
   for (const target of targets) {
     if (!target || target.isDestroyed()) continue
     target.webContents.send('app:updateState', normalized)
@@ -292,21 +344,46 @@ function setUpdateDisabled(message: string) {
 }
 
 async function checkForUpdatesNow() {
+  if (updateCheckInFlight) return updateCheckInFlight
+  if (latestUpdateState.manualInstallRequired) return null
   if (!updaterConfigured || !appUpdater) {
     if (latestUpdateState.state !== 'disabled') {
       setUpdateDisabled('Updates are not configured for this build.')
     }
     return null
   }
+  const operation = (async () => {
+    try {
+      emitUpdateState({ state: 'checking' })
+      return await appUpdater!.checkForUpdates()
+    } catch (error) {
+      logError('[updater] check failed', error)
+      emitUpdaterError(error)
+      return null
+    }
+  })()
+  updateCheckInFlight = operation
   try {
-    emitUpdateState({ state: 'checking' })
-    return await appUpdater.checkForUpdates()
-  } catch (error) {
-    const message = formatUpdaterError(error)
-    logError('[updater] check failed', error)
-    emitUpdateState({ state: 'error', message })
+    return await operation
+  } finally {
+    if (updateCheckInFlight === operation) updateCheckInFlight = null
+  }
+}
+
+async function checkForUpdatesOnOpen(source: string) {
+  if (!app.isPackaged) return null
+  if (
+    latestUpdateState.state === 'available' ||
+    latestUpdateState.state === 'downloading' ||
+    latestUpdateState.state === 'ready' ||
+    latestUpdateState.manualInstallRequired
+  ) {
     return null
   }
+  if (updaterSetupPromise) await updaterSetupPromise
+  if (!updaterConfigured || !appUpdater) return null
+  logInfo('[updater] automatic check on open', source)
+  return checkForUpdatesNow()
 }
 
 async function ensureUpdaterLoaded() {
@@ -473,15 +550,12 @@ async function setupAutoUpdater() {
     })
   })
   appUpdater.on('error', error => {
-    const message = formatUpdaterError(error)
     logError('[updater] runtime error', error)
-    emitUpdateState({ state: 'error', message })
+    emitUpdaterError(error)
   })
 
   emitUpdateState({ state: 'idle', message: 'Ready to check for updates.' })
-  setTimeout(() => {
-    void checkForUpdatesNow()
-  }, 15000)
+  void checkForUpdatesNow()
   updateCheckTimer = setInterval(() => {
     void checkForUpdatesNow()
   }, UPDATE_CHECK_INTERVAL_MS)
@@ -796,6 +870,7 @@ function hideMainWindowToTray() {
 function showMainWindow() {
   if (!mainWindow || mainWindow.isDestroyed()) {
     createMainWindow(false)
+    void checkForUpdatesOnOpen('main window')
     return
   }
   openMainRequested = true
@@ -807,6 +882,14 @@ function showMainWindow() {
     mainWindow.restore()
   }
   mainWindow.focus()
+  void checkForUpdatesOnOpen('main window')
+}
+
+function resizeMainWindowForView(size: { width: number; height: number }) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const fitted = fitWindowSizeToDisplay(size.width, size.height)
+  mainWindow.setSize(fitted.width, fitted.height, false)
+  mainWindow.center()
 }
 
 function getFloatingOptions() {
@@ -851,7 +934,7 @@ function loadRendererWindow(
   const devServerUrl = !useFile
     ? process.env.VITE_DEV_SERVER_URL || 'http://localhost:5173/'
     : null
-  const query =
+  const query: Record<string, string> | null =
     mode === 'floating'
       ? { floating: '1' }
       : mode === 'tray'
@@ -862,7 +945,7 @@ function loadRendererWindow(
             ? { settings: '1' }
             : mode === 'meetings'
               ? { meetings: '1' }
-            : null
+              : null
   if (devServerUrl) {
     const baseUrl = devServerUrl.endsWith('/') ? devServerUrl.slice(0, -1) : devServerUrl
     const url = query ? `${baseUrl}?${new URLSearchParams(query).toString()}` : baseUrl
@@ -876,7 +959,7 @@ function loadRendererWindow(
 }
 
 function createMainWindow(startHidden = false) {
-  const fittedSize = fitWindowSizeToDisplay(1200, 800)
+  const fittedSize = fitWindowSizeToDisplay(mainWindowSize.width, mainWindowSize.height)
   mainWindow = new BrowserWindow({
     width: fittedSize.width,
     height: fittedSize.height,
@@ -1117,6 +1200,7 @@ function openReportsWindow() {
   reportsWindow.show()
   if (reportsWindow.isMinimized()) reportsWindow.restore()
   reportsWindow.focus()
+  void checkForUpdatesOnOpen('reports window')
 }
 
 function openSettingsWindow() {
@@ -1131,6 +1215,7 @@ function openSettingsWindow() {
   settingsWindow.show()
   if (settingsWindow.isMinimized()) settingsWindow.restore()
   settingsWindow.focus()
+  void checkForUpdatesOnOpen('settings window')
 }
 
 function openMeetingsWindow() {
@@ -1145,6 +1230,26 @@ function openMeetingsWindow() {
   meetingsWindow.show()
   if (meetingsWindow.isMinimized()) meetingsWindow.restore()
   meetingsWindow.focus()
+  void checkForUpdatesOnOpen('meetings window')
+}
+
+function sendRequestedMainView() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('app:mainViewRequested', requestedMainView)
+}
+
+function openSprintView() {
+  requestedMainView = 'sprints'
+  const needsWindow = !mainWindow || mainWindow.isDestroyed()
+  showMainWindow()
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  resizeMainWindowForView(sprintViewSize)
+  if (needsWindow || mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once('did-finish-load', sendRequestedMainView)
+  } else {
+    sendRequestedMainView()
+  }
+  if (trayWindow?.isVisible()) beginHideTrayWindow('open-main')
 }
 
 function getTrayWindowPosition() {
@@ -1218,6 +1323,7 @@ function showTrayWindow() {
   trayWindow.show()
   trayWindow.focus()
   trayWindow.webContents.send('app:trayOpened')
+  void checkForUpdatesOnOpen('tray')
 }
 
 function applyTrayPinnedWindowBehavior() {
@@ -1376,7 +1482,7 @@ app.whenReady().then(() => {
   registerSlackIpc()
   registerIsraeliHolidaysIpc()
   registerIntegrationAttachmentsIpc()
-  void setupAutoUpdater()
+  updaterSetupPromise = setupAutoUpdater()
   ipcMain.handle('app:getTrayPinned', () => trayPinned)
   ipcMain.handle('app:setTrayPinned', (_event, pinned: unknown) => {
     if (typeof pinned !== 'boolean') {
@@ -1400,7 +1506,10 @@ app.whenReady().then(() => {
     return resizeTrayWindowToContent(requestedHeight)
   })
   ipcMain.handle('app:openMainWindow', () => {
+    requestedMainView = 'default'
     showMainWindow()
+    resizeMainWindowForView(mainWindowSize)
+    sendRequestedMainView()
     if (trayWindow?.isVisible()) {
       beginHideTrayWindow('open-main')
     }
@@ -1418,6 +1527,17 @@ app.whenReady().then(() => {
     openMeetingsWindow()
     return true
   })
+  ipcMain.handle('app:openSprintWindow', () => {
+    openSprintView()
+    return true
+  })
+  ipcMain.handle('app:closeSprintWindow', () => {
+    requestedMainView = 'default'
+    resizeMainWindowForView(mainWindowSize)
+    hideMainWindowToTray()
+    return true
+  })
+  ipcMain.handle('app:getRequestedMainView', () => requestedMainView)
   ipcMain.handle('app:openFloatingTimer', () => {
     hideMainWindowForFloating()
     createFloatingWindow()
@@ -1467,8 +1587,7 @@ app.whenReady().then(() => {
       await appUpdater.downloadUpdate()
       return true
     } catch (error) {
-      const message = formatUpdaterError(error)
-      emitUpdateState({ state: 'error', message })
+      emitUpdaterError(error)
       return false
     }
   })
@@ -1480,6 +1599,12 @@ app.whenReady().then(() => {
     setImmediate(() => {
       appUpdater?.quitAndInstall()
     })
+    return true
+  })
+  ipcMain.handle('app:openManualUpdateInstaller', async () => {
+    if (!latestUpdateState.manualInstallRequired || process.platform !== 'darwin') return false
+    const url = latestUpdateState.manualInstallUrl || getManualMacInstallerUrl(latestUpdateState.version)
+    await shell.openExternal(url)
     return true
   })
   if (startInTray && trayReady) {

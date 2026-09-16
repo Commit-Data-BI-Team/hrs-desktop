@@ -18,13 +18,31 @@ import {
   validateStringLength
 } from '../utils/validation'
 import { resolveIntegrationAttachments } from '../integration/attachments'
+import {
+  requireSprintTaskCompletionConsensus,
+  requireSupabaseManager,
+  requireSupabaseUser
+} from './supabase'
 
-const PROJECT_KEY = 'VDA'
-const PROJECT_NAME = 'Data Analytics Tasks'
+const DEFAULT_PROJECT_KEYS = ['VDA', 'LSM']
+const JIRA_PROJECT_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}$/
+const configuredProjectKeys = (process.env.HRS_JIRA_PROJECT_KEYS ?? DEFAULT_PROJECT_KEYS.join(','))
+  .split(',')
+  .map(value => value.trim().toUpperCase())
+  .filter(value => JIRA_PROJECT_KEY_REGEX.test(value))
+const PROJECT_KEYS = configuredProjectKeys.length
+  ? Array.from(new Set(configuredProjectKeys))
+  : DEFAULT_PROJECT_KEYS
+const PRIMARY_PROJECT_KEY = PROJECT_KEYS[0]
+const PROJECT_NAME = PROJECT_KEYS.join(' + ')
 const JIRA_CACHE_TTL_MS = 5 * 60 * 1000
 const JIRA_PERSIST_TTL_MS = 6 * 60 * 60 * 1000
 const JIRA_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
 const JIRA_E2E = !app.isPackaged && (process.env.HRS_E2E === '1' || process.env.JIRA_E2E === '1')
+
+function projectJql(projectKey: string) {
+  return `project = ${projectKey}`
+}
 
 function redactSensitiveText(input: string): string {
   let text = input
@@ -175,6 +193,10 @@ type JiraSearchIssue = {
     summary?: string
     status?: {
       name?: string | null
+      statusCategory?: {
+        key?: string | null
+        name?: string | null
+      } | null
     } | null
     aggregatetimetracking?: {
       originalEstimateSeconds?: number | null
@@ -260,6 +282,45 @@ type JiraEpic = {
   summary: string
 }
 
+type JiraAgileBoard = {
+  id: number
+  name: string
+  type: string
+  projectKey: string | null
+}
+
+type JiraSprint = {
+  id: number
+  name: string
+  state: 'active' | 'future' | 'closed'
+  goal: string | null
+  startDate: string | null
+  endDate: string | null
+  originBoardId: number | null
+}
+
+type JiraSprintIssue = {
+  key: string
+  summary: string
+  statusName: string
+  statusCategoryKey: 'todo' | 'indeterminate' | 'done'
+  assigneeName: string | null
+  timespent: number
+  estimateSeconds: number
+}
+
+type JiraSprintIssueDetails = {
+  issueKey: string
+  description: string
+  attachments: Array<{
+    id: string
+    name: string
+    mimeType: string | null
+    previewDataUrl?: string | null
+  }>
+  comments: ReturnType<typeof normalizeJiraComment>[]
+}
+
 type JiraIssueCreatePayload = {
   parentIssueKey: string
   summary: string
@@ -332,7 +393,8 @@ type JiraCommentAttachmentCandidate = {
 
 const E2E_EPICS: JiraEpic[] = [
   { key: 'VDA-98', summary: 'Weizmann Institute of Science' },
-  { key: 'VDA-147', summary: 'Microsoft' }
+  { key: 'VDA-147', summary: 'Microsoft' },
+  { key: 'LSM-10', summary: 'LSM delivery' }
 ]
 
 const E2E_WORK_ITEMS_BY_EPIC: Record<string, JiraWorkItem[]> = {
@@ -398,7 +460,120 @@ const E2E_WORK_ITEMS_BY_EPIC: Record<string, JiraWorkItem[]> = {
       worklogTotal: 0,
       lastWorklog: null
     }
+  ],
+  'LSM-10': [
+    {
+      key: 'LSM-21',
+      summary: 'LSM discovery',
+      timespent: 2 * 3600,
+      estimateSeconds: 16 * 3600,
+      assigneeName: 'Unassigned',
+      statusName: 'To Do',
+      subtasks: [],
+      worklogs: [],
+      worklogTotal: 0,
+      lastWorklog: null
+    }
   ]
+}
+
+const E2E_SPRINT_BOARDS: JiraAgileBoard[] = [
+  { id: 101, name: 'VDA Scrum', type: 'scrum', projectKey: 'VDA' },
+  { id: 202, name: 'LSM Scrum', type: 'scrum', projectKey: 'LSM' }
+]
+
+const E2E_SPRINTS: Record<number, JiraSprint[]> = {
+  101: [
+    {
+      id: 1001,
+      name: 'VDA Sprint 12',
+      state: 'active',
+      goal: 'Ship reporting improvements',
+      startDate: '2026-09-01T08:00:00.000Z',
+      endDate: '2026-09-14T17:00:00.000Z',
+      originBoardId: 101
+    },
+    {
+      id: 901,
+      name: 'VDA Sprint 11',
+      state: 'closed',
+      goal: 'Complete the previous reporting milestone',
+      startDate: '2026-08-15T08:00:00.000Z',
+      endDate: '2026-08-31T17:00:00.000Z',
+      originBoardId: 101
+    }
+  ],
+  202: [
+    {
+      id: 2001,
+      name: 'LSM Sprint 3',
+      state: 'active',
+      goal: 'Deliver LSM milestones',
+      startDate: '2026-09-01T08:00:00.000Z',
+      endDate: '2026-09-14T17:00:00.000Z',
+      originBoardId: 202
+    }
+  ]
+}
+
+let e2eSprintBacklog: Record<number, JiraSprintIssue[]> = {
+  101: [
+    {
+      key: 'VDA-600',
+      summary: 'Backlog discovery',
+      statusName: 'To Do',
+      statusCategoryKey: 'todo',
+      assigneeName: 'Dror Rahamim',
+      timespent: 0,
+      estimateSeconds: 8 * 3600
+    }
+  ],
+  202: [
+    {
+      key: 'LSM-30',
+      summary: 'LSM backlog item',
+      statusName: 'To Do',
+      statusCategoryKey: 'todo',
+      assigneeName: null,
+      timespent: 0,
+      estimateSeconds: 4 * 3600
+    }
+  ]
+}
+
+let e2eSprintIssues: Record<number, JiraSprintIssue[]> = {
+  1001: [
+    {
+      key: 'VDA-601',
+      summary: 'Active sprint task',
+      statusName: 'In Progress',
+      statusCategoryKey: 'indeterminate',
+      assigneeName: 'Vitaly Shechtman',
+      timespent: 2 * 3600,
+      estimateSeconds: 8 * 3600
+    },
+    {
+      key: 'VDA-602',
+      summary: 'Employee-startable task',
+      statusName: 'To Do',
+      statusCategoryKey: 'todo',
+      assigneeName: 'Vitaly Shechtman',
+      timespent: 45 * 60,
+      estimateSeconds: 4 * 3600
+    }
+  ],
+  901: [
+    {
+      key: 'VDA-590',
+      summary: 'Previous sprint delivery',
+      statusName: 'Done',
+      statusCategoryKey: 'done',
+      assigneeName: 'Dror Rahamim',
+      timespent: 6 * 3600,
+      estimateSeconds: 8 * 3600
+    }
+  ],
+  2001: []
 }
 
 function validateEpicKey(value: unknown): string {
@@ -757,6 +932,92 @@ function clearAllWorkItemCaches() {
   jiraStore.set('workItemsLight', {})
 }
 
+function validateAgileId(value: unknown, _label: string) {
+  return validateNumberRange(value, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+}
+
+function validateIssueKeyList(value: unknown, label: string) {
+  if (!Array.isArray(value) || !value.length || value.length > 50) {
+    throw new Error(`Invalid ${label}: expected 1-50 issue keys`)
+  }
+  return Array.from(new Set(value.map(issueKey => validateJiraIssueKey(issueKey))))
+}
+
+function normalizeSprintStatusCategory(
+  categoryKey: string | null | undefined,
+  statusName: string | null | undefined
+): JiraSprintIssue['statusCategoryKey'] {
+  const normalizedCategory = (categoryKey ?? '').toLowerCase()
+  if (normalizedCategory === 'done') return 'done'
+  if (normalizedCategory === 'indeterminate') return 'indeterminate'
+  if (normalizedCategory === 'new') return 'todo'
+  const normalizedStatus = (statusName ?? '').toLowerCase()
+  if (/done|closed|resolved|complete/.test(normalizedStatus)) return 'done'
+  if (/progress|review|testing|blocked/.test(normalizedStatus)) return 'indeterminate'
+  return 'todo'
+}
+
+function normalizeSprintIssue(issue: JiraSearchIssue): JiraSprintIssue {
+  const statusName = issue.fields?.status?.name?.trim() || 'To Do'
+  return {
+    key: validateJiraIssueKey(issue.key),
+    summary: issue.fields?.summary?.trim() || issue.key,
+    statusName,
+    statusCategoryKey: normalizeSprintStatusCategory(
+      issue.fields?.status?.statusCategory?.key,
+      statusName
+    ),
+    assigneeName: issue.fields?.assignee?.displayName?.trim() || null,
+    timespent:
+      issue.fields?.timespent ?? issue.fields?.timetracking?.timeSpentSeconds ?? 0,
+    estimateSeconds:
+      issue.fields?.timeoriginalestimate ??
+      issue.fields?.timetracking?.originalEstimateSeconds ??
+      0
+  }
+}
+
+async function fetchAgileValues<T>(path: string, limit = 200): Promise<T[]> {
+  const values: T[] = []
+  let startAt = 0
+  while (values.length < limit) {
+    const separator = path.includes('?') ? '&' : '?'
+    const data = (await jiraRequest(
+      `${path}${separator}startAt=${startAt}&maxResults=100`
+    )) as {
+      values?: T[]
+      startAt?: number
+      maxResults?: number
+      total?: number
+      isLast?: boolean
+    }
+    const page = data.values ?? []
+    values.push(...page.slice(0, limit - values.length))
+    if (!page.length || data.isLast) break
+    startAt += page.length
+    if (data.total !== undefined && startAt >= data.total) break
+  }
+  return values
+}
+
+async function fetchAgileIssues(path: string, limit = 500): Promise<JiraSprintIssue[]> {
+  const issues: JiraSearchIssue[] = []
+  let startAt = 0
+  const fields = 'summary,status,assignee,timespent,timeoriginalestimate,timetracking'
+  while (issues.length < limit) {
+    const separator = path.includes('?') ? '&' : '?'
+    const data = (await jiraRequest(
+      `${path}${separator}startAt=${startAt}&maxResults=100&fields=${encodeURIComponent(fields)}`
+    )) as JiraSearchResponse
+    const page = data.issues ?? []
+    issues.push(...page.slice(0, limit - issues.length))
+    if (!page.length) break
+    startAt += page.length
+    if (data.total !== undefined && startAt >= data.total) break
+  }
+  return issues.map(normalizeSprintIssue)
+}
+
 function validateCreateIssuePayload(payload: unknown): JiraIssueCreatePayload {
   const safe = validateExactObject<{
     parentIssueKey?: unknown
@@ -887,14 +1148,16 @@ export function registerJiraIpc() {
   if (JIRA_E2E) {
     let mappings: Record<string, string> = {
       'Weizmann Institute of Science': 'VDA-98',
-      Microsoft: 'VDA-147'
+      Microsoft: 'VDA-147',
+      LSM: 'LSM-10'
     }
     ipcMain.handle('jira:getStatus', async () => ({
       baseUrl: 'https://jira.local',
       email: 'e2e@jira.local',
       configured: true,
       hasCredentials: true,
-      projectKey: PROJECT_KEY,
+      projectKey: PRIMARY_PROJECT_KEY,
+      projectKeys: PROJECT_KEYS,
       projectName: PROJECT_NAME
     }))
     ipcMain.handle('jira:setCredentials', async () => true)
@@ -1004,6 +1267,7 @@ export function registerJiraIpc() {
     ipcMain.handle('jira:getTransitions', async (_event, issueKey: unknown) => {
       validateJiraIssueKey(issueKey)
       return [
+        { id: '11', name: 'To Do', toStatusName: 'To Do' },
         { id: '21', name: 'In Progress', toStatusName: 'In Progress' },
         { id: '31', name: 'Done', toStatusName: 'Done' }
       ]
@@ -1118,9 +1382,214 @@ export function registerJiraIpc() {
         ['issueKey', 'transitionId'],
         'Jira transition'
       )
-      validateJiraIssueKey(safe.issueKey)
+      const issueKey = validateJiraIssueKey(safe.issueKey)
       const transitionId = validateStringLength(safe.transitionId, 1, 32)
       if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+      const nextStatus =
+        transitionId === '31'
+          ? { statusName: 'Done', statusCategoryKey: 'done' as const }
+          : transitionId === '21'
+            ? { statusName: 'In Progress', statusCategoryKey: 'indeterminate' as const }
+            : { statusName: 'To Do', statusCategoryKey: 'todo' as const }
+      for (const issues of [
+        ...Object.values(e2eSprintBacklog),
+        ...Object.values(e2eSprintIssues)
+      ]) {
+        const issue = issues.find(item => item.key === issueKey)
+        if (issue) Object.assign(issue, nextStatus)
+      }
+      return true
+    })
+    ipcMain.handle('jira:transitionSprintIssue', async (_event, payload: unknown) => {
+      await requireSupabaseManager()
+      const safe = validateExactObject<{ issueKey?: unknown; transitionId?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'transitionId'],
+        'Jira sprint transition'
+      )
+      const issueKey = validateJiraIssueKey(safe.issueKey)
+      const transitionId = validateStringLength(safe.transitionId, 1, 32)
+      if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+      const nextStatus =
+        transitionId === '31'
+          ? { statusName: 'Done', statusCategoryKey: 'done' as const }
+          : transitionId === '21'
+            ? { statusName: 'In Progress', statusCategoryKey: 'indeterminate' as const }
+            : { statusName: 'To Do', statusCategoryKey: 'todo' as const }
+      for (const issues of [...Object.values(e2eSprintBacklog), ...Object.values(e2eSprintIssues)]) {
+        const issue = issues.find(item => item.key === issueKey)
+        if (issue) Object.assign(issue, nextStatus)
+      }
+      return true
+    })
+    ipcMain.handle('jira:getBoards', async (_event, projectKey: unknown) => {
+      const key = validateStringLength(projectKey, 1, 15).toUpperCase()
+      return E2E_SPRINT_BOARDS.filter(board => board.projectKey === key)
+    })
+    ipcMain.handle('jira:getSprints', async (_event, boardId: unknown) => {
+      const id = validateNumberRange(boardId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+      return E2E_SPRINTS[id] ?? []
+    })
+    ipcMain.handle('jira:getBacklogIssues', async (_event, boardId: unknown) => {
+      const id = validateNumberRange(boardId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+      return e2eSprintBacklog[id] ?? []
+    })
+    ipcMain.handle(
+      'jira:getSprintIssues',
+      async (_event, boardId: unknown, sprintId: unknown) => {
+        validateNumberRange(boardId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+        const id = validateNumberRange(sprintId, 1, Number.MAX_SAFE_INTEGER, { integer: true })
+        return e2eSprintIssues[id] ?? []
+      }
+    )
+    ipcMain.handle('jira:getSprintIssueDetails', async (_event, issueKey: unknown) => {
+      const key = validateJiraIssueKey(issueKey)
+      return {
+        issueKey: key,
+        description: `Detailed Jira description for ${key}.`,
+        attachments:
+          key === 'VDA-601'
+            ? [
+                {
+                  id: '10000',
+                  name: 'sprint-spec.png',
+                  mimeType: 'image/png',
+                  previewDataUrl:
+                    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+                }
+              ]
+            : [],
+        comments: [
+          {
+            id: `detail-${key}`,
+            source: 'jira' as const,
+            authorId: 'e2e-vitaly',
+            authorName: 'Vitaly Shechtman',
+            avatarUrl: null,
+            text: `Sprint comment for ${key}.`,
+            attachments: [],
+            createdAt: '2026-09-15T09:15:00.000Z'
+          }
+        ]
+      } satisfies JiraSprintIssueDetails
+    })
+    ipcMain.handle('jira:startSprintIssue', async (_event, issueKey: unknown) => {
+      await requireSupabaseUser()
+      const key = validateJiraIssueKey(issueKey)
+      if (!PROJECT_KEYS.includes(key.split('-')[0])) {
+        throw new Error('This Jira project is not enabled for HRS sprint management.')
+      }
+      for (const issues of Object.values(e2eSprintIssues)) {
+        const issue = issues.find(item => item.key === key)
+        if (issue) Object.assign(issue, { statusName: 'In Progress', statusCategoryKey: 'indeterminate' })
+      }
+      return true
+    })
+    ipcMain.handle('jira:completeSprintIssueByConsensus', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{ issueKey?: unknown; taskId?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'taskId'],
+        'Jira sprint completion'
+      )
+      const key = validateJiraIssueKey(safe.issueKey)
+      const taskId = validateStringLength(safe.taskId, 1, 64)
+      await requireSprintTaskCompletionConsensus(taskId, key)
+      for (const issues of Object.values(e2eSprintIssues)) {
+        const issue = issues.find(item => item.key === key)
+        if (issue) Object.assign(issue, { statusName: 'Done', statusCategoryKey: 'done' })
+      }
+      return true
+    })
+    ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
+      await requireSupabaseManager()
+      const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
+        payload ?? {},
+        ['sprintId', 'issueKeys'],
+        'Jira sprint move'
+      )
+      const sprintId = validateNumberRange(safe.sprintId, 1, Number.MAX_SAFE_INTEGER, {
+        integer: true
+      })
+      if (!Array.isArray(safe.issueKeys) || !safe.issueKeys.length || safe.issueKeys.length > 50) {
+        throw new Error('Invalid Jira sprint issue list.')
+      }
+      const keys = safe.issueKeys.map(validateJiraIssueKey)
+      const moved: JiraSprintIssue[] = []
+      for (const key of keys) {
+        for (const [boardId, issues] of Object.entries(e2eSprintBacklog)) {
+          const index = issues.findIndex(issue => issue.key === key)
+          if (index >= 0) {
+            moved.push(...issues.splice(index, 1))
+            e2eSprintBacklog[Number(boardId)] = issues
+          }
+        }
+        for (const [existingSprintId, issues] of Object.entries(e2eSprintIssues)) {
+          const index = issues.findIndex(issue => issue.key === key)
+          if (index >= 0) {
+            moved.push(...issues.splice(index, 1))
+            e2eSprintIssues[Number(existingSprintId)] = issues
+          }
+        }
+      }
+      e2eSprintIssues[sprintId] = [
+        ...(e2eSprintIssues[sprintId] ?? []),
+        ...moved
+      ]
+      return true
+    })
+    ipcMain.handle('jira:moveIssuesToBacklog', async (_event, issueKeys: unknown) => {
+      await requireSupabaseManager()
+      if (!Array.isArray(issueKeys) || !issueKeys.length || issueKeys.length > 50) {
+        throw new Error('Invalid Jira backlog issue list.')
+      }
+      const keys = issueKeys.map(validateJiraIssueKey)
+      for (const key of keys) {
+        let moved: JiraSprintIssue | null = null
+        for (const [sprintId, issues] of Object.entries(e2eSprintIssues)) {
+          const index = issues.findIndex(issue => issue.key === key)
+          if (index >= 0) {
+            moved = issues.splice(index, 1)[0]
+            e2eSprintIssues[Number(sprintId)] = issues
+            break
+          }
+        }
+        if (!moved) continue
+        const board = E2E_SPRINT_BOARDS.find(item => item.projectKey === key.split('-')[0])
+        if (board) e2eSprintBacklog[board.id] = [...(e2eSprintBacklog[board.id] ?? []), moved]
+      }
+      return true
+    })
+    ipcMain.handle('jira:rankIssues', async (_event, payload: unknown) => {
+      await requireSupabaseManager()
+      const safe = validateExactObject<{
+        issueKeys?: unknown
+        rankBeforeIssue?: unknown
+        rankAfterIssue?: unknown
+      }>(
+        payload ?? {},
+        ['issueKeys', 'rankBeforeIssue', 'rankAfterIssue'],
+        'Jira issue ranking'
+      )
+      if (!Array.isArray(safe.issueKeys) || safe.issueKeys.length !== 1) {
+        throw new Error('Invalid Jira ranking issue list.')
+      }
+      const issueKey = validateJiraIssueKey(safe.issueKeys[0])
+      const before = safe.rankBeforeIssue
+        ? validateJiraIssueKey(safe.rankBeforeIssue)
+        : null
+      const after = safe.rankAfterIssue ? validateJiraIssueKey(safe.rankAfterIssue) : null
+      for (const issues of [
+        ...Object.values(e2eSprintBacklog),
+        ...Object.values(e2eSprintIssues)
+      ]) {
+        const from = issues.findIndex(issue => issue.key === issueKey)
+        if (from < 0) continue
+        const [issue] = issues.splice(from, 1)
+        const anchor = before ?? after
+        const anchorIndex = anchor ? issues.findIndex(item => item.key === anchor) : -1
+        const destination = anchorIndex < 0 ? issues.length : anchorIndex + (after ? 1 : 0)
+        issues.splice(destination, 0, issue)
+      }
       return true
     })
     return
@@ -1143,7 +1612,8 @@ export function registerJiraIpc() {
       email: hasCredentials ? email : null,
       configured,
       hasCredentials,
-      projectKey: PROJECT_KEY,
+      projectKey: PRIMARY_PROJECT_KEY,
+      projectKeys: PROJECT_KEYS,
       projectName: PROJECT_NAME
     }
   })
@@ -1174,17 +1644,264 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:getEpics', async () => {
-    const cached = getCachedValue<JiraEpic[]>('epics')
+    const cacheKey = `epics:${PROJECT_KEYS.join(',')}`
+    const cached = getCachedValue<JiraEpic[]>(cacheKey)
     if (cached) return cached
     const EPIC_FETCH_LIMIT = 200
-    const jql = `project = ${PROJECT_KEY} AND issuetype = Epic ORDER BY updated DESC`
-    const data = await searchIssues(jql, ['summary'], { limit: EPIC_FETCH_LIMIT })
-    const epics = data.map(issue => ({
+    const results = await Promise.allSettled(
+      PROJECT_KEYS.map(projectKey =>
+        searchIssues(
+          `${projectJql(projectKey)} AND issuetype = Epic ORDER BY updated DESC`,
+          ['summary'],
+          { limit: EPIC_FETCH_LIMIT }
+        )
+      )
+    )
+    const successful = results.filter(
+      (result): result is PromiseFulfilledResult<JiraSearchIssue[]> => result.status === 'fulfilled'
+    )
+    if (!successful.length) {
+      const firstFailure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      )
+      throw firstFailure?.reason ?? new Error('Jira projects could not be loaded')
+    }
+    const data = successful.flatMap(result => result.value)
+    const epics = Array.from(new Map(data.map(issue => [issue.key, issue])).values()).map(issue => ({
       key: issue.key,
       summary: issue.fields?.summary ?? issue.key
     }))
-    setCachedValue('epics', epics, 30 * 60 * 1000)
+    setCachedValue(cacheKey, epics, 30 * 60 * 1000)
     return epics
+  })
+
+  ipcMain.handle('jira:getBoards', async (_event, projectKey: unknown) => {
+    const key = validateStringLength(projectKey, 1, 15).toUpperCase()
+    if (!PROJECT_KEYS.includes(key)) throw new Error(`Unsupported Jira project: ${key}`)
+    const params = new URLSearchParams({
+      projectKeyOrId: key,
+      type: 'scrum',
+      orderBy: 'name'
+    })
+    const values = await fetchAgileValues<{
+      id?: number
+      name?: string
+      type?: string
+      location?: { projectKey?: string | null } | null
+    }>(`/rest/agile/1.0/board?${params.toString()}`, 100)
+    return values
+      .filter(board => Number.isInteger(board.id) && board.id && board.name)
+      .map(board => ({
+        id: board.id!,
+        name: board.name!,
+        type: board.type || 'scrum',
+        projectKey: board.location?.projectKey?.trim().toUpperCase() || key
+      })) satisfies JiraAgileBoard[]
+  })
+
+  ipcMain.handle('jira:getSprints', async (_event, boardId: unknown) => {
+    const id = validateAgileId(boardId, 'Jira board ID')
+    const values = await fetchAgileValues<{
+      id?: number
+      name?: string
+      state?: string
+      goal?: string | null
+      startDate?: string | null
+      endDate?: string | null
+      originBoardId?: number | null
+    }>(`/rest/agile/1.0/board/${id}/sprint?state=active,closed`, 300)
+    return values
+      .filter(
+        sprint =>
+          Number.isInteger(sprint.id) &&
+          sprint.id &&
+          sprint.name &&
+          ['active', 'future', 'closed'].includes(sprint.state ?? '')
+      )
+      .map(sprint => ({
+        id: sprint.id!,
+        name: sprint.name!,
+        state: sprint.state as JiraSprint['state'],
+        goal: sprint.goal?.trim() || null,
+        startDate: sprint.startDate ?? null,
+        endDate: sprint.endDate ?? null,
+        originBoardId: sprint.originBoardId ?? id
+      })) satisfies JiraSprint[]
+  })
+
+  ipcMain.handle('jira:getBacklogIssues', async (_event, boardId: unknown) => {
+    const id = validateAgileId(boardId, 'Jira board ID')
+    return fetchAgileIssues(`/rest/agile/1.0/board/${id}/backlog`)
+  })
+
+  ipcMain.handle(
+    'jira:getSprintIssues',
+    async (_event, boardId: unknown, sprintId: unknown) => {
+      const safeBoardId = validateAgileId(boardId, 'Jira board ID')
+      const safeSprintId = validateAgileId(sprintId, 'Jira sprint ID')
+      return fetchAgileIssues(
+        `/rest/agile/1.0/board/${safeBoardId}/sprint/${safeSprintId}/issue`
+      )
+    }
+  )
+
+  ipcMain.handle('jira:getSprintIssueDetails', async (_event, issueKey: unknown) => {
+    const key = validateJiraIssueKey(issueKey)
+    const [issueData, commentsData] = await Promise.all([
+      jiraRequest(
+        `/rest/api/3/issue/${encodeURIComponent(key)}?fields=description,attachment`
+      ) as Promise<{
+        fields?: { description?: unknown; attachment?: JiraIssueAttachment[] }
+      }>,
+      jiraRequest(
+        `/rest/api/3/issue/${encodeURIComponent(key)}/comment?maxResults=20&orderBy=-created`
+      ) as Promise<{ comments?: JiraComment[] }>
+    ])
+    const issueAttachments = issueData.fields?.attachment ?? []
+    let previewBudget = 6
+    const attachments = await Promise.all(
+      issueAttachments
+        .filter(attachment => attachment.id !== undefined && attachment.filename?.trim())
+        .slice(0, 50)
+        .map(async attachment => {
+          const id = String(attachment.id)
+          const mimeType = attachment.mimeType?.trim() || null
+          let previewDataUrl: string | null = null
+          if (mimeType?.startsWith('image/') && previewBudget > 0) {
+            previewBudget -= 1
+            previewDataUrl = await getJiraAttachmentPreviewDataUrl(id)
+          }
+          return {
+            id,
+            name: attachment.filename!.trim(),
+            mimeType,
+            previewDataUrl
+          }
+        })
+    )
+    const comments = (commentsData.comments ?? [])
+      .map(comment => normalizeJiraComment(comment, issueAttachments))
+      .filter(comment => comment.id && (comment.text || comment.attachments.length))
+      .slice(0, 20)
+    return {
+      issueKey: key,
+      description: jiraCommentBodyToText(issueData.fields?.description).trim().slice(0, 10_000),
+      attachments,
+      comments
+    } satisfies JiraSprintIssueDetails
+  })
+
+  ipcMain.handle('jira:startSprintIssue', async (_event, issueKey: unknown) => {
+    await requireSupabaseUser()
+    const key = validateJiraIssueKey(issueKey)
+    if (!PROJECT_KEYS.includes(key.split('-')[0])) {
+      throw new Error('This Jira project is not enabled for HRS sprint management.')
+    }
+    const data = (await jiraRequest(
+      `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`
+    )) as { transitions?: JiraTransition[] }
+    const transition = (data.transitions ?? []).find(item =>
+      normalizeSprintStatusCategory(null, item.to?.name ?? item.name) === 'indeterminate'
+    )
+    if (!transition) throw new Error('No Jira transition to In Progress is available.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transition.id } })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:completeSprintIssueByConsensus', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{ issueKey?: unknown; taskId?: unknown }>(
+      payload ?? {},
+      ['issueKey', 'taskId'],
+      'Jira sprint completion'
+    )
+    const key = validateJiraIssueKey(safe.issueKey)
+    const taskId = validateStringLength(safe.taskId, 1, 64)
+    await requireSprintTaskCompletionConsensus(taskId, key)
+    const data = (await jiraRequest(
+      `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`
+    )) as { transitions?: JiraTransition[] }
+    const transition = (data.transitions ?? []).find(item =>
+      normalizeSprintStatusCategory(null, item.to?.name ?? item.name) === 'done'
+    )
+    if (!transition) throw new Error('No Jira transition to Done is available.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transition.id } })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
+    await requireSupabaseManager()
+    const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
+      payload ?? {},
+      ['sprintId', 'issueKeys'],
+      'Jira sprint move'
+    )
+    const sprintId = validateAgileId(safe.sprintId, 'Jira sprint ID')
+    const issueKeys = validateIssueKeyList(safe.issueKeys, 'Jira sprint issues')
+    await jiraRequest(`/rest/agile/1.0/sprint/${sprintId}/issue`, {
+      method: 'POST',
+      body: JSON.stringify({ issues: issueKeys })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:moveIssuesToBacklog', async (_event, issueKeys: unknown) => {
+    await requireSupabaseManager()
+    const keys = validateIssueKeyList(issueKeys, 'Jira backlog issues')
+    await jiraRequest('/rest/agile/1.0/backlog/issue', {
+      method: 'POST',
+      body: JSON.stringify({ issues: keys })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:rankIssues', async (_event, payload: unknown) => {
+    await requireSupabaseManager()
+    const safe = validateExactObject<{
+      issueKeys?: unknown
+      rankBeforeIssue?: unknown
+      rankAfterIssue?: unknown
+    }>(
+      payload ?? {},
+      ['issueKeys', 'rankBeforeIssue', 'rankAfterIssue'],
+      'Jira issue ranking'
+    )
+    const issueKeys = validateIssueKeyList(safe.issueKeys, 'Jira ranking issues')
+    const rankBeforeIssue = validateOptionalString(safe.rankBeforeIssue, {
+      min: 1,
+      max: 64,
+      allowNull: true
+    })
+    const rankAfterIssue = validateOptionalString(safe.rankAfterIssue, {
+      min: 1,
+      max: 64,
+      allowNull: true
+    })
+    if (!rankBeforeIssue && !rankAfterIssue) {
+      throw new Error('Choose an issue before or after which to rank the card.')
+    }
+    await jiraRequest('/rest/agile/1.0/issue/rank', {
+      method: 'PUT',
+      body: JSON.stringify({
+        issues: issueKeys,
+        ...(rankBeforeIssue
+          ? { rankBeforeIssue: validateJiraIssueKey(rankBeforeIssue) }
+          : {}),
+        ...(rankAfterIssue
+          ? { rankAfterIssue: validateJiraIssueKey(rankAfterIssue) }
+          : {})
+      })
+    })
+    return true
   })
 
   ipcMain.handle('jira:searchUsers', async (_event, query: unknown) => {
@@ -1332,6 +2049,24 @@ export function registerJiraIpc() {
       payload ?? {},
       ['issueKey', 'transitionId'],
       'Jira transition'
+    )
+    const issueKey = validateJiraIssueKey(safe.issueKey)
+    const transitionId = validateStringLength(safe.transitionId, 1, 32)
+    if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transitionId } })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:transitionSprintIssue', async (_event, payload: unknown) => {
+    await requireSupabaseManager()
+    const safe = validateExactObject<{ issueKey?: unknown; transitionId?: unknown }>(
+      payload ?? {},
+      ['issueKey', 'transitionId'],
+      'Jira sprint transition'
     )
     const issueKey = validateJiraIssueKey(safe.issueKey)
     const transitionId = validateStringLength(safe.transitionId, 1, 32)
@@ -1616,12 +2351,30 @@ export function registerJiraIpc() {
     const currentUser = (await jiraRequest('/rest/api/3/myself')) as {
       accountId?: string
     }
-    const result = await searchIssuesWithLimit(
-      `project = ${PROJECT_KEY} AND worklogDate = "${safeDate}" AND worklogAuthor = currentUser() ORDER BY updated DESC`,
-      ['summary'],
-      200
+    const results = await Promise.allSettled(
+      PROJECT_KEYS.map(projectKey =>
+        searchIssuesWithLimit(
+          `${projectJql(projectKey)} AND worklogDate = "${safeDate}" AND worklogAuthor = currentUser() ORDER BY updated DESC`,
+          ['summary'],
+          200
+        )
+      )
     )
-    const issueQueue = result.issues.map(issue => issue.key)
+    const successful = results.filter(
+      (
+        result
+      ): result is PromiseFulfilledResult<{ issues: JiraSearchIssue[]; reachedLimit: boolean }> =>
+        result.status === 'fulfilled'
+    )
+    if (!successful.length) {
+      const firstFailure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      )
+      throw firstFailure?.reason ?? new Error('Jira worklogs could not be searched')
+    }
+    const issueQueue = Array.from(
+      new Set(successful.flatMap(result => result.value.issues.map(issue => issue.key)))
+    )
     const worklogs: Array<ReturnType<typeof normalizeWorklogs>[number] & { issueKey: string }> = []
     const concurrency = Math.min(4, issueQueue.length)
     await Promise.all(
@@ -1638,7 +2391,12 @@ export function registerJiraIpc() {
         }
       })
     )
-    return { worklogs, partial: result.reachedLimit }
+    return {
+      worklogs,
+      partial:
+        successful.some(result => result.value.reachedLimit) ||
+        successful.length !== PROJECT_KEYS.length
+    }
   })
 
   ipcMain.handle('jira:createIssue', async (_event, payload: unknown) => {
@@ -1732,7 +2490,7 @@ export function registerJiraIpc() {
         const requiredPermission = ownsWorklog ? 'Delete Own Worklogs' : 'Delete All Worklogs'
         const displayName = currentUser.displayName?.trim() || 'The connected Jira user'
         throw new Error(
-          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}. Ask a Jira administrator to grant it in the VDA project permission scheme. The HRS report and gauge were not changed.`
+          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}. Ask a Jira administrator to grant it in the ${issueKey.split('-')[0]} project permission scheme. The HRS report and gauge were not changed.`
         )
       }
       await jiraRequest(

@@ -27,8 +27,17 @@ test('renders the tray reports KPIs and employee projects', async () => {
 
     await expect(window.getByLabel('HRS Comment')).toBeVisible()
     await expect(
-      window.getByRole('button', { name: 'Update Jira & Slack' })
+      window.getByRole('button', { name: 'Update Jira and Slack' })
     ).toBeVisible()
+    const jiraEpics = await window.evaluate(() => window.hrs.getJiraEpics())
+    expect(jiraEpics.map(epic => epic.key)).toContain('LSM-10')
+    const createdLsmMission = await window.evaluate(() =>
+      window.hrs.createJiraIssue({
+        parentIssueKey: 'LSM-10',
+        summary: 'E2E LSM mission'
+      })
+    )
+    expect(createdLsmMission.key).toMatch(/^LSM-/)
     await expect(window.getByRole('button', { name: 'Reports' })).toBeVisible()
     await window.getByRole('button', { name: 'Reports' }).click()
 
@@ -59,27 +68,65 @@ test('renders the tray reports KPIs and employee projects', async () => {
       })
     })
     await expect(window.getByText('Update Available', { exact: true })).toBeVisible()
+    await browserWindow.evaluate(current => {
+      current.webContents.send('app:updateState', {
+        state: 'error',
+        version: '9.9.9',
+        currentVersion: '1.0.0',
+        manualInstallRequired: true,
+        manualInstallUrl: 'https://example.invalid/HRS-Desktop-9.9.9-arm64.dmg',
+        message: 'A full macOS installer is required.'
+      })
+    })
+    await expect(window.getByText('Update Available', { exact: true })).toBeVisible()
 
     await window.getByRole('button', { name: 'Quick Log' }).click()
     const quickLogFilters = window.locator('.tray-filters')
     await expect(quickLogFilters).toBeVisible()
+    const regularShortcut = window
+      .locator('.quicklog-recent-shortcut')
+      .filter({ hasText: 'Acme Labs -> Design sync' })
+    await expect(regularShortcut).toBeVisible()
+    await regularShortcut.click({ button: 'right' })
+    await window.getByRole('button', { name: 'Change display name' }).click()
+    const taskAliasDialog = window.getByRole('dialog', { name: 'Change shortcut display name' })
+    await expect(taskAliasDialog.getByText('Original shortcut: Acme Labs -> Design sync')).toBeVisible()
+    await taskAliasDialog
+      .getByRole('textbox', { name: 'Shortcut display name' })
+      .fill('Design sync UI alias')
+    await taskAliasDialog.getByRole('button', { name: 'Save display name' }).click()
+    const aliasedShortcut = window
+      .locator('.quicklog-recent-shortcut')
+      .filter({ hasText: 'Design sync UI alias' })
+    await expect(aliasedShortcut).toHaveText('Design sync UI alias')
+    await aliasedShortcut.click()
+    await expect(window.getByRole('textbox', { name: 'Task' })).toHaveValue('Design sync')
+    await expect(window.getByRole('textbox', { name: 'Customer', exact: true })).toHaveValue(
+      'Acme Labs'
+    )
+    await expect.poll(() =>
+      window.evaluate(() => {
+        const aliases = JSON.parse(localStorage.getItem('hrs-recent-shortcut-aliases-v2') || '{}')
+        return Object.values(aliases).includes('Design sync UI alias')
+      })
+    ).toBe(true)
+    const originalHrsTasks = await window.evaluate(() => window.hrs.getWorkLogs())
+    expect(originalHrsTasks.some(task => task.taskName === 'Design sync')).toBe(true)
     await expect.poll(() =>
       quickLogFilters.evaluate(element =>
         getComputedStyle(element).gridTemplateColumns.trim().split(/\s+/).length
       )
     ).toBe(1)
-    await window.getByRole('textbox', { name: 'Project' }).fill('Website revamp')
-    await window.getByRole('option', { name: /Website revamp/ }).click()
-    await expect(window.getByRole('textbox', { name: 'Customer', exact: true })).toHaveValue('Acme Labs')
     await expect.poll(() =>
       window.locator('.tray-content').evaluate(element =>
         element.scrollWidth <= element.clientWidth + 1
       )
     ).toBe(true)
-    await window.getByRole('button', { name: 'Update Jira & Slack' }).click()
+    await window.getByRole('button', { name: 'Update Jira and Slack' }).click()
     const updatePanel = window.locator('.tray-communicate-panel')
-    await expect(updatePanel.locator('p').filter({ hasText: /^Send update$/ })).toBeVisible()
+    await expect(updatePanel.getByText('Update Jira & Slack', { exact: true })).toBeVisible()
     await expect(window.getByLabel('HRS Comment')).toBeVisible()
+    await updatePanel.getByRole('button', { name: /Delivery/ }).click()
     await updatePanel.getByRole('textbox', { name: 'Customer' }).fill('Microsoft')
     await window.getByRole('option', { name: 'Microsoft', exact: true }).click()
     const jiraWorkItem = updatePanel.getByLabel('Jira work item')
@@ -88,6 +135,7 @@ test('renders the tray reports KPIs and employee projects', async () => {
       updatePanel.getByText('Using the customer parent because no fictive task is selected.')
     ).toBeVisible()
     await expect(updatePanel.getByLabel('Slack channel')).toHaveValue('#microsoft-project')
+    await updatePanel.getByRole('button', { name: /Conversation/ }).click()
     const jiraCommentsToggle = updatePanel.getByRole('button', { name: /Jira comments · 1/ })
     const slackMessagesToggle = updatePanel.getByRole('button', { name: /Slack messages · 1/ })
     await expect(jiraCommentsToggle).toHaveAttribute('aria-expanded', 'false')
@@ -113,6 +161,7 @@ test('renders the tray reports KPIs and employee projects', async () => {
     await expect(jiraReply).toHaveValue('@[Vitaly Shechtman] ')
     await expect(updatePanel.getByRole('button', { name: 'Reply in Jira' })).toBeVisible()
     await updatePanel.getByRole('button', { name: 'New message' }).click()
+    await updatePanel.getByRole('button', { name: /Conversation/ }).click()
     await updatePanel.getByRole('button', { name: 'Reply to Vitaly Shechtman on Slack' }).click()
     const slackReply = updatePanel.getByRole('textbox', { name: 'Reply' })
     await slackReply.fill('@[Vitaly Shechtman] Thanks, I will review it.')
@@ -120,6 +169,7 @@ test('renders the tray reports KPIs and employee projects', async () => {
     await expect(updatePanel.getByText('Slack reply posted.')).toBeVisible()
     await updatePanel.getByRole('button', { name: 'New message' }).click()
     const updateText = updatePanel.getByRole('textbox', { name: 'Update' })
+    await updatePanel.getByRole('button', { name: /Writing tools/ }).click()
     await updatePanel.getByRole('button', { name: 'Format update text' }).click()
     await expect(updateText).toHaveValue(/^\*Update\*/)
     await updatePanel.getByText('RTL', { exact: true }).click()
@@ -157,6 +207,8 @@ test('renders the tray reports KPIs and employee projects', async () => {
         'Jira comment posted, status updated, 1 file uploaded · Slack message and 1 file posted.'
       )
     ).toBeVisible()
+    await updatePanel.getByRole('button', { name: 'Close customer update' }).click()
+    await expect(updatePanel).toBeHidden()
 
     const projectPicker = window.locator('.tray-filters').getByRole('textbox', { name: 'Project' })
     await projectPicker.click()
@@ -202,6 +254,9 @@ test('renders the tray reports KPIs and employee projects', async () => {
       window.evaluate(async () => (await window.hrs.getPreferences()).hiddenProjects.length)
     ).toBe(1)
     await window.getByRole('button', { name: 'Settings' }).click()
+    await expect(window.getByText('Posted to Slack', { exact: true })).toHaveCount(0)
+    await expect(window.getByText('Slack bot permissions', { exact: true })).toHaveCount(0)
+    await expect(window.getByLabel('Private channel ID')).toHaveCount(0)
     const unhideProjects = window.getByRole('button', { name: 'Unhide hidden projects' })
     await expect(unhideProjects).toBeVisible()
     await unhideProjects.click()

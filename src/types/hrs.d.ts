@@ -113,6 +113,7 @@ type JiraStatus = {
   email: string | null
   baseUrl: string
   projectKey: string
+  projectKeys?: string[]
   projectName?: string
   hasCredentials: boolean
 }
@@ -120,6 +121,62 @@ type JiraStatus = {
 type JiraEpic = {
   key: string
   summary: string
+}
+
+export type JiraAgileBoard = {
+  id: number
+  name: string
+  type: string
+  projectKey: string | null
+}
+
+export type JiraSprint = {
+  id: number
+  name: string
+  state: 'active' | 'future' | 'closed'
+  goal: string | null
+  startDate: string | null
+  endDate: string | null
+  originBoardId: number | null
+}
+
+export type JiraSprintIssue = {
+  key: string
+  summary: string
+  statusName: string
+  statusCategoryKey: 'todo' | 'indeterminate' | 'done'
+  assigneeName: string | null
+  timespent: number
+  estimateSeconds: number
+}
+
+export type JiraSprintIssueDetails = {
+  issueKey: string
+  description: string
+  attachments: Array<{
+    id: string
+    name: string
+    mimeType: string | null
+    previewDataUrl?: string | null
+  }>
+  comments: IntegrationRecentMessage[]
+}
+
+export type SupabaseSprintTaskUsage = {
+  issueKey: string
+  taskId: string
+  taskName: string
+  usedSeconds: number
+  budgetSeconds: number | null
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+    completedAt: string | null
+  }>
+  completionAvailable: boolean
+  completionRequiredCount: number
+  completionCount: number
 }
 
 type JiraWorkItem = {
@@ -586,6 +643,8 @@ type AppUpdateState = {
   releaseDate?: string
   changelog?: string[]
   percent?: number
+  manualInstallRequired?: boolean
+  manualInstallUrl?: string
 }
 
 type HrsApi = {
@@ -612,6 +671,26 @@ type HrsApi = {
   setJiraCredentials: (email: string, token: string) => Promise<boolean>
   clearJiraCredentials: () => Promise<boolean>
   getJiraEpics: () => Promise<JiraEpic[]>
+  getJiraBoards: (projectKey: string) => Promise<JiraAgileBoard[]>
+  getJiraSprints: (boardId: number) => Promise<JiraSprint[]>
+  getJiraBacklogIssues: (boardId: number) => Promise<JiraSprintIssue[]>
+  getJiraSprintIssues: (boardId: number, sprintId: number) => Promise<JiraSprintIssue[]>
+  getJiraSprintIssueDetails: (issueKey: string) => Promise<JiraSprintIssueDetails>
+  startJiraSprintIssue: (issueKey: string) => Promise<boolean>
+  completeJiraSprintIssueByConsensus: (payload: {
+    issueKey: string
+    taskId: string
+  }) => Promise<boolean>
+  moveJiraIssuesToSprint: (payload: {
+    sprintId: number
+    issueKeys: string[]
+  }) => Promise<boolean>
+  moveJiraIssuesToBacklog: (issueKeys: string[]) => Promise<boolean>
+  rankJiraIssues: (payload: {
+    issueKeys: string[]
+    rankBeforeIssue?: string | null
+    rankAfterIssue?: string | null
+  }) => Promise<boolean>
   searchJiraUsers: (query: string) => Promise<JiraDirectoryUser[]>
   getJiraTransitions: (issueKey: string) => Promise<JiraTransition[]>
   getJiraRecentComments: (issueKey: string) => Promise<IntegrationRecentMessage[]>
@@ -630,6 +709,10 @@ type HrsApi = {
     attachmentIds: string[]
   }) => Promise<Array<{ id?: string | number; filename?: string; size?: number }>>
   transitionJiraIssue: (payload: {
+    issueKey: string
+    transitionId: string
+  }) => Promise<boolean>
+  transitionJiraSprintIssue: (payload: {
     issueKey: string
     transitionId: string
   }) => Promise<boolean>
@@ -726,6 +809,15 @@ type HrsApi = {
     startDate: string,
     endDate: string
   ) => Promise<SharedFictiveTaskUsage[]>
+  getSupabaseSprintTaskUsage: (
+    issueKeys: string[],
+    startDate: string,
+    endDate: string
+  ) => Promise<SupabaseSprintTaskUsage[]>
+  setSupabaseSprintTaskCompletion: (
+    taskId: string,
+    completed: boolean
+  ) => Promise<{ completedAt: string | null }>
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string
@@ -901,7 +993,10 @@ type HrsApi = {
     username?: string | null
     password?: string | null
   }) => Promise<MeetingsResult>
-  selectMeetingsDuoAction: (action: 'push' | 'call') => Promise<boolean>
+  selectMeetingsDuoAction: (
+    action: 'push' | 'call' | 'passcode',
+    passcode?: string | null
+  ) => Promise<boolean>
   onMeetingsDuoActionRequired: (handler: () => void) => () => void
   onMeetingsProgress: (handler: (message: string) => void) => () => void
   getAgenda: (options: {
@@ -931,6 +1026,9 @@ type HrsApi = {
   openReportsWindow: () => Promise<boolean>
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
+  openSprintWindow: () => Promise<boolean>
+  closeSprintWindow: () => Promise<boolean>
+  getRequestedMainView: () => Promise<'default' | 'sprints'>
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') => Promise<{
     nativeLiquidGlass: boolean
     supported: boolean
@@ -940,8 +1038,10 @@ type HrsApi = {
   checkForUpdates: () => Promise<boolean>
   downloadUpdate: () => Promise<boolean>
   installUpdate: () => Promise<boolean>
+  openManualUpdateInstaller: () => Promise<boolean>
   onUpdateState: (handler: (state: AppUpdateState) => void) => () => void
   onTrayOpened: (handler: () => void) => () => void
+  onMainViewRequested: (handler: (view: 'default' | 'sprints') => void) => () => void
   onTrayClosing: (
     handler: (reason: 'blur' | 'toggle' | 'open-main' | 'dismiss') => void
   ) => () => void

@@ -43,8 +43,16 @@ echo "Installing to: $APP_TARGET"
 osascript -e 'tell application "HRS Desktop" to quit' >/dev/null 2>&1 || true
 pkill -f "HRS Desktop.app" >/dev/null 2>&1 || true
 
-sudo rm -rf "$APP_TARGET"
-sudo ditto "$APP_SOURCE" "$APP_TARGET"
+if [[ -w "$(dirname "$APP_TARGET")" ]]; then
+  rm -rf "$APP_TARGET"
+  ditto "$APP_SOURCE" "$APP_TARGET"
+else
+  # Authenticate before changing the existing installation so a cancelled password
+  # prompt can never leave the user with the previous app already removed.
+  sudo -v
+  sudo rm -rf "$APP_TARGET"
+  sudo ditto "$APP_SOURCE" "$APP_TARGET"
+fi
 xattr -dr com.apple.quarantine "$APP_TARGET" >/dev/null 2>&1 || true
 
 echo "Installed successfully."

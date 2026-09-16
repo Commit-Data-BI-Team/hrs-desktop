@@ -1,5 +1,86 @@
 # HRS Desktop Changelog
 
+## Unreleased
+
+## 1.0.19
+
+### Jira sprint management
+
+- Added a compact Jira Sprint Board directly inside the normal HRS tray window, with status tabs and Supabase contributor totals that do not open another window.
+- Added an explicit **Expand** action that opens the existing full board inside the main HRS application window; the expanded view closes with its own top-right **X**.
+- Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
+- Shows the selected sprint's Israel-local start and end dates in both compact and expanded views.
+- Shows calendar days remaining until the sprint end and combined mission hours across all sprint tasks, including total Supabase hours used versus the combined task budgets.
+- Added a searchable **Reporter** filter sourced from Supabase hours, with each employee's combined sprint hours in the selector and card filtering across every status column.
+- Preloads the selected sprint, Jira missions, and Supabase employee totals while other tray tabs are open, caches the last complete view for instant rendering, and refreshes details quietly every minute without clearing the screen into loading states.
+- Lets authenticated employees move Jira items from **To Do** to **In Progress** directly from the Sprint Board.
+- Added per-reporter **Mark done** confirmations stored in Supabase, including the exact Israel-local confirmation date and time beside every reporting employee.
+- Automatically transitions the Jira work item to **Done** only after every employee who reported hours on the shared task has confirmed completion; the consensus is revalidated in the main process before Jira is changed.
+- Added expandable Jira task details with the complete description, downloadable attachments and image previews, and the latest Jira comments.
+
+> **Administrator note:** Apply `supabase/migrations/005_sprint_task_completions.sql` before using collaborative sprint completion.
+- Keeps active sprints editable and displays completed sprints in a clear read-only history view.
+- Uses the authenticated Supabase profile role for access control: managers can drag, transition, and rank Jira cards, while employees receive the complete board as a read-only view.
+- Enforces the manager requirement again in the main-process Jira mutation handlers so employee access cannot bypass the disabled UI controls.
+- Added drag-and-drop columns for **Backlog**, **To Do**, **In Progress**, and **Done**, with changes saved immediately to Jira.
+- Supports moving issues into or out of a sprint, transitioning their Jira status, and reordering cards using Jira rank.
+- Resolves Jira cards to their Supabase shared tasks and shows every reporting employee with their individual Supabase hours, total used time, and remaining shared-task budget for the selected sprint dates.
+- Added optimistic updates, automatic rollback on Jira errors, a one-click **Undo**, manual refresh, sprint goals, assignees, time progress, and HRS-linked issue badges.
+- Keeps each column independently scrollable and adapts the board to smaller Windows and macOS displays without forcing the app fullscreen.
+
+### Local recent-shortcut names
+
+- Added a right-click **Change display name** action to regular HRS recent shortcuts, matching the existing shared-task rename workflow.
+- Replaces the complete shortcut label—customer, arrow, and task—with one custom local name, rather than changing only the task portion.
+- Limits the alias to that recent-shortcut view; task selectors, reports, HRS logging, Supabase synchronization, and source data keep the original customer, task name, and ID.
+- Persists shortcut aliases locally by their stable route and provides a one-click **Restore original** action.
+
+### Simpler Jira and Slack updates
+
+- Rebuilt the customer-update sheet around the message composer and Send action, with compact **Writing tools**, **Delivery**, and **Conversation** disclosures instead of showing every control simultaneously.
+- Keeps Jira routing, optional status changes, Slack channel selection, recent threads, attachments, formatting, RTL, and mentions available without overwhelming the default view.
+- Moved Jira worklog controls directly below the Task selector and restored comfortable spacing throughout the remaining Quick Log form.
+- Makes Jira logging mandatory and non-disableable for fictive/shared tasks, automatically locks the matching Jira work item, and leaves Jira logging off by default for regular HRS tasks.
+- Reduced the mandatory fictive-task Jira UI to one read-only **Jira work item** field; the worklog explanation and Required badge stay hidden while enforcement continues internally.
+- Removed the verbose Slack posting checklist, bot-scope tutorial, and manual private-channel-ID field; customer mappings now use only channels returned by the normal Slack picker.
+
+### Compact tray header
+
+- Removed the Clockify action from the Quick Log meeting bar and placed the clickable **Missing hours** and **Unreported days** indicators in its former space.
+- Reduced the gap between the meeting/status bar and calendar and moved the month, navigation, and calendar content higher in the tray.
+- Stacked **Close** above **Pin** on the right edge and reserved navigation space so the Settings icon never overlaps the pin control.
+- Collapsed the Overall Project and Shared Task contributor breakdowns by default, keeping only each title, hours, percentage, and gauge visible until its chevron is expanded.
+- Removed legacy negative margins that pulled gauges and the duration line into adjacent controls, restoring clear vertical spacing around Task, Jira, gauges, time fields, and comments.
+- Fixed the Quick Log **Overall Project** gauge so it keeps the complete Supabase project total, including hours from other tasks in the same project, while the **Shared Task** gauge remains limited to the selected task.
+- Made compact Sprint Board columns use a dedicated, visible vertical scroll area so expanded descriptions, attachments, and comments remain reachable without resizing the HRS tray.
+
+### Update reliability
+
+- Checks for updates automatically at every app launch and whenever the tray, Reports, Settings, or Meetings window is opened.
+- Keeps the **Update Available** bubble visible without requiring users to press **Check now**, while deduplicating simultaneous background checks.
+- Detects incompatible legacy macOS signatures, preserves the release changelog, and offers the correct full Mac installer for the required one-time replacement.
+- Requires production macOS releases to use a consistent Developer ID certificate so a broken ad-hoc-signed automatic update cannot be published again.
+
+### Microsoft Teams meeting synchronization
+
+- Fixed meeting sync incorrectly showing Windows Python instructions on macOS.
+- Fixed the Python compatibility probe so an installed macOS Python runtime is detected correctly.
+- Added explicit macOS Python discovery for Apple, Homebrew, and python.org installations when the bundled runtime is unavailable.
+- Made architecture-specific macOS packages embed the complete calendar runtime, matching the Windows installer behavior.
+- Detects rejected Microsoft usernames or passwords immediately, shows the real recovery action instead of waiting for a token timeout, and reopens the meeting credentials for correction.
+- Verifies DUO server delivery before displaying a push/call success state, detects expired or denied DUO prompts, and tells users to open Duo Mobile manually when phone notifications do not appear.
+- Added a **Use Duo passcode** fallback so Microsoft meeting sync can finish headlessly even when Duo push notifications and phone calls are not delivered.
+- Replaced the blind post-DUO sleep and 90-second fallback with a bounded redirect watcher that captures Microsoft’s token as soon as Graph Explorer makes its authenticated request.
+- Switched meeting authentication to Graph Explorer's native MSAL/PKCE sign-in, handles the post-DUO “Stay signed in?” popup safely, and captures the usable bearer token from the first authenticated Graph request.
+- Accepts large real-world attendee lists from company-wide meetings while retaining bounded per-field, per-list, meeting-count, and total-payload validation.
+- Added compact yellow **Missing hours** and red **Unreported days** indicators above the tray calendar, with live counts that exclude weekends, future dates, HRS holidays, and Israeli `yomTov` holidays.
+- Made each reporting indicator clickable: the chosen category stays bright while unrelated calendar days dim, and clicking it again restores the complete month.
+- Replaced the large **Update Jira & Slack** launcher and gauge-level icons with one permanent message bubble beside Task, available for both regular HRS tasks and shared tasks.
+- Shared-task selection now automatically enables Jira logging and selects that task's created Jira issue; switching shared tasks switches the work item as well.
+- Changed the task-side Jira/Slack bubble to open a smooth in-tray slide-over sheet, preserving the tray's size and scroll position instead of expanding and repositioning the window.
+- Suppressed native tray resize/reposition requests while the Jira/Slack sheet mounts, animates, and unmounts, preventing the tray from appearing to close and reopen.
+- Expanded Jira from the hard-coded VDA project to **VDA + LSM**: epics, customer mappings, mission creation, worklogs, deletion reconciliation, budgets, and task updates now support either project.
+
 ## 1.0.18
 
 ### Shared project gauges

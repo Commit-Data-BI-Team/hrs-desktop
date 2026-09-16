@@ -62,6 +62,17 @@ export default async function afterPack(context) {
   const entitlementsPath = path.join(context.packager.projectDir, 'build', 'entitlements.mac.plist')
 
   const signingIdentity = process.env.HRS_MAC_SIGN_IDENTITY?.trim() || '-'
+  const hasElectronBuilderCertificate = Boolean(process.env.CSC_LINK?.trim())
+
+  if (
+    process.env.HRS_REQUIRE_MAC_SIGNING === '1' &&
+    !hasElectronBuilderCertificate &&
+    signingIdentity === '-'
+  ) {
+    throw new Error(
+      `${PREFIX} production macOS release requires CSC_LINK and CSC_KEY_PASSWORD (or HRS_MAC_SIGN_IDENTITY)`
+    )
+  }
 
   console.log(
     `${PREFIX} start platform=${context.electronPlatformName} arch=${context.arch} ci=${process.env.CI || 'false'} identity=${signingIdentity} appPath=${appPath}`
@@ -79,6 +90,10 @@ export default async function afterPack(context) {
   await stripBundleMetadata(appPath)
   await run('/usr/bin/xattr', ['-cr', appPath])
   await run('/usr/sbin/dot_clean', ['-m', appPath])
+  if (hasElectronBuilderCertificate) {
+    console.log(`${PREFIX} metadata cleaned; Developer ID signing delegated to electron-builder`)
+    return
+  }
   await run('/usr/bin/codesign', [
     '--force',
     '--deep',

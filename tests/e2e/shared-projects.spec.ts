@@ -6,6 +6,7 @@ import {
   getSharedProjectCapMinutes,
   getSharedProjectKey,
   mergeProjectUsageContributors,
+  resolveOverallProjectUsage,
   replaceEmployeeEntriesWithLive,
   type SharedProjectSourceEntry
 } from '../../src/sharedProjects'
@@ -170,5 +171,34 @@ test('adds an employee across all shared tasks in the same overall project', () 
 
   expect(employees).toEqual([
     { employeeId: 1527, employeeName: 'Chen Aharon', seconds: 9000 }
+  ])
+})
+
+test('overall gauge prefers the complete Supabase project usage over a partial task reconstruction', () => {
+  const usage = resolveOverallProjectUsage(
+    {
+      usedSeconds: 53.5 * 60 * 60,
+      employees: [
+        { employeeId: 1, employeeName: 'Vitaly', seconds: 29 * 60 * 60 },
+        { employeeId: 2, employeeName: 'Rotem', seconds: 18 * 60 * 60 },
+        { employeeId: 3, employeeName: 'Talia', seconds: 6.5 * 60 * 60 }
+      ]
+    },
+    {
+      ready: true,
+      usedSeconds: 35.5 * 60 * 60,
+      employees: [
+        { employeeId: 1, employeeName: 'Vitaly', seconds: 20 * 60 * 60 },
+        { employeeId: 2, employeeName: 'Rotem', seconds: 9 * 60 * 60 },
+        { employeeId: 3, employeeName: 'Talia', seconds: 6.5 * 60 * 60 }
+      ]
+    }
+  )
+
+  expect(usage?.usedSeconds).toBe(53.5 * 60 * 60)
+  expect(usage?.employees.map(employee => employee.seconds)).toEqual([
+    29 * 60 * 60,
+    18 * 60 * 60,
+    6.5 * 60 * 60
   ])
 })

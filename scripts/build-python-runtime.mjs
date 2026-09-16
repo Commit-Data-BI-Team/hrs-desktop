@@ -4,6 +4,13 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
+const requestedArchitecture = process.env.HRS_PYTHON_RUNTIME_ARCH?.trim()
+if (requestedArchitecture && requestedArchitecture !== process.arch) {
+  throw new Error(
+    `Cannot build the ${requestedArchitecture} calendar runtime on a ${process.arch} host. ` +
+      'Run this package on a matching macOS architecture.'
+  )
+}
 const workRoot = path.join(root, 'work', 'python-runtime-builder')
 const builderVenv = path.join(workRoot, 'venv')
 const builderPython =

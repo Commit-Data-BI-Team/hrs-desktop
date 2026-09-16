@@ -56,6 +56,23 @@ export type ProjectUsageContributor = {
   seconds: number
 }
 
+export type ProjectUsageSnapshot = {
+  usedSeconds: number
+  employees: ProjectUsageContributor[]
+}
+
+export function resolveOverallProjectUsage(
+  authoritativeUsage: ProjectUsageSnapshot | null | undefined,
+  reconstructedUsage: (ProjectUsageSnapshot & { ready: boolean }) | null | undefined
+): ProjectUsageSnapshot | null {
+  if (authoritativeUsage) return authoritativeUsage
+  if (!reconstructedUsage?.ready) return null
+  return {
+    usedSeconds: reconstructedUsage.usedSeconds,
+    employees: reconstructedUsage.employees
+  }
+}
+
 export function mergeProjectUsageContributors(
   projectEmployees: ProjectUsageContributor[],
   sharedTaskEmployeeGroups: ProjectUsageContributor[][]

@@ -58,6 +58,30 @@ type SharedFictiveTaskUsageRow = {
   employees?: unknown
 }
 
+type SprintTaskUsage = {
+  issueKey: string
+  taskId: string
+  taskName: string
+  usedSeconds: number
+  budgetSeconds: number | null
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+    completedAt: string | null
+  }>
+  completionAvailable: boolean
+  completionRequiredCount: number
+  completionCount: number
+}
+
+type SprintTaskCompletionStatusRow = {
+  task_id: string
+  required_count: number
+  completed_count: number
+  completions?: unknown
+}
+
 type MissionStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived'
 
 type SharedFictiveTaskRow = {
@@ -91,6 +115,7 @@ type SharedProjectHourBudgetRow = {
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const JIRA_ISSUE_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
 const MISSION_STATUSES = new Set<MissionStatus>([
   'todo',
   'in_progress',
@@ -99,6 +124,12 @@ const MISSION_STATUSES = new Set<MissionStatus>([
   'archived'
 ])
 let cachedSupabaseClient: { configKey: string; promise: Promise<SupabaseClient> } | null = null
+const e2eSprintCompletionDates = new Map<string, Map<number, string>>([
+  [
+    '00000000-0000-4000-8000-000000000601',
+    new Map([[1, '2026-09-15T08:30:00.000Z']])
+  ]
+])
 
 function cleanString(value: unknown, max = 500) {
   return typeof value === 'string' ? value.trim().slice(0, max) : ''
@@ -228,6 +259,44 @@ function normalizeUsageEmployees(value: unknown) {
         Boolean(employee)
     )
     .sort((a, b) => b.seconds - a.seconds || a.employeeName.localeCompare(b.employeeName))
+}
+
+function normalizeSprintCompletions(value: unknown) {
+  if (!Array.isArray(value)) {
+    return new Map<number, { employeeName: string; completedAt: string | null }>()
+  }
+  return new Map(
+    value
+      .map(item => {
+        const record = item && typeof item === 'object' ? (item as Record<string, unknown>) : {}
+        const employeeId = cleanNumber(record.employeeId ?? record.employee_id)
+        if (employeeId === null) return null
+        const employeeName =
+          cleanString(record.employeeName ?? record.employee_name, 250) ||
+          `Employee ${employeeId}`
+        const completedAt = cleanNullableString(record.completedAt ?? record.completed_at, 100)
+        return [employeeId, { employeeName, completedAt }] as const
+      })
+      .filter(
+        (
+          item
+        ): item is readonly [number, { employeeName: string; completedAt: string | null }] =>
+          Boolean(item)
+      )
+  )
+}
+
+function isSprintCompletionSchemaMissing(
+  error: { code?: string; message?: string } | null | undefined
+) {
+  const message = error?.message?.toLowerCase() ?? ''
+  return (
+    error?.code === '42P01' ||
+    error?.code === '42883' ||
+    message.includes('sprint_task_completions') ||
+    message.includes('get_sprint_task_completion_status') ||
+    message.includes('set_sprint_task_completion')
+  )
 }
 
 function isSharedUsageFunctionMissing(
@@ -360,6 +429,80 @@ async function getProfile(client: SupabaseClient): Promise<SupabaseProfile | nul
   return (data as SupabaseProfile | null) ?? null
 }
 
+export async function requireSupabaseManager() {
+  if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+    if ((process.env.HRS_SPRINT_E2E_ROLE ?? 'manager') !== 'manager') {
+      throw new Error('Only managers can edit the Jira Sprint Board.')
+    }
+    return
+  }
+  const client = await createSupabaseClient()
+  const profile = await getProfile(client)
+  if (profile?.role !== 'manager') {
+    throw new Error('Only managers can edit the Jira Sprint Board.')
+  }
+}
+
+export async function requireSupabaseUser() {
+  if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') return
+  const client = await createSupabaseClient()
+  const user = await getAuthenticatedSupabaseUser(client)
+  if (!user) throw new Error('Supabase authentication is required.')
+}
+
+export async function requireSprintTaskCompletionConsensus(taskId: string, issueKey: string) {
+  const safeTaskId = cleanUuid(taskId, true) as string
+  const safeIssueKey = cleanString(issueKey, 64).toUpperCase()
+  if (!JIRA_ISSUE_KEY_REGEX.test(safeIssueKey)) throw new Error('Invalid Jira issue key.')
+  if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+    const requiredByTask = new Map<string, number[]>([
+      ['00000000-0000-4000-8000-000000000601', [1, 2]],
+      ['00000000-0000-4000-8000-000000000602', [2]]
+    ])
+    const required = requiredByTask.get(safeTaskId) ?? []
+    const expectedIssueByTask = new Map<string, string>([
+      ['00000000-0000-4000-8000-000000000601', 'VDA-601'],
+      ['00000000-0000-4000-8000-000000000602', 'VDA-602']
+    ])
+    if (expectedIssueByTask.get(safeTaskId) !== safeIssueKey) {
+      throw new Error('The Supabase task is not linked to this Jira issue.')
+    }
+    const completions = e2eSprintCompletionDates.get(safeTaskId) ?? new Map<number, string>()
+    if (!required.length || !required.every(employeeId => completions.has(employeeId))) {
+      throw new Error('Every reporting employee must mark this task done first.')
+    }
+    return
+  }
+  const client = await createSupabaseClient()
+  const user = await getAuthenticatedSupabaseUser(client)
+  if (!user) throw new Error('Supabase authentication is required.')
+  const { data: linkedTask, error: linkedTaskError } = await client
+    .from('shared_fictive_tasks')
+    .select('id')
+    .eq('id', safeTaskId)
+    .eq('jira_issue_key', safeIssueKey)
+    .maybeSingle()
+  if (linkedTaskError) throw new Error(linkedTaskError.message)
+  if (!linkedTask) throw new Error('The Supabase task is not linked to this Jira issue.')
+  const { data, error } = await client.rpc('get_sprint_task_completion_status', {
+    task_ids_input: [safeTaskId]
+  })
+  if (error) {
+    if (isSprintCompletionSchemaMissing(error)) {
+      throw new Error(
+        'Sprint completion confirmations are not installed. Apply Supabase migration 005_sprint_task_completions.sql.'
+      )
+    }
+    throw new Error(error.message)
+  }
+  const status = ((data ?? []) as SprintTaskCompletionStatusRow[])[0]
+  const required = Math.max(0, Number(status?.required_count) || 0)
+  const completed = Math.max(0, Number(status?.completed_count) || 0)
+  if (!required || completed < required) {
+    throw new Error('Every reporting employee must mark this task done first.')
+  }
+}
+
 function normalizeReportRows(rows: unknown): WorkReportInput[] {
   if (!Array.isArray(rows)) throw new Error('Reports payload must be an array')
   return rows.map((row, index) => {
@@ -395,6 +538,22 @@ export function registerSupabaseIpc() {
   void ensureSupabaseConfirmationServer()
 
   ipcMain.handle('supabase:getStatus', async () => {
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const role = process.env.HRS_SPRINT_E2E_ROLE === 'employee' ? 'employee' : 'manager'
+      return {
+        configured: true,
+        url: 'https://e2e.supabase.invalid',
+        hasPublishableKey: true,
+        email: `${role}@example.com`,
+        profile: {
+          id: `e2e-${role}`,
+          email: `${role}@example.com`,
+          employee_id: role === 'manager' ? 1 : 2,
+          display_name: role === 'manager' ? 'E2E Manager' : 'E2E Employee',
+          role
+        }
+      }
+    }
     const config = getSupabaseConfig()
     const client = await createSupabaseClient()
     const user = await getAuthenticatedSupabaseUser(client)
@@ -486,6 +645,18 @@ export function registerSupabaseIpc() {
 
   ipcMain.handle('supabase:updateProfile', async (_event, payload: unknown) => {
     const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const role = process.env.HRS_SPRINT_E2E_ROLE === 'employee' ? 'employee' : 'manager'
+      return {
+        id: `e2e-${role}`,
+        email: `${role}@example.com`,
+        employee_id: cleanNumber(record.employeeId) ?? (role === 'manager' ? 1 : 2),
+        display_name:
+          cleanNullableString(record.displayName, 250) ??
+          (role === 'manager' ? 'E2E Manager' : 'E2E Employee'),
+        role
+      } satisfies SupabaseProfile
+    }
     const client = await createSupabaseClient()
     const { data, error } = await client.rpc('update_own_profile', {
       display_name_input: cleanNullableString(record.displayName, 250),
@@ -618,6 +789,9 @@ export function registerSupabaseIpc() {
   })
 
   ipcMain.handle('supabase:getSharedFictiveTasks', async () => {
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      return { available: true, globalHoursAvailable: true, tasks: [] }
+    }
     const client = await createSupabaseClient()
     const user = await getAuthenticatedSupabaseUser(client)
     if (!user) {
@@ -864,6 +1038,218 @@ export function registerSupabaseIpc() {
       lastReportedAt: row.last_reported_at ?? null,
       employees: normalizeUsageEmployees(row.employees)
     }))
+  })
+
+  ipcMain.handle('supabase:getSprintTaskUsage', async (_event, payload: unknown) => {
+    const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {}
+    const issueKeys = Array.from(
+      new Set(
+        (Array.isArray(record.issueKeys) ? record.issueKeys : [])
+          .slice(0, 300)
+          .map(value => cleanString(value, 64).toUpperCase())
+          .filter(value => JIRA_ISSUE_KEY_REGEX.test(value))
+      )
+    )
+    const startDate = validateDate(record.startDate)
+    const endDate = validateDate(record.endDate)
+    if (endDate < startDate) throw new Error('Invalid sprint usage date range')
+    if (!issueKeys.length) return []
+
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const fixtures: Record<string, SprintTaskUsage> = {
+        'VDA-600': {
+          issueKey: 'VDA-600',
+          taskId: '00000000-0000-4000-8000-000000000600',
+          taskName: 'Backlog discovery',
+          usedSeconds: 0,
+          budgetSeconds: 8 * 3600,
+          employees: [],
+          completionAvailable: true,
+          completionRequiredCount: 0,
+          completionCount: 0
+        },
+        'VDA-601': {
+          issueKey: 'VDA-601',
+          taskId: '00000000-0000-4000-8000-000000000601',
+          taskName: 'Active sprint task',
+          usedSeconds: 2 * 3600,
+          budgetSeconds: 8 * 3600,
+          employees: [
+            { employeeId: 1, employeeName: 'Dror Rahamim', seconds: 90 * 60, completedAt: null },
+            { employeeId: 2, employeeName: 'Vitaly Shechtman', seconds: 30 * 60, completedAt: null }
+          ],
+          completionAvailable: true,
+          completionRequiredCount: 2,
+          completionCount: 0
+        },
+        'VDA-590': {
+          issueKey: 'VDA-590',
+          taskId: '00000000-0000-4000-8000-000000000590',
+          taskName: 'Previous sprint delivery',
+          usedSeconds: 6 * 3600,
+          budgetSeconds: 8 * 3600,
+          employees: [
+            { employeeId: 1, employeeName: 'Dror Rahamim', seconds: 6 * 3600, completedAt: null }
+          ],
+          completionAvailable: true,
+          completionRequiredCount: 1,
+          completionCount: 0
+        },
+        'LSM-30': {
+          issueKey: 'LSM-30',
+          taskId: '00000000-0000-4000-8000-000000000030',
+          taskName: 'LSM backlog item',
+          usedSeconds: 0,
+          budgetSeconds: 4 * 3600,
+          employees: [],
+          completionAvailable: true,
+          completionRequiredCount: 0,
+          completionCount: 0
+        },
+        'VDA-602': {
+          issueKey: 'VDA-602',
+          taskId: '00000000-0000-4000-8000-000000000602',
+          taskName: 'Employee-startable task',
+          usedSeconds: 45 * 60,
+          budgetSeconds: 4 * 3600,
+          employees: [
+            { employeeId: 2, employeeName: 'Vitaly Shechtman', seconds: 45 * 60, completedAt: null }
+          ],
+          completionAvailable: true,
+          completionRequiredCount: 1,
+          completionCount: 0
+        }
+      }
+      return issueKeys
+        .map(issueKey => fixtures[issueKey])
+        .filter(Boolean)
+        .map(usage => {
+          const dates = e2eSprintCompletionDates.get(usage.taskId) ?? new Map<number, string>()
+          const employees = usage.employees.map(employee => ({
+            ...employee,
+            completedAt: dates.get(employee.employeeId) ?? null
+          }))
+          return {
+            ...usage,
+            employees,
+            completionCount: employees.filter(employee => employee.completedAt).length
+          }
+        })
+    }
+
+    const client = await createSupabaseClient()
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) return []
+    const { data: taskData, error: taskError } = await client
+      .from('shared_fictive_tasks')
+      .select('id,jira_issue_key,name,planned_seconds,capped_seconds')
+      .in('jira_issue_key', issueKeys)
+    if (taskError) {
+      if (isSharedSchemaMissing(taskError)) return []
+      throw new Error(taskError.message)
+    }
+    const tasks = (taskData ?? []) as Array<
+      Pick<
+        SharedFictiveTaskRow,
+        'id' | 'jira_issue_key' | 'name' | 'planned_seconds' | 'capped_seconds'
+      >
+    >
+    if (!tasks.length) return []
+    const { data: usageData, error: usageError } = await client.rpc(
+      'get_shared_fictive_task_usage',
+      {
+        task_ids: tasks.map(task => task.id),
+        start_date_input: startDate,
+        end_date_input: endDate
+      }
+    )
+    if (usageError) {
+      if (isSharedUsageFunctionMissing(usageError)) {
+        throw new Error(
+          'Shared task date-aware usage is not installed. Apply Supabase migration 004_usage_date_boundaries.sql.'
+        )
+      }
+      throw new Error(usageError.message)
+    }
+    const usageByTaskId = new Map(
+      ((usageData ?? []) as SharedFictiveTaskUsageRow[]).map(row => [row.task_id, row])
+    )
+    const { data: completionData, error: completionError } = await client.rpc(
+      'get_sprint_task_completion_status',
+      { task_ids_input: tasks.map(task => task.id) }
+    )
+    const completionAvailable = !completionError
+    if (completionError && !isSprintCompletionSchemaMissing(completionError)) {
+      throw new Error(completionError.message)
+    }
+    const completionByTaskId = new Map(
+      ((completionData ?? []) as SprintTaskCompletionStatusRow[]).map(row => [row.task_id, row])
+    )
+    return tasks.map(task => {
+      const usage = usageByTaskId.get(task.id)
+      const completion = completionByTaskId.get(task.id)
+      const completionDates = normalizeSprintCompletions(completion?.completions)
+      const usageEmployees = normalizeUsageEmployees(usage?.employees).map(employee => ({
+        ...employee,
+        completedAt: completionDates.get(employee.employeeId)?.completedAt ?? null
+      }))
+      const usageEmployeeIds = new Set(usageEmployees.map(employee => employee.employeeId))
+      const employees = [
+        ...usageEmployees,
+        ...Array.from(completionDates.entries())
+          .filter(([employeeId]) => !usageEmployeeIds.has(employeeId))
+          .map(([employeeId, completionEntry]) => ({
+            employeeId,
+            employeeName: completionEntry.employeeName,
+            seconds: 0,
+            completedAt: completionEntry.completedAt
+          }))
+      ].sort((left, right) => right.seconds - left.seconds || left.employeeName.localeCompare(right.employeeName))
+      return {
+        issueKey: task.jira_issue_key,
+        taskId: task.id,
+        taskName: task.name,
+        usedSeconds: Math.max(0, Number(usage?.used_seconds) || 0),
+        budgetSeconds: task.capped_seconds ?? task.planned_seconds ?? null,
+        employees,
+        completionAvailable,
+        completionRequiredCount: Math.max(0, Number(completion?.required_count) || 0),
+        completionCount: Math.max(0, Number(completion?.completed_count) || 0)
+      } satisfies SprintTaskUsage
+    })
+  })
+
+  ipcMain.handle('supabase:setSprintTaskCompletion', async (_event, payload: unknown) => {
+    const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {}
+    const taskId = cleanUuid(record.taskId, true) as string
+    const completed = record.completed !== false
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const role = process.env.HRS_SPRINT_E2E_ROLE === 'employee' ? 'employee' : 'manager'
+      const employeeId = role === 'employee' ? 2 : 1
+      const byEmployee = e2eSprintCompletionDates.get(taskId) ?? new Map<number, string>()
+      if (completed) byEmployee.set(employeeId, new Date().toISOString())
+      else byEmployee.delete(employeeId)
+      e2eSprintCompletionDates.set(taskId, byEmployee)
+      return { completedAt: byEmployee.get(employeeId) ?? null }
+    }
+    const client = await createSupabaseClient()
+    const { data, error } = await client.rpc('set_sprint_task_completion', {
+      task_id_input: taskId,
+      completed_input: completed
+    })
+    if (error) {
+      if (isSprintCompletionSchemaMissing(error)) {
+        throw new Error(
+          'Sprint completion confirmations are not installed. Apply Supabase migration 005_sprint_task_completions.sql.'
+        )
+      }
+      throw new Error(error.message)
+    }
+    return { completedAt: typeof data === 'string' ? data : null }
   })
 
   ipcMain.handle('supabase:syncWorkReports', async (_event, payload: unknown) => {

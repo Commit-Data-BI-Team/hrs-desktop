@@ -40,6 +40,9 @@ const REQUIRED_PACKAGES = [
   'urllib3==1.26.20'
 ]
 const DUO_ACTION_REQUIRED_SIGNAL = '__HRS_DUO_ACTION_REQUIRED__'
+const MAX_MEETINGS_JSON_BYTES = 25 * 1024 * 1024
+const MAX_PARTICIPANTS_TEXT_LENGTH = 20_000
+const MAX_MEETING_EMAILS = 1_000
 
 type ActiveMeetingsRun = {
   child: ChildProcessWithoutNullStreams
@@ -104,13 +107,15 @@ function validateMeetingsResultPayload(payload: unknown): MeetingsResult {
         : validateNumberRange(item.attendanceCount, 0, 10000, { integer: true })
     const validateEmailList = (value: unknown): string[] => {
       if (!Array.isArray(value)) return []
-      return value.slice(0, 200).map(email => validateStringLength(email, 0, 320))
+      return value
+        .slice(0, MAX_MEETING_EMAILS)
+        .map(email => validateStringLength(email, 0, 320))
     }
     return {
       subject: validateStringLength(item.subject, 0, 500),
       startTime: validateStringLength(item.startTime, 1, 64),
       endTime: validateStringLength(item.endTime, 1, 64),
-      participants: validateStringLength(item.participants, 0, 2000),
+      participants: validateStringLength(item.participants, 0, MAX_PARTICIPANTS_TEXT_LENGTH),
       attendanceCount: attendanceCountRaw,
       attendanceEmails: validateEmailList(item.attendanceEmails),
       attendeeEmails: validateEmailList(item.attendeeEmails)
@@ -167,8 +172,18 @@ function sanitizeScriptError(stderr: string) {
 }
 
 export function registerMeetingsIpc() {
-  ipcMain.handle('meetings:duo-action', async (event, action: unknown) => {
-    const selected = validateEnum(action, ['push', 'call'] as const)
+  ipcMain.handle('meetings:duo-action', async (event, payload: unknown) => {
+    const safe = validateExactObject<{ action?: unknown; passcode?: unknown }>(
+      payload ?? {},
+      ['action', 'passcode'],
+      'DUO verification choice'
+    )
+    const selected = validateEnum(safe.action, ['push', 'call', 'passcode'] as const)
+    const passcode =
+      validateOptionalString(safe.passcode, { min: 0, max: 10, allowNull: true }) ?? null
+    if (selected === 'passcode' && (!passcode || !/^\d{4,10}$/.test(passcode))) {
+      throw new Error('Enter a valid numeric DUO passcode.')
+    }
     const activeRun = activeMeetingsRuns.get(event.sender.id)
     if (!activeRun || !activeRun.awaitingDuoAction) {
       throw new Error('There is no pending DUO verification choice for this meeting sync.')
@@ -176,7 +191,9 @@ export function registerMeetingsIpc() {
     if (!activeRun.child.stdin.writable || activeRun.child.stdin.destroyed) {
       throw new Error('The meeting sync is no longer accepting a DUO verification choice.')
     }
-    activeRun.child.stdin.write(`${selected}\n`)
+    activeRun.child.stdin.write(
+      `${JSON.stringify({ action: selected, ...(passcode ? { passcode } : {}) })}\n`
+    )
     activeRun.awaitingDuoAction = false
     return true
   })
@@ -280,6 +297,9 @@ export function registerMeetingsIpc() {
           return
         }
         try {
+          if (Buffer.byteLength(stdout, 'utf8') > MAX_MEETINGS_JSON_BYTES) {
+            throw new Error('Meetings response is larger than the supported 25 MB limit')
+          }
           const parsed = JSON.parse(stdout)
           resolve(validateMeetingsResultPayload(parsed))
         } catch (err) {

@@ -25,6 +25,27 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:setCredentials', email, token),
   clearJiraCredentials: () => ipcRenderer.invoke('jira:clearCredentials'),
   getJiraEpics: () => ipcRenderer.invoke('jira:getEpics'),
+  getJiraBoards: (projectKey: string) => ipcRenderer.invoke('jira:getBoards', projectKey),
+  getJiraSprints: (boardId: number) => ipcRenderer.invoke('jira:getSprints', boardId),
+  getJiraBacklogIssues: (boardId: number) =>
+    ipcRenderer.invoke('jira:getBacklogIssues', boardId),
+  getJiraSprintIssues: (boardId: number, sprintId: number) =>
+    ipcRenderer.invoke('jira:getSprintIssues', boardId, sprintId),
+  getJiraSprintIssueDetails: (issueKey: string) =>
+    ipcRenderer.invoke('jira:getSprintIssueDetails', issueKey),
+  startJiraSprintIssue: (issueKey: string) =>
+    ipcRenderer.invoke('jira:startSprintIssue', issueKey),
+  completeJiraSprintIssueByConsensus: (payload: { issueKey: string; taskId: string }) =>
+    ipcRenderer.invoke('jira:completeSprintIssueByConsensus', payload),
+  moveJiraIssuesToSprint: (payload: { sprintId: number; issueKeys: string[] }) =>
+    ipcRenderer.invoke('jira:moveIssuesToSprint', payload),
+  moveJiraIssuesToBacklog: (issueKeys: string[]) =>
+    ipcRenderer.invoke('jira:moveIssuesToBacklog', issueKeys),
+  rankJiraIssues: (payload: {
+    issueKeys: string[]
+    rankBeforeIssue?: string | null
+    rankAfterIssue?: string | null
+  }) => ipcRenderer.invoke('jira:rankIssues', payload),
   searchJiraUsers: (query: string) => ipcRenderer.invoke('jira:searchUsers', query),
   getJiraTransitions: (issueKey: string) =>
     ipcRenderer.invoke('jira:getTransitions', issueKey),
@@ -42,6 +63,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:uploadAttachments', payload),
   transitionJiraIssue: (payload: { issueKey: string; transitionId: string }) =>
     ipcRenderer.invoke('jira:transitionIssue', payload),
+  transitionJiraSprintIssue: (payload: { issueKey: string; transitionId: string }) =>
+    ipcRenderer.invoke('jira:transitionSprintIssue', payload),
   getJiraMappings: () => ipcRenderer.invoke('jira:getMappings'),
   setJiraMapping: (customer: string, epicKey: string | null) =>
     ipcRenderer.invoke('jira:setMapping', customer, epicKey),
@@ -100,6 +123,10 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('supabase:archiveSharedFictiveTask', taskId),
   getSharedFictiveTaskUsage: (taskIds: string[], startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getSharedFictiveTaskUsage', { taskIds, startDate, endDate }),
+  getSupabaseSprintTaskUsage: (issueKeys: string[], startDate: string, endDate: string) =>
+    ipcRenderer.invoke('supabase:getSprintTaskUsage', { issueKeys, startDate, endDate }),
+  setSupabaseSprintTaskCompletion: (taskId: string, completed: boolean) =>
+    ipcRenderer.invoke('supabase:setSprintTaskCompletion', { taskId, completed }),
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string
@@ -283,8 +310,8 @@ contextBridge.exposeInMainWorld('hrs', {
     username?: string | null
     password?: string | null
   }) => ipcRenderer.invoke('meetings:run', options),
-  selectMeetingsDuoAction: (action: 'push' | 'call') =>
-    ipcRenderer.invoke('meetings:duo-action', action),
+  selectMeetingsDuoAction: (action: 'push' | 'call' | 'passcode', passcode?: string | null) =>
+    ipcRenderer.invoke('meetings:duo-action', { action, passcode: passcode ?? null }),
   onMeetingsDuoActionRequired: (handler: () => void) => {
     const listener = () => handler()
     ipcRenderer.on('meetings:duo-action-required', listener)
@@ -331,6 +358,9 @@ contextBridge.exposeInMainWorld('hrs', {
   openReportsWindow: () => ipcRenderer.invoke('app:openReportsWindow'),
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
+  openSprintWindow: () => ipcRenderer.invoke('app:openSprintWindow'),
+  closeSprintWindow: () => ipcRenderer.invoke('app:closeSprintWindow'),
+  getRequestedMainView: () => ipcRenderer.invoke('app:getRequestedMainView'),
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') =>
     ipcRenderer.invoke('app:setNativeThemeMode', mode),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -338,6 +368,7 @@ contextBridge.exposeInMainWorld('hrs', {
   checkForUpdates: () => ipcRenderer.invoke('app:checkForUpdates'),
   downloadUpdate: () => ipcRenderer.invoke('app:downloadUpdate'),
   installUpdate: () => ipcRenderer.invoke('app:installUpdate'),
+  openManualUpdateInstaller: () => ipcRenderer.invoke('app:openManualUpdateInstaller'),
   onUpdateState: (
     handler: (state: {
       state: 'disabled' | 'idle' | 'checking' | 'available' | 'downloading' | 'ready' | 'error'
@@ -347,6 +378,8 @@ contextBridge.exposeInMainWorld('hrs', {
       releaseDate?: string
       changelog?: string[]
       percent?: number
+      manualInstallRequired?: boolean
+      manualInstallUrl?: string
     }) => void
   ) => {
     const listener = (
@@ -366,6 +399,8 @@ contextBridge.exposeInMainWorld('hrs', {
         releaseDate?: string
         changelog?: string[]
         percent?: number
+        manualInstallRequired?: boolean
+        manualInstallUrl?: string
       }
     ) => handler(state)
     ipcRenderer.on('app:updateState', listener)
@@ -378,6 +413,14 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.on('app:trayOpened', listener)
     return () => {
       ipcRenderer.removeListener('app:trayOpened', listener)
+    }
+  },
+  onMainViewRequested: (handler: (view: 'default' | 'sprints') => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, view: 'default' | 'sprints') =>
+      handler(view)
+    ipcRenderer.on('app:mainViewRequested', listener)
+    return () => {
+      ipcRenderer.removeListener('app:mainViewRequested', listener)
     }
   },
   onTrayClosing: (

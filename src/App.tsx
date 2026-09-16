@@ -2452,7 +2452,6 @@ export default function App() {
   const [slackMessage, setSlackMessage] = useState<string | null>(null)
   const [slackMappingCustomer, setSlackMappingCustomer] = useState<string | null>(null)
   const [slackMappingChannel, setSlackMappingChannel] = useState<string | null>(null)
-  const [slackManualChannelId, setSlackManualChannelId] = useState('')
   const [integrationDestination, setIntegrationDestination] =
     useState<IntegrationDestination>('both')
   const [integrationCustomer, setIntegrationCustomer] = useState<string | null>(null)
@@ -5653,16 +5652,15 @@ export default function App() {
     if (!window.hrs?.setSlackCustomerMapping || !slackMappingCustomer) {
       return
     }
-    const manualChannelId = slackManualChannelId.trim().toUpperCase()
     const channel = slackMappingChannel
       ? slackChannels.find(item => item.id === slackMappingChannel)
       : null
-    const channelId = channel?.id ?? manualChannelId
-    const channelName = channel?.name ?? manualChannelId
-    if (!channelId) {
-      setSlackError('Choose a Slack channel or paste a private channel ID.')
+    if (!channel) {
+      setSlackError('Choose a Slack channel from the picker.')
       return
     }
+    const channelId = channel.id
+    const channelName = channel.name
     if (!/^[A-Z0-9]+$/.test(channelId)) {
       setSlackError('Slack channel ID should contain only uppercase letters and numbers.')
       return
@@ -5677,8 +5675,7 @@ export default function App() {
         channelName
       })
       await loadSlackStatus()
-      setSlackManualChannelId('')
-      setSlackMessage(`Mapped ${slackMappingCustomer} to ${channel ? `#${channel.name}` : channelId}.`)
+      setSlackMessage(`Mapped ${slackMappingCustomer} to #${channel.name}.`)
     } catch (err) {
       setSlackError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -7837,62 +7834,16 @@ export default function App() {
                   nothingFoundMessage="No channels loaded"
                 />
               </SimpleGrid>
-              <TextInput
-                label="Private channel ID"
-                placeholder="Paste channel ID if it does not appear above"
-                value={slackManualChannelId}
-                onChange={event => {
-                  setSlackManualChannelId(event.currentTarget.value)
-                  if (event.currentTarget.value.trim()) setSlackMappingChannel(null)
-                }}
-                size={compact ? 'xs' : 'sm'}
-              />
-              <Text size="xs" c="dimmed">
-                For private channels, add the bot to the channel and paste the channel ID if Slack
-                does not return it in the picker.
-              </Text>
-              <Text size="xs" c="dimmed">
-                @ suggestions require the users:read bot scope; users:read.email enables reliable
-                Jira-to-Slack identity matching, files:write enables attachments, and
-                channels:history / groups:history load recent public / private channel messages.
-                After changing scopes, reinstall the Slack app to the workspace and reconnect its token.
-              </Text>
               <Group justify="flex-end">
                 <Button
                   size={compact ? 'xs' : 'sm'}
                   onClick={() => void saveSlackCustomerMapping()}
                   loading={slackLoading}
-                  disabled={!slackMappingCustomer || (!slackMappingChannel && !slackManualChannelId.trim())}
+                  disabled={!slackMappingCustomer || !slackMappingChannel}
                 >
                   Save mapping
                 </Button>
               </Group>
-              <Card radius="md" withBorder className={compact ? 'tray-settings-card' : undefined}>
-                <Stack gap={6}>
-                  <Text fw={700} size={compact ? 'xs' : 'sm'}>
-                    Posted to Slack
-                  </Text>
-                  {[
-                    'Customer and mapped channel',
-                    'Event type: task created or hours logged',
-                    'Reporter name',
-                    'Fictive task name when selected',
-                    'Original HRS task',
-                    'Logged hours and date',
-                    'Capped task usage when available',
-                    'Jira work item when available',
-                    'User comment'
-                  ].map(item => (
-                    <Checkbox
-                      key={item}
-                      size={compact ? 'xs' : 'sm'}
-                      checked
-                      disabled
-                      label={item}
-                    />
-                  ))}
-                </Stack>
-              </Card>
               {mappings.length > 0 && (
                 <Stack gap={6}>
                   {mappings.map(mapping => (
@@ -7934,40 +7885,6 @@ export default function App() {
               </Group>
             </>
           )}
-
-          <Card radius="md" withBorder className="slack-scope-guide">
-            <Stack gap={6}>
-              <Group justify="space-between" align="center" wrap="nowrap">
-                <Text size="xs" fw={700}>Slack bot permissions</Text>
-                <Badge size="xs" variant="light" color="violet">Bot scopes</Badge>
-              </Group>
-              <Text size="xs" c="dimmed">
-                api.slack.com/apps → the app whose bot user is hrs_desktop → OAuth &amp;
-                Permissions → Scopes → Bot Token Scopes → Add an OAuth Scope.
-              </Text>
-              <Group gap={6} wrap="wrap" className="slack-scope-list">
-                {[
-                  'chat:write',
-                  'users:read',
-                  'users:read.email',
-                  'files:write',
-                  'channels:history',
-                  'groups:history'
-                ].map(scope => (
-                  <Badge key={scope} size="xs" variant="outline" color="blue">
-                    {scope}
-                  </Badge>
-                ))}
-              </Group>
-              <Text size="xs" c="dimmed">
-                Then click Reinstall to Workspace, approve the permissions, copy the refreshed Bot
-                User OAuth Token, and reconnect it here. Invite hrs_desktop to private channels.
-              </Text>
-              <Text size="xs" className="slack-apps-url">
-                https://api.slack.com/apps
-              </Text>
-            </Stack>
-          </Card>
 
           {slackMessage && (
             <Alert color="teal" variant="light" radius="md">

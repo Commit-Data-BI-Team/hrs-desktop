@@ -374,6 +374,20 @@ async function getProfile(client: SupabaseClient): Promise<SupabaseProfile | nul
   return (data as SupabaseProfile | null) ?? null
 }
 
+export async function requireSupabaseManager() {
+  if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+    if ((process.env.HRS_SPRINT_E2E_ROLE ?? 'manager') !== 'manager') {
+      throw new Error('Only managers can edit the Jira Sprint Board.')
+    }
+    return
+  }
+  const client = await createSupabaseClient()
+  const profile = await getProfile(client)
+  if (profile?.role !== 'manager') {
+    throw new Error('Only managers can edit the Jira Sprint Board.')
+  }
+}
+
 function normalizeReportRows(rows: unknown): WorkReportInput[] {
   if (!Array.isArray(rows)) throw new Error('Reports payload must be an array')
   return rows.map((row, index) => {
@@ -409,6 +423,22 @@ export function registerSupabaseIpc() {
   void ensureSupabaseConfirmationServer()
 
   ipcMain.handle('supabase:getStatus', async () => {
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const role = process.env.HRS_SPRINT_E2E_ROLE === 'employee' ? 'employee' : 'manager'
+      return {
+        configured: true,
+        url: 'https://e2e.supabase.invalid',
+        hasPublishableKey: true,
+        email: `${role}@example.com`,
+        profile: {
+          id: `e2e-${role}`,
+          email: `${role}@example.com`,
+          employee_id: role === 'manager' ? 1 : 2,
+          display_name: role === 'manager' ? 'E2E Manager' : 'E2E Employee',
+          role
+        }
+      }
+    }
     const config = getSupabaseConfig()
     const client = await createSupabaseClient()
     const user = await getAuthenticatedSupabaseUser(client)
@@ -500,6 +530,18 @@ export function registerSupabaseIpc() {
 
   ipcMain.handle('supabase:updateProfile', async (_event, payload: unknown) => {
     const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const role = process.env.HRS_SPRINT_E2E_ROLE === 'employee' ? 'employee' : 'manager'
+      return {
+        id: `e2e-${role}`,
+        email: `${role}@example.com`,
+        employee_id: cleanNumber(record.employeeId) ?? (role === 'manager' ? 1 : 2),
+        display_name:
+          cleanNullableString(record.displayName, 250) ??
+          (role === 'manager' ? 'E2E Manager' : 'E2E Employee'),
+        role
+      } satisfies SupabaseProfile
+    }
     const client = await createSupabaseClient()
     const { data, error } = await client.rpc('update_own_profile', {
       display_name_input: cleanNullableString(record.displayName, 250),
@@ -632,6 +674,9 @@ export function registerSupabaseIpc() {
   })
 
   ipcMain.handle('supabase:getSharedFictiveTasks', async () => {
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      return { available: true, globalHoursAvailable: true, tasks: [] }
+    }
     const client = await createSupabaseClient()
     const user = await getAuthenticatedSupabaseUser(client)
     if (!user) {

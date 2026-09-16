@@ -57,6 +57,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:uploadAttachments', payload),
   transitionJiraIssue: (payload: { issueKey: string; transitionId: string }) =>
     ipcRenderer.invoke('jira:transitionIssue', payload),
+  transitionJiraSprintIssue: (payload: { issueKey: string; transitionId: string }) =>
+    ipcRenderer.invoke('jira:transitionSprintIssue', payload),
   getJiraMappings: () => ipcRenderer.invoke('jira:getMappings'),
   setJiraMapping: (customer: string, epicKey: string | null) =>
     ipcRenderer.invoke('jira:setMapping', customer, epicKey),
@@ -350,6 +352,7 @@ contextBridge.exposeInMainWorld('hrs', {
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
   openSprintWindow: () => ipcRenderer.invoke('app:openSprintWindow'),
   closeSprintWindow: () => ipcRenderer.invoke('app:closeSprintWindow'),
+  getRequestedMainView: () => ipcRenderer.invoke('app:getRequestedMainView'),
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') =>
     ipcRenderer.invoke('app:setNativeThemeMode', mode),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),
@@ -402,6 +405,14 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.on('app:trayOpened', listener)
     return () => {
       ipcRenderer.removeListener('app:trayOpened', listener)
+    }
+  },
+  onMainViewRequested: (handler: (view: 'default' | 'sprints') => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, view: 'default' | 'sprints') =>
+      handler(view)
+    ipcRenderer.on('app:mainViewRequested', listener)
+    return () => {
+      ipcRenderer.removeListener('app:mainViewRequested', listener)
     }
   },
   onTrayClosing: (

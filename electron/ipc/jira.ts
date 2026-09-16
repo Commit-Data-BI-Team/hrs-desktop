@@ -18,6 +18,7 @@ import {
   validateStringLength
 } from '../utils/validation'
 import { resolveIntegrationAttachments } from '../integration/attachments'
+import { requireSupabaseManager } from './supabase'
 
 const DEFAULT_PROJECT_KEYS = ['VDA', 'LSM']
 const JIRA_PROJECT_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}$/
@@ -1374,6 +1375,28 @@ export function registerJiraIpc() {
       }
       return true
     })
+    ipcMain.handle('jira:transitionSprintIssue', async (_event, payload: unknown) => {
+      await requireSupabaseManager()
+      const safe = validateExactObject<{ issueKey?: unknown; transitionId?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'transitionId'],
+        'Jira sprint transition'
+      )
+      const issueKey = validateJiraIssueKey(safe.issueKey)
+      const transitionId = validateStringLength(safe.transitionId, 1, 32)
+      if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+      const nextStatus =
+        transitionId === '31'
+          ? { statusName: 'Done', statusCategoryKey: 'done' as const }
+          : transitionId === '21'
+            ? { statusName: 'In Progress', statusCategoryKey: 'indeterminate' as const }
+            : { statusName: 'To Do', statusCategoryKey: 'todo' as const }
+      for (const issues of [...Object.values(e2eSprintBacklog), ...Object.values(e2eSprintIssues)]) {
+        const issue = issues.find(item => item.key === issueKey)
+        if (issue) Object.assign(issue, nextStatus)
+      }
+      return true
+    })
     ipcMain.handle('jira:getBoards', async (_event, projectKey: unknown) => {
       const key = validateStringLength(projectKey, 1, 15).toUpperCase()
       return E2E_SPRINT_BOARDS.filter(board => board.projectKey === key)
@@ -1395,6 +1418,7 @@ export function registerJiraIpc() {
       }
     )
     ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
+      await requireSupabaseManager()
       const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
         payload ?? {},
         ['sprintId', 'issueKeys'],
@@ -1431,6 +1455,7 @@ export function registerJiraIpc() {
       return true
     })
     ipcMain.handle('jira:moveIssuesToBacklog', async (_event, issueKeys: unknown) => {
+      await requireSupabaseManager()
       if (!Array.isArray(issueKeys) || !issueKeys.length || issueKeys.length > 50) {
         throw new Error('Invalid Jira backlog issue list.')
       }
@@ -1452,6 +1477,7 @@ export function registerJiraIpc() {
       return true
     })
     ipcMain.handle('jira:rankIssues', async (_event, payload: unknown) => {
+      await requireSupabaseManager()
       const safe = validateExactObject<{
         issueKeys?: unknown
         rankBeforeIssue?: unknown
@@ -1637,6 +1663,7 @@ export function registerJiraIpc() {
   )
 
   ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
+    await requireSupabaseManager()
     const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
       payload ?? {},
       ['sprintId', 'issueKeys'],
@@ -1653,6 +1680,7 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:moveIssuesToBacklog', async (_event, issueKeys: unknown) => {
+    await requireSupabaseManager()
     const keys = validateIssueKeyList(issueKeys, 'Jira backlog issues')
     await jiraRequest('/rest/agile/1.0/backlog/issue', {
       method: 'POST',
@@ -1663,6 +1691,7 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:rankIssues', async (_event, payload: unknown) => {
+    await requireSupabaseManager()
     const safe = validateExactObject<{
       issueKeys?: unknown
       rankBeforeIssue?: unknown
@@ -1846,6 +1875,24 @@ export function registerJiraIpc() {
       payload ?? {},
       ['issueKey', 'transitionId'],
       'Jira transition'
+    )
+    const issueKey = validateJiraIssueKey(safe.issueKey)
+    const transitionId = validateStringLength(safe.transitionId, 1, 32)
+    if (!/^\d+$/.test(transitionId)) throw new Error('Invalid Jira transition ID.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(issueKey)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transitionId } })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:transitionSprintIssue', async (_event, payload: unknown) => {
+    await requireSupabaseManager()
+    const safe = validateExactObject<{ issueKey?: unknown; transitionId?: unknown }>(
+      payload ?? {},
+      ['issueKey', 'transitionId'],
+      'Jira sprint transition'
     )
     const issueKey = validateJiraIssueKey(safe.issueKey)
     const transitionId = validateStringLength(safe.transitionId, 1, 32)

@@ -64,7 +64,6 @@ let trayWindow: BrowserWindow | null = null
 let reportsWindow: BrowserWindow | null = null
 let settingsWindow: BrowserWindow | null = null
 let meetingsWindow: BrowserWindow | null = null
-let sprintWindow: BrowserWindow | null = null
 let activeLoginWindow: BrowserWindow | null = null
 let activeLoginPromise: Promise<boolean> | null = null
 let tray: Tray | null = null
@@ -106,7 +105,8 @@ const TRAY_WINDOW_SCREEN_MARGIN = 8
 const reportsWindowSize = { width: 1220, height: 860 }
 const settingsWindowSize = { width: 700, height: 780 }
 const meetingsWindowSize = { width: 1220, height: 860 }
-const sprintWindowSize = { width: 1420, height: 900 }
+const mainWindowSize = { width: 1200, height: 800 }
+const sprintViewSize = { width: 1420, height: 900 }
 const MAIN_LOG_MAX_BYTES = 2 * 1024 * 1024
 const MAIN_LOG_ROTATIONS = 4
 const UPDATE_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
@@ -160,6 +160,7 @@ let appUpdater: UpdaterLike | null = null
 let updateCheckInFlight: Promise<unknown | null> | null = null
 let updaterSetupPromise: Promise<void> | null = null
 let nativeThemeMode: ThemeMode = 'dark'
+let requestedMainView: 'default' | 'sprints' = 'default'
 const nativeLiquidGlassViewIds = new Map<number, number>()
 const macNativeGlassWindowOptions: Partial<BrowserWindowConstructorOptions> =
   process.platform === 'darwin'
@@ -329,7 +330,6 @@ function emitUpdateState(next: AppUpdateState) {
     reportsWindow,
     settingsWindow,
     meetingsWindow,
-    sprintWindow,
     floatingWindow
   ]
   for (const target of targets) {
@@ -728,7 +728,6 @@ function applyNativeLiquidGlassToAllWindows() {
   applyNativeLiquidGlassToWindow(reportsWindow, 'reports')
   applyNativeLiquidGlassToWindow(settingsWindow, 'settings')
   applyNativeLiquidGlassToWindow(meetingsWindow, 'meetings')
-  applyNativeLiquidGlassToWindow(sprintWindow, 'sprints')
 }
 
 function forgetNativeLiquidGlassForWindow(window: BrowserWindow | null) {
@@ -886,6 +885,13 @@ function showMainWindow() {
   void checkForUpdatesOnOpen('main window')
 }
 
+function resizeMainWindowForView(size: { width: number; height: number }) {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  const fitted = fitWindowSizeToDisplay(size.width, size.height)
+  mainWindow.setSize(fitted.width, fitted.height, false)
+  mainWindow.center()
+}
+
 function getFloatingOptions() {
   return {
     width: floatingSizes.collapsed.width,
@@ -918,7 +924,7 @@ function getFloatingOptions() {
 
 function loadRendererWindow(
   window: BrowserWindow,
-  mode: 'main' | 'floating' | 'tray' | 'reports' | 'settings' | 'meetings' | 'sprints'
+  mode: 'main' | 'floating' | 'tray' | 'reports' | 'settings' | 'meetings'
 ) {
   window.webContents.once('did-finish-load', () => {
     applyNativeLiquidGlassToWindow(window, mode)
@@ -939,9 +945,7 @@ function loadRendererWindow(
             ? { settings: '1' }
             : mode === 'meetings'
               ? { meetings: '1' }
-              : mode === 'sprints'
-                ? { sprints: '1' }
-                : null
+              : null
   if (devServerUrl) {
     const baseUrl = devServerUrl.endsWith('/') ? devServerUrl.slice(0, -1) : devServerUrl
     const url = query ? `${baseUrl}?${new URLSearchParams(query).toString()}` : baseUrl
@@ -955,7 +959,7 @@ function loadRendererWindow(
 }
 
 function createMainWindow(startHidden = false) {
-  const fittedSize = fitWindowSizeToDisplay(1200, 800)
+  const fittedSize = fitWindowSizeToDisplay(mainWindowSize.width, mainWindowSize.height)
   mainWindow = new BrowserWindow({
     width: fittedSize.width,
     height: fittedSize.height,
@@ -1134,7 +1138,7 @@ function createTrayWindow() {
 }
 
 function createDetachedWindow(
-  mode: 'reports' | 'settings' | 'meetings' | 'sprints',
+  mode: 'reports' | 'settings' | 'meetings',
   width: number,
   height: number,
   title: string
@@ -1179,7 +1183,6 @@ function createDetachedWindow(
     if (mode === 'reports') reportsWindow = null
     if (mode === 'settings') settingsWindow = null
     if (mode === 'meetings') meetingsWindow = null
-    if (mode === 'sprints') sprintWindow = null
   })
   loadRendererWindow(window, mode)
   return window
@@ -1230,19 +1233,23 @@ function openMeetingsWindow() {
   void checkForUpdatesOnOpen('meetings window')
 }
 
-function openSprintWindow() {
-  if (!sprintWindow || sprintWindow.isDestroyed()) {
-    sprintWindow = createDetachedWindow(
-      'sprints',
-      sprintWindowSize.width,
-      sprintWindowSize.height,
-      'HRS Sprint Board'
-    )
+function sendRequestedMainView() {
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  mainWindow.webContents.send('app:mainViewRequested', requestedMainView)
+}
+
+function openSprintView() {
+  requestedMainView = 'sprints'
+  const needsWindow = !mainWindow || mainWindow.isDestroyed()
+  showMainWindow()
+  if (!mainWindow || mainWindow.isDestroyed()) return
+  resizeMainWindowForView(sprintViewSize)
+  if (needsWindow || mainWindow.webContents.isLoadingMainFrame()) {
+    mainWindow.webContents.once('did-finish-load', sendRequestedMainView)
+  } else {
+    sendRequestedMainView()
   }
-  sprintWindow.show()
-  if (sprintWindow.isMinimized()) sprintWindow.restore()
-  sprintWindow.focus()
-  void checkForUpdatesOnOpen('sprint window')
+  if (trayWindow?.isVisible()) beginHideTrayWindow('open-main')
 }
 
 function getTrayWindowPosition() {
@@ -1499,7 +1506,10 @@ app.whenReady().then(() => {
     return resizeTrayWindowToContent(requestedHeight)
   })
   ipcMain.handle('app:openMainWindow', () => {
+    requestedMainView = 'default'
     showMainWindow()
+    resizeMainWindowForView(mainWindowSize)
+    sendRequestedMainView()
     if (trayWindow?.isVisible()) {
       beginHideTrayWindow('open-main')
     }
@@ -1518,13 +1528,16 @@ app.whenReady().then(() => {
     return true
   })
   ipcMain.handle('app:openSprintWindow', () => {
-    openSprintWindow()
+    openSprintView()
     return true
   })
   ipcMain.handle('app:closeSprintWindow', () => {
-    if (sprintWindow && !sprintWindow.isDestroyed()) sprintWindow.close()
+    requestedMainView = 'default'
+    resizeMainWindowForView(mainWindowSize)
+    hideMainWindowToTray()
     return true
   })
+  ipcMain.handle('app:getRequestedMainView', () => requestedMainView)
   ipcMain.handle('app:openFloatingTimer', () => {
     hideMainWindowForFloating()
     createFloatingWindow()

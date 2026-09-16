@@ -75,10 +75,48 @@ test('manages active and past Jira sprints with Supabase contributors', async ()
     await expect(pastIssue).toContainText('2h remaining')
     await expect(pastIssue).toHaveAttribute('draggable', 'false')
 
-    await Promise.all([
-      sprintPage.waitForEvent('close'),
-      sprintPage.getByRole('button', { name: 'Close Sprint Board' }).click()
-    ])
+    const sprintWindow = await app.browserWindow(sprintPage)
+    await sprintPage.getByRole('button', { name: 'Close Sprint Board' }).click()
+    await expect.poll(() => sprintWindow.evaluate(window => window.isVisible())).toBe(false)
+  } finally {
+    await app.close()
+    await fs.rm(userDataDir, { recursive: true, force: true })
+  }
+})
+
+test('employees can view the in-app sprint board but cannot mutate Jira', async () => {
+  const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hrs-sprint-employee-'))
+  const app = await electron.launch({
+    args: ['.', `--user-data-dir=${userDataDir}`],
+    env: {
+      ...process.env,
+      HRS_E2E: '1',
+      HRS_SPRINT_E2E: '1',
+      HRS_SPRINT_E2E_ROLE: 'employee',
+      E2E_USE_FILE: '1'
+    }
+  })
+
+  try {
+    const trayPage = await app.firstWindow()
+    const mainPagePromise = app.waitForEvent('window')
+    await trayPage.evaluate(() => window.hrs.openSprintWindow())
+    const mainPage = await mainPagePromise
+    await expect(mainPage.getByText('Jira Sprint Board', { exact: true })).toBeVisible()
+    await expect(mainPage.getByText('Employee view · Read only')).toBeVisible()
+    await expect(mainPage.locator('[data-issue-key="VDA-600"]')).toHaveAttribute(
+      'draggable',
+      'false'
+    )
+    const mutationError = await mainPage.evaluate(async () => {
+      try {
+        await window.hrs.moveJiraIssuesToSprint({ sprintId: 1001, issueKeys: ['VDA-600'] })
+        return null
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    })
+    expect(mutationError).toContain('Only managers can edit')
   } finally {
     await app.close()
     await fs.rm(userDataDir, { recursive: true, force: true })

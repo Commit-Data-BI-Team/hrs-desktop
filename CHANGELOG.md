@@ -4,9 +4,11 @@
 
 ### Jira sprint management
 
-- Added a dedicated Jira Sprint Board window, opened directly from the tray and closed with its own top-right **X**.
+- Added the Jira Sprint Board as a full view inside the main HRS application window, opened directly from the tray and closed with its own top-right **X**.
 - Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
 - Keeps active sprints editable and displays completed sprints in a clear read-only history view.
+- Uses the authenticated Supabase profile role for access control: managers can drag, transition, and rank Jira cards, while employees receive the complete board as a read-only view.
+- Enforces the manager requirement again in the main-process Jira mutation handlers so employee access cannot bypass the disabled UI controls.
 - Added drag-and-drop columns for **Backlog**, **To Do**, **In Progress**, and **Done**, with changes saved immediately to Jira.
 - Supports moving issues into or out of a sprint, transitioning their Jira status, and reordering cards using Jira rank.
 - Resolves Jira cards to their Supabase shared tasks and shows every reporting employee with their individual Supabase hours, total used time, and remaining shared-task budget for the selected sprint dates.

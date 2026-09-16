@@ -56,6 +56,7 @@ type Props = {
   jiraStatus: SprintProjectStatus | null
   linkedIssueKeys: string[]
   supabaseConnected: boolean
+  canEdit: boolean
   onClose: () => void
 }
 
@@ -120,7 +121,13 @@ function sprintUsageRange(sprint: JiraSprint) {
   return { start, end: end < start ? start : end }
 }
 
-export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, onClose }: Props) {
+export function SprintBoard({
+  jiraStatus,
+  linkedIssueKeys,
+  supabaseConnected,
+  canEdit,
+  onClose
+}: Props) {
   const projectKeys = useMemo(() => {
     const values = jiraStatus?.projectKeys?.length
       ? jiraStatus.projectKeys
@@ -161,6 +168,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
   const selectedSprint = selectedCatalogItem?.sprint ?? null
   const selectedBoard = selectedCatalogItem?.board ?? null
   const isPastSprint = selectedSprint?.state === 'closed'
+  const isReadOnly = isPastSprint || !canEdit
 
   useEffect(() => {
     if (!jiraStatus?.configured || !projectKeys.length) return
@@ -333,7 +341,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
       item => categoryForStatusName(item.toStatusName) === column
     )
     if (!transition) throw new Error(`No Jira transition is available for ${COLUMN_LABELS[column]}.`)
-    await window.hrs.transitionJiraIssue({ issueKey, transitionId: transition.id })
+    await window.hrs.transitionJiraSprintIssue({ issueKey, transitionId: transition.id })
   }
 
   function optimisticallyMove(issue: JiraSprintIssue, target: SprintColumn) {
@@ -353,6 +361,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
     if (
       source === target ||
       mutationLoading ||
+      !canEdit ||
       !selectedSprint ||
       selectedSprint.state !== 'active'
     ) return
@@ -413,6 +422,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
     if (
       issueKey === targetIssueKey ||
       mutationLoading ||
+      !canEdit ||
       !selectedSprint ||
       selectedSprint.state !== 'active'
     ) return
@@ -479,7 +489,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
 
   function handleColumnDrop(event: ReactDragEvent, target: SprintColumn) {
     event.preventDefault()
-    if (!dragState || isPastSprint) return
+    if (!dragState || isReadOnly) return
     void moveIssue(dragState.issueKey, dragState.source, target)
   }
 
@@ -497,9 +507,9 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
         withBorder
         radius="md"
         className={`sprint-issue-card${dragState?.issueKey === issue.key ? ' is-dragging' : ''}`}
-        draggable={!mutationLoading && !isPastSprint}
+        draggable={!mutationLoading && !isReadOnly}
         onDragStart={event => {
-          if (isPastSprint) return
+          if (isReadOnly) return
           event.dataTransfer.effectAllowed = 'move'
           event.dataTransfer.setData('text/plain', issue.key)
           setDragState({ issueKey: issue.key, source: column })
@@ -509,14 +519,14 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
           setDragOverColumn(null)
         }}
         onDragOver={event => {
-          if (isPastSprint) return
+          if (isReadOnly) return
           event.preventDefault()
           event.stopPropagation()
         }}
         onDrop={event => {
           event.preventDefault()
           event.stopPropagation()
-          if (!dragState || isPastSprint) return
+          if (!dragState || isReadOnly) return
           if (dragState.source === column) void rankIssue(dragState.issueKey, issue.key, column)
           else void moveIssue(dragState.issueKey, dragState.source, column)
         }}
@@ -524,7 +534,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
         <Stack gap={8}>
           <Group justify="space-between" align="center" wrap="nowrap">
             <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
-              {!isPastSprint ? <IconGripVertical size={15} className="sprint-card-grip" /> : null}
+              {!isReadOnly ? <IconGripVertical size={15} className="sprint-card-grip" /> : null}
               <Text size="xs" fw={800} className="sprint-issue-key">
                 {issue.key}
               </Text>
@@ -648,7 +658,9 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
           <Text size="sm" c="dimmed">
             {isPastSprint
               ? 'Review completed sprint issues and the hours reported by every contributor.'
-              : 'Drag Jira issues between backlog and sprint statuses. Every drop is saved to Jira.'}
+              : canEdit
+                ? 'Drag Jira issues between backlog and sprint statuses. Every drop is saved to Jira.'
+                : 'Review the live sprint and Supabase hours. Only managers can edit the board.'}
           </Text>
         </Stack>
         <Group gap="xs" className="sprint-header-actions">
@@ -685,7 +697,11 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
           {selectedSprint ? (
             <Stack gap={3} className="sprint-goal-copy">
               <Badge size="xs" color={isPastSprint ? 'gray' : 'teal'}>
-                {isPastSprint ? 'Past sprint · Read only' : 'Active sprint'}
+                {isPastSprint
+                  ? 'Past sprint · Read only'
+                  : canEdit
+                    ? 'Manager editing'
+                    : 'Employee view · Read only'}
               </Badge>
               <Text size="xs" c="dimmed" lineClamp={2}>
                 {selectedSprint.goal || 'No sprint goal'}
@@ -736,12 +752,12 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
                 dragOverColumn === column ? 'is-drag-over' : ''
               ].join(' ').trim()}
               onDragEnter={event => {
-                if (isPastSprint) return
+                if (isReadOnly) return
                 event.preventDefault()
                 setDragOverColumn(column)
               }}
               onDragOver={event => {
-                if (isPastSprint) return
+                if (isReadOnly) return
                 event.preventDefault()
                 event.dataTransfer.dropEffect = 'move'
               }}
@@ -774,7 +790,9 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, on
       <Text size="xs" c="dimmed" ta="center">
         {isPastSprint
           ? 'Past sprints are read-only. Contributor totals come from Supabase reports.'
-          : 'Moving and ranking issues requires Jira Edit and Schedule Issues permissions.'}
+          : canEdit
+            ? 'Manager access enabled. Moving and ranking issues is saved to Jira.'
+            : 'Employee access is read-only. Ask a manager to update sprint status or ranking.'}
       </Text>
     </Stack>
   )

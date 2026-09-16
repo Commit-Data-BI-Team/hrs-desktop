@@ -2122,6 +2122,7 @@ async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): P
 export default function App() {
   const { colorScheme, setColorScheme } = useMantineColorScheme()
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => readThemeMode())
+  const [mainView, setMainView] = useState<'default' | 'sprints'>('default')
   const oledEnabled = themeMode === 'oled'
   const liquidGlassEnabled = themeMode === 'liquid'
   const liquidGlassSceneRef = useRef<HTMLDivElement>(null)
@@ -3805,24 +3806,19 @@ export default function App() {
     return new URLSearchParams(window.location.search).get('meetings') === '1'
   }, [])
 
-  const isSprintWindow = useMemo(() => {
-    if (typeof window === 'undefined') return false
-    return new URLSearchParams(window.location.search).get('sprints') === '1'
-  }, [])
-
   const isMainWindow =
     !isFloating &&
     !isTray &&
     !isReportsWindow &&
     !isSettingsWindow &&
-    !isMeetingsWindow &&
-    !isSprintWindow
+    !isMeetingsWindow
+  const isSprintView = isMainWindow && mainView === 'sprints'
   const shouldLoadLogData = isMainWindow || isTray || isReportsWindow
   const shouldLoadWorkLogs = shouldLoadLogData || isFloating
   const shouldLoadJiraEpics = isMainWindow || isReportsWindow || isFloating
   const shouldLoadTrayReportJira = isTray && loggedIn
   const shouldLoadJiraBudgetData = shouldLoadJiraEpics || shouldLoadTrayReportJira
-  const isAuxWindow = isSettingsWindow || isMeetingsWindow || isSprintWindow
+  const isAuxWindow = isSettingsWindow || isMeetingsWindow
 
   const platform = useMemo(() => {
     if (typeof navigator === 'undefined') return 'other'
@@ -3862,13 +3858,28 @@ export default function App() {
     } else {
       document.body.classList.remove('meetings-mode')
     }
-    if (isSprintWindow) {
+    if (isSprintView) {
       document.body.classList.add('sprints-mode')
     } else {
       document.body.classList.remove('sprints-mode')
     }
     document.documentElement.setAttribute('data-platform', platform)
-  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, isSprintWindow, platform])
+  }, [isTray, isReportsWindow, isSettingsWindow, isMeetingsWindow, isSprintView, platform])
+
+  useEffect(() => {
+    if (!isMainWindow || !window.hrs?.getRequestedMainView) return
+    let active = true
+    void window.hrs.getRequestedMainView().then(view => {
+      if (active) setMainView(view)
+    })
+    const dispose = window.hrs.onMainViewRequested?.(view => {
+      setMainView(view)
+    })
+    return () => {
+      active = false
+      dispose?.()
+    }
+  }, [isMainWindow])
 
   useEffect(() => {
     if (!isFloating) return
@@ -3998,7 +4009,7 @@ export default function App() {
 
   const appReady = useMemo(() => {
     if (isFloating) return true
-    if (isAuxWindow) {
+    if (isAuxWindow || isSprintView) {
       return preferencesLoaded && jiraStatusLoaded
     }
     if (
@@ -4021,6 +4032,7 @@ export default function App() {
   }, [
     isFloating,
     isAuxWindow,
+    isSprintView,
     isTray,
     bootComplete,
     preferencesLoaded,
@@ -22529,7 +22541,7 @@ export default function App() {
     )
   }
 
-  if (isSprintWindow) {
+  if (isSprintView) {
     return renderLiquidGlassFrame(
       <Box className="app-shell sprint-shell">
         <Container fluid className="sprint-container">
@@ -22539,7 +22551,9 @@ export default function App() {
               .map(mission => mission.jiraIssueKey?.trim() ?? '')
               .filter(Boolean)}
             supabaseConnected={Boolean(supabaseStatus?.email)}
+            canEdit={supabaseStatus?.profile?.role === 'manager'}
             onClose={() => {
+              setMainView('default')
               void window.hrs.closeSprintWindow()
             }}
           />

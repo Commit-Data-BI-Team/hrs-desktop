@@ -690,6 +690,10 @@ type HrsApi = {
     issueKey: string
     transitionId: string
   }) => Promise<boolean>
+  transitionJiraSprintIssue: (payload: {
+    issueKey: string
+    transitionId: string
+  }) => Promise<boolean>
   getJiraMappings: () => Promise<JiraMappings>
   setJiraMapping: (customer: string, epicKey: string | null) => Promise<JiraMappings>
   getJiraWorkItems: (epicKey: string) => Promise<JiraWorkItem[]>
@@ -998,6 +1002,7 @@ type HrsApi = {
   openMeetingsWindow: () => Promise<boolean>
   openSprintWindow: () => Promise<boolean>
   closeSprintWindow: () => Promise<boolean>
+  getRequestedMainView: () => Promise<'default' | 'sprints'>
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') => Promise<{
     nativeLiquidGlass: boolean
     supported: boolean
@@ -1010,6 +1015,7 @@ type HrsApi = {
   openManualUpdateInstaller: () => Promise<boolean>
   onUpdateState: (handler: (state: AppUpdateState) => void) => () => void
   onTrayOpened: (handler: () => void) => () => void
+  onMainViewRequested: (handler: (view: 'default' | 'sprints') => void) => () => void
   onTrayClosing: (
     handler: (reason: 'blur' | 'toggle' | 'open-main' | 'dismiss') => void
   ) => () => void

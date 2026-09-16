@@ -31,8 +31,6 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getBacklogIssues', boardId),
   getJiraSprintIssues: (boardId: number, sprintId: number) =>
     ipcRenderer.invoke('jira:getSprintIssues', boardId, sprintId),
-  getJiraSprintWorklogSummaries: (issueKeys: string[]) =>
-    ipcRenderer.invoke('jira:getSprintWorklogSummaries', issueKeys),
   moveJiraIssuesToSprint: (payload: { sprintId: number; issueKeys: string[] }) =>
     ipcRenderer.invoke('jira:moveIssuesToSprint', payload),
   moveJiraIssuesToBacklog: (issueKeys: string[]) =>
@@ -117,6 +115,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('supabase:archiveSharedFictiveTask', taskId),
   getSharedFictiveTaskUsage: (taskIds: string[], startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getSharedFictiveTaskUsage', { taskIds, startDate, endDate }),
+  getSupabaseSprintTaskUsage: (issueKeys: string[], startDate: string, endDate: string) =>
+    ipcRenderer.invoke('supabase:getSprintTaskUsage', { issueKeys, startDate, endDate }),
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string

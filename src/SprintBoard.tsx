@@ -26,7 +26,7 @@ import type {
   JiraAgileBoard,
   JiraSprint,
   JiraSprintIssue,
-  JiraSprintWorklogSummary
+  SupabaseSprintTaskUsage
 } from './types/hrs'
 
 type SprintProjectStatus = {
@@ -55,6 +55,7 @@ type SprintCatalogItem = {
 type Props = {
   jiraStatus: SprintProjectStatus | null
   linkedIssueKeys: string[]
+  supabaseConnected: boolean
   onClose: () => void
 }
 
@@ -96,7 +97,30 @@ function sprintTimestamp(sprint: JiraSprint) {
   return Number.isFinite(value) ? value : 0
 }
 
-export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
+function dateInIsrael(value: string | null | undefined) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Jerusalem',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit'
+  }).formatToParts(date)
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find(item => item.type === type)?.value ?? ''
+  return `${part('year')}-${part('month')}-${part('day')}`
+}
+
+function sprintUsageRange(sprint: JiraSprint) {
+  const today = dateInIsrael(new Date().toISOString())!
+  const start = dateInIsrael(sprint.startDate) ?? `${today.slice(0, 7)}-01`
+  const sprintEnd = dateInIsrael(sprint.endDate)
+  const end = sprintEnd && sprintEnd < today ? sprintEnd : today
+  return { start, end: end < start ? start : end }
+}
+
+export function SprintBoard({ jiraStatus, linkedIssueKeys, supabaseConnected, onClose }: Props) {
   const projectKeys = useMemo(() => {
     const values = jiraStatus?.projectKeys?.length
       ? jiraStatus.projectKeys
@@ -109,22 +133,22 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
   const [sprintSelection, setSprintSelection] = useState<string | null>(null)
   const [backlogIssues, setBacklogIssues] = useState<JiraSprintIssue[]>([])
   const [sprintIssues, setSprintIssues] = useState<JiraSprintIssue[]>([])
-  const [worklogSummaries, setWorklogSummaries] = useState<
-    Record<string, JiraSprintWorklogSummary>
+  const [supabaseUsage, setSupabaseUsage] = useState<
+    Record<string, SupabaseSprintTaskUsage>
   >({})
   const [loadingCatalog, setLoadingCatalog] = useState(false)
   const [loadingIssues, setLoadingIssues] = useState(false)
-  const [loadingWorklogs, setLoadingWorklogs] = useState(false)
+  const [loadingSupabaseUsage, setLoadingSupabaseUsage] = useState(false)
   const [mutationLoading, setMutationLoading] = useState(false)
   const [dragState, setDragState] = useState<SprintDragState | null>(null)
   const [dragOverColumn, setDragOverColumn] = useState<SprintColumn | null>(null)
   const [error, setError] = useState<string | null>(null)
-  const [worklogError, setWorklogError] = useState<string | null>(null)
+  const [supabaseUsageError, setSupabaseUsageError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [undoAction, setUndoAction] = useState<SprintUndo | null>(null)
   const catalogRequestRef = useRef(0)
   const issueRequestRef = useRef(0)
-  const worklogRequestRef = useRef(0)
+  const supabaseUsageRequestRef = useRef(0)
   const linkedKeys = useMemo(
     () => new Set(linkedIssueKeys.map(key => key.trim().toUpperCase())),
     [linkedIssueKeys]
@@ -147,7 +171,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
     setSprintSelection(null)
     setBacklogIssues([])
     setSprintIssues([])
-    setWorklogSummaries({})
+    setSupabaseUsage({})
     void (async () => {
       const boardResults = await Promise.allSettled(
         projectKeys.map(projectKey => window.hrs.getJiraBoards(projectKey))
@@ -207,40 +231,53 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
       })
   }, [jiraStatus?.configured, projectKeys])
 
-  async function loadWorklogSummaries(issues: JiraSprintIssue[], issueRequestId: number) {
-    const requestId = ++worklogRequestRef.current
-    setWorklogSummaries({})
-    setWorklogError(null)
+  async function loadSupabaseUsage(
+    issues: JiraSprintIssue[],
+    sprint: JiraSprint,
+    issueRequestId: number
+  ) {
+    const requestId = ++supabaseUsageRequestRef.current
+    setSupabaseUsage({})
+    setSupabaseUsageError(null)
     if (!issues.length) {
-      setLoadingWorklogs(false)
+      setLoadingSupabaseUsage(false)
       return
     }
-    setLoadingWorklogs(true)
+    setLoadingSupabaseUsage(true)
     try {
       const keys = issues.map(issue => issue.key)
+      const range = sprintUsageRange(sprint)
       const chunks: string[][] = []
       for (let index = 0; index < keys.length; index += 300) {
         chunks.push(keys.slice(index, index + 300))
       }
       const results = (
-        await Promise.all(chunks.map(chunk => window.hrs.getJiraSprintWorklogSummaries(chunk)))
+        await Promise.all(
+          chunks.map(chunk =>
+            window.hrs.getSupabaseSprintTaskUsage(chunk, range.start, range.end)
+          )
+        )
       ).flat()
-      if (requestId !== worklogRequestRef.current || issueRequestId !== issueRequestRef.current) {
+      if (
+        requestId !== supabaseUsageRequestRef.current ||
+        issueRequestId !== issueRequestRef.current
+      ) {
         return
       }
-      setWorklogSummaries(
-        Object.fromEntries(results.map(summary => [summary.issueKey, summary]))
-      )
+      setSupabaseUsage(Object.fromEntries(results.map(usage => [usage.issueKey, usage])))
     } catch (reason) {
-      if (requestId === worklogRequestRef.current && issueRequestId === issueRequestRef.current) {
-        setWorklogError(
-          `Contributor hours could not be loaded: ${
+      if (
+        requestId === supabaseUsageRequestRef.current &&
+        issueRequestId === issueRequestRef.current
+      ) {
+        setSupabaseUsageError(
+          `Supabase task hours could not be loaded: ${
             reason instanceof Error ? reason.message : String(reason)
           }`
         )
       }
     } finally {
-      if (requestId === worklogRequestRef.current) setLoadingWorklogs(false)
+      if (requestId === supabaseUsageRequestRef.current) setLoadingSupabaseUsage(false)
     }
   }
 
@@ -259,7 +296,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
       if (requestId !== issueRequestRef.current) return
       setBacklogIssues(backlog)
       setSprintIssues(sprint)
-      void loadWorklogSummaries([...backlog, ...sprint], requestId)
+      void loadSupabaseUsage([...backlog, ...sprint], selectedSprint, requestId)
     } catch (reason) {
       if (requestId === issueRequestRef.current) {
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -275,7 +312,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
     setSuccess(null)
     setUndoAction(null)
     void refreshIssues()
-  }, [sprintSelection, selectedCatalogItem])
+  }, [sprintSelection, selectedCatalogItem, supabaseConnected])
 
   const issuesByColumn = useMemo<Record<SprintColumn, JiraSprintIssue[]>>(
     () => ({
@@ -448,8 +485,10 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
 
   function renderIssueCard(issue: JiraSprintIssue, column: SprintColumn) {
     const linked = linkedKeys.has(issue.key.toUpperCase())
-    const worklogs = worklogSummaries[issue.key]
-    const loggedSeconds = worklogs?.totalSeconds ?? issue.timespent
+    const usage = supabaseUsage[issue.key]
+    const loggedSeconds = usage?.usedSeconds ?? 0
+    const budgetSeconds = usage?.budgetSeconds ?? issue.estimateSeconds
+    const remainingSeconds = Math.max(0, budgetSeconds - loggedSeconds)
     return (
       <Card
         key={issue.key}
@@ -502,50 +541,63 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
           <div className="sprint-worklog-section">
             <Group gap={5} mb={5}>
               <IconUsers size={13} />
-              <Text size="xs" fw={800}>Reported hours</Text>
-              {loadingWorklogs && !worklogs ? <Loader size={11} /> : null}
+              <Text size="xs" fw={800}>Supabase reported hours</Text>
+              {loadingSupabaseUsage && !usage ? <Loader size={11} /> : null}
             </Group>
-            {worklogs?.contributors.length ? (
+            {usage?.employees.length ? (
               <Stack gap={4}>
-                {worklogs.contributors.map(contributor => (
+                {usage.employees.map(employee => (
                   <Group
-                    key={`${issue.key}:${contributor.accountId ?? contributor.name}`}
+                    key={`${issue.key}:${employee.employeeId}`}
                     justify="space-between"
                     align="center"
                     wrap="nowrap"
                     className="sprint-contributor-row"
-                    aria-label={`${contributor.name} reported ${formatSeconds(contributor.seconds)}`}
+                    aria-label={`${employee.employeeName} reported ${formatSeconds(employee.seconds)} from Supabase`}
                   >
                     <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
                       <span className="sprint-contributor-avatar" aria-hidden="true">
-                        {contributor.name.trim().charAt(0).toUpperCase() || '?'}
+                        {employee.employeeName.trim().charAt(0).toUpperCase() || '?'}
                       </span>
-                      <Text size="xs" truncate>{contributor.name}</Text>
+                      <Text size="xs" truncate>{employee.employeeName}</Text>
                     </Group>
                     <Text size="xs" fw={800} className="sprint-contributor-hours">
-                      {formatSeconds(contributor.seconds)}
+                      {formatSeconds(employee.seconds)}
                     </Text>
                   </Group>
                 ))}
               </Stack>
-            ) : loadingWorklogs && !worklogs ? (
-              <Text size="xs" c="dimmed">Loading contributors…</Text>
+            ) : loadingSupabaseUsage && !usage ? (
+              <Text size="xs" c="dimmed">Loading Supabase contributors…</Text>
+            ) : !supabaseConnected ? (
+              <Text size="xs" c="dimmed">Connect Supabase to see reported hours</Text>
+            ) : !usage ? (
+              <Text size="xs" c="dimmed">Not linked to a Supabase shared task</Text>
             ) : (
               <Text size="xs" c="dimmed">No reported hours</Text>
             )}
           </div>
 
-          <Group justify="space-between" align="center" wrap="nowrap" gap="xs">
-            <Tooltip label={`${formatSeconds(issue.estimateSeconds)} original estimate`} withArrow>
-              <Group gap={4} wrap="nowrap" className="sprint-card-time">
-                <IconClock size={12} />
-                <Text size="xs">Logged {formatSeconds(loggedSeconds)}</Text>
-              </Group>
-            </Tooltip>
-            <Badge size="sm" variant="light" color={issue.remainingSeconds > 0 ? 'yellow' : 'teal'}>
-              {formatSeconds(issue.remainingSeconds)} remaining
-            </Badge>
-          </Group>
+          {usage ? (
+            <Group justify="space-between" align="center" wrap="nowrap" gap="xs">
+              <Tooltip
+                label={`${formatSeconds(budgetSeconds)} ${usage.budgetSeconds !== null ? 'Supabase task budget' : 'Jira original estimate'}`}
+                withArrow
+              >
+                <Group gap={4} wrap="nowrap" className="sprint-card-time">
+                  <IconClock size={12} />
+                  <Text size="xs">Logged {formatSeconds(loggedSeconds)}</Text>
+                </Group>
+              </Tooltip>
+              <Badge size="sm" variant="light" color={remainingSeconds > 0 ? 'yellow' : 'teal'}>
+                {formatSeconds(remainingSeconds)} remaining
+              </Badge>
+            </Group>
+          ) : (
+            <Text size="xs" c="dimmed">
+              Supabase totals unavailable
+            </Text>
+          )}
         </Stack>
       </Card>
     )
@@ -644,7 +696,9 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
       </Card>
 
       {error ? <Alert color="red" variant="light" radius="md">{error}</Alert> : null}
-      {worklogError ? <Alert color="yellow" variant="light" radius="md">{worklogError}</Alert> : null}
+      {supabaseUsageError ? (
+        <Alert color="yellow" variant="light" radius="md">{supabaseUsageError}</Alert>
+      ) : null}
       {success ? (
         <Alert color="teal" variant="light" radius="md">
           <Group justify="space-between" align="center" wrap="wrap">
@@ -719,7 +773,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
 
       <Text size="xs" c="dimmed" ta="center">
         {isPastSprint
-          ? 'Past sprints are read-only. Contributor totals come from Jira worklogs.'
+          ? 'Past sprints are read-only. Contributor totals come from Supabase reports.'
           : 'Moving and ranking issues requires Jira Edit and Schedule Issues permissions.'}
       </Text>
     </Stack>

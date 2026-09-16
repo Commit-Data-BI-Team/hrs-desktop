@@ -22538,6 +22538,7 @@ export default function App() {
             linkedIssueKeys={allProjectMissions
               .map(mission => mission.jiraIssueKey?.trim() ?? '')
               .filter(Boolean)}
+            supabaseConnected={Boolean(supabaseStatus?.email)}
             onClose={() => {
               void window.hrs.closeSprintWindow()
             }}

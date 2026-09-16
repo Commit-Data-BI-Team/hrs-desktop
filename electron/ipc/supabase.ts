@@ -58,6 +58,19 @@ type SharedFictiveTaskUsageRow = {
   employees?: unknown
 }
 
+type SprintTaskUsage = {
+  issueKey: string
+  taskId: string
+  taskName: string
+  usedSeconds: number
+  budgetSeconds: number | null
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+  }>
+}
+
 type MissionStatus = 'todo' | 'in_progress' | 'blocked' | 'done' | 'archived'
 
 type SharedFictiveTaskRow = {
@@ -91,6 +104,7 @@ type SharedProjectHourBudgetRow = {
 }
 
 const UUID_REGEX = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+const JIRA_ISSUE_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
 const MISSION_STATUSES = new Set<MissionStatus>([
   'todo',
   'in_progress',
@@ -864,6 +878,115 @@ export function registerSupabaseIpc() {
       lastReportedAt: row.last_reported_at ?? null,
       employees: normalizeUsageEmployees(row.employees)
     }))
+  })
+
+  ipcMain.handle('supabase:getSprintTaskUsage', async (_event, payload: unknown) => {
+    const record = payload && typeof payload === 'object' && !Array.isArray(payload)
+      ? (payload as Record<string, unknown>)
+      : {}
+    const issueKeys = Array.from(
+      new Set(
+        (Array.isArray(record.issueKeys) ? record.issueKeys : [])
+          .slice(0, 300)
+          .map(value => cleanString(value, 64).toUpperCase())
+          .filter(value => JIRA_ISSUE_KEY_REGEX.test(value))
+      )
+    )
+    const startDate = validateDate(record.startDate)
+    const endDate = validateDate(record.endDate)
+    if (endDate < startDate) throw new Error('Invalid sprint usage date range')
+    if (!issueKeys.length) return []
+
+    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
+      const fixtures: Record<string, SprintTaskUsage> = {
+        'VDA-600': {
+          issueKey: 'VDA-600',
+          taskId: '00000000-0000-4000-8000-000000000600',
+          taskName: 'Backlog discovery',
+          usedSeconds: 0,
+          budgetSeconds: 8 * 3600,
+          employees: []
+        },
+        'VDA-601': {
+          issueKey: 'VDA-601',
+          taskId: '00000000-0000-4000-8000-000000000601',
+          taskName: 'Active sprint task',
+          usedSeconds: 2 * 3600,
+          budgetSeconds: 8 * 3600,
+          employees: [
+            { employeeId: 1, employeeName: 'Dror Rahamim', seconds: 90 * 60 },
+            { employeeId: 2, employeeName: 'Vitaly Shechtman', seconds: 30 * 60 }
+          ]
+        },
+        'VDA-590': {
+          issueKey: 'VDA-590',
+          taskId: '00000000-0000-4000-8000-000000000590',
+          taskName: 'Previous sprint delivery',
+          usedSeconds: 6 * 3600,
+          budgetSeconds: 8 * 3600,
+          employees: [{ employeeId: 1, employeeName: 'Dror Rahamim', seconds: 6 * 3600 }]
+        },
+        'LSM-30': {
+          issueKey: 'LSM-30',
+          taskId: '00000000-0000-4000-8000-000000000030',
+          taskName: 'LSM backlog item',
+          usedSeconds: 0,
+          budgetSeconds: 4 * 3600,
+          employees: []
+        }
+      }
+      return issueKeys.map(issueKey => fixtures[issueKey]).filter(Boolean)
+    }
+
+    const client = await createSupabaseClient()
+    const user = await getAuthenticatedSupabaseUser(client)
+    if (!user) return []
+    const { data: taskData, error: taskError } = await client
+      .from('shared_fictive_tasks')
+      .select('id,jira_issue_key,name,planned_seconds,capped_seconds')
+      .in('jira_issue_key', issueKeys)
+    if (taskError) {
+      if (isSharedSchemaMissing(taskError)) return []
+      throw new Error(taskError.message)
+    }
+    const tasks = (taskData ?? []) as Array<
+      Pick<
+        SharedFictiveTaskRow,
+        'id' | 'jira_issue_key' | 'name' | 'planned_seconds' | 'capped_seconds'
+      >
+    >
+    if (!tasks.length) return []
+    const { data: usageData, error: usageError } = await client.rpc(
+      'get_shared_fictive_task_usage',
+      {
+        task_ids: tasks.map(task => task.id),
+        start_date_input: startDate,
+        end_date_input: endDate
+      }
+    )
+    if (usageError) {
+      if (isSharedUsageFunctionMissing(usageError)) {
+        throw new Error(
+          'Shared task date-aware usage is not installed. Apply Supabase migration 004_usage_date_boundaries.sql.'
+        )
+      }
+      throw new Error(usageError.message)
+    }
+    const usageByTaskId = new Map(
+      ((usageData ?? []) as SharedFictiveTaskUsageRow[]).map(row => [row.task_id, row])
+    )
+    return tasks.map(task => {
+      const usage = usageByTaskId.get(task.id)
+      const employees = normalizeUsageEmployees(usage?.employees)
+      return {
+        issueKey: task.jira_issue_key,
+        taskId: task.id,
+        taskName: task.name,
+        usedSeconds: Math.max(0, Number(usage?.used_seconds) || 0),
+        budgetSeconds: task.capped_seconds ?? task.planned_seconds ?? null,
+        employees
+      } satisfies SprintTaskUsage
+    })
   })
 
   ipcMain.handle('supabase:syncWorkReports', async (_event, payload: unknown) => {

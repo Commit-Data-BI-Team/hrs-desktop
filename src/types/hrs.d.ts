@@ -148,19 +148,19 @@ export type JiraSprintIssue = {
   assigneeName: string | null
   timespent: number
   estimateSeconds: number
-  remainingSeconds: number
 }
 
-export type JiraSprintContributor = {
-  accountId: string | null
-  name: string
-  seconds: number
-}
-
-export type JiraSprintWorklogSummary = {
+export type SupabaseSprintTaskUsage = {
   issueKey: string
-  contributors: JiraSprintContributor[]
-  totalSeconds: number
+  taskId: string
+  taskName: string
+  usedSeconds: number
+  budgetSeconds: number | null
+  employees: Array<{
+    employeeId: number
+    employeeName: string
+    seconds: number
+  }>
 }
 
 type JiraWorkItem = {
@@ -659,9 +659,6 @@ type HrsApi = {
   getJiraSprints: (boardId: number) => Promise<JiraSprint[]>
   getJiraBacklogIssues: (boardId: number) => Promise<JiraSprintIssue[]>
   getJiraSprintIssues: (boardId: number, sprintId: number) => Promise<JiraSprintIssue[]>
-  getJiraSprintWorklogSummaries: (
-    issueKeys: string[]
-  ) => Promise<JiraSprintWorklogSummary[]>
   moveJiraIssuesToSprint: (payload: {
     sprintId: number
     issueKeys: string[]
@@ -786,6 +783,11 @@ type HrsApi = {
     startDate: string,
     endDate: string
   ) => Promise<SharedFictiveTaskUsage[]>
+  getSupabaseSprintTaskUsage: (
+    issueKeys: string[],
+    startDate: string,
+    endDate: string
+  ) => Promise<SupabaseSprintTaskUsage[]>
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string

@@ -9,7 +9,7 @@
 - Keeps active sprints editable and displays completed sprints in a clear read-only history view.
 - Added drag-and-drop columns for **Backlog**, **To Do**, **In Progress**, and **Done**, with changes saved immediately to Jira.
 - Supports moving issues into or out of a sprint, transitioning their Jira status, and reordering cards using Jira rank.
-- Shows every Jira worklog contributor on each task with their individual reported hours, total logged time, and the task's remaining Jira estimate.
+- Resolves Jira cards to their Supabase shared tasks and shows every reporting employee with their individual Supabase hours, total used time, and remaining shared-task budget for the selected sprint dates.
 - Added optimistic updates, automatic rollback on Jira errors, a one-click **Undo**, manual refresh, sprint goals, assignees, time progress, and HRS-linked issue badges.
 - Keeps each column independently scrollable and adapts the board to smaller Windows and macOS displays without forcing the app fullscreen.
 

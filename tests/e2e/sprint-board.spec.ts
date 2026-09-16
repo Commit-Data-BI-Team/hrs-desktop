@@ -4,13 +4,14 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-test('manages active and past Jira sprints with worklog contributors', async () => {
+test('manages active and past Jira sprints with Supabase contributors', async () => {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hrs-sprint-board-'))
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${userDataDir}`],
     env: {
       ...process.env,
       HRS_E2E: '1',
+      HRS_SPRINT_E2E: '1',
       E2E_USE_FILE: '1'
     }
   })
@@ -38,10 +39,10 @@ test('manages active and past Jira sprints with worklog contributors', async () 
       'indeterminate'
     )
     await expect(
-      sprintPage.getByLabel('Dror Rahamim reported 1h 30m')
+      sprintPage.getByLabel('Dror Rahamim reported 1h 30m from Supabase')
     ).toBeVisible()
     await expect(
-      sprintPage.getByLabel('Vitaly Shechtman reported 30m')
+      sprintPage.getByLabel('Vitaly Shechtman reported 30m from Supabase')
     ).toBeVisible()
     await expect(sprintPage.locator('[data-issue-key="VDA-601"]')).toContainText('6h remaining')
     const sprintSelect = sprintPage.getByRole('textbox', { name: 'Sprint' })

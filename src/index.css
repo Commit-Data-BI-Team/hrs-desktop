@@ -5381,6 +5381,12 @@ body.sprints-mode {
   padding-bottom: 4px;
 }
 
+.sprint-date-range .mantine-Badge-label {
+  text-transform: none;
+  letter-spacing: 0.01em;
+  font-variant-numeric: tabular-nums;
+}
+
 .sprint-board-columns {
   display: grid;
   grid-template-columns: repeat(4, minmax(220px, 1fr));

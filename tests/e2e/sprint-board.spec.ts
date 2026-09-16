@@ -34,6 +34,8 @@ test('manages active and past Jira sprints with Supabase contributors', async ()
     await expect(sprintPage.getByRole('textbox', { name: 'Sprint' })).toHaveValue(
       'Active · VDA Sprint 12'
     )
+    await expect(sprintPage.getByText('Start 01 Sept 2026')).toBeVisible()
+    await expect(sprintPage.getByText('End 14 Sept 2026')).toBeVisible()
     await expect(sprintPage.locator('[data-issue-key="VDA-600"]')).toHaveAttribute(
       'data-column',
       'backlog'

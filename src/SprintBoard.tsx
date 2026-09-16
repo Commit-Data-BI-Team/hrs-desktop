@@ -15,6 +15,7 @@ import {
 import {
   IconArrowBackUp,
   IconArrowsMaximize,
+  IconCalendarEvent,
   IconClock,
   IconGripVertical,
   IconRefresh,
@@ -100,6 +101,18 @@ function sprintSelectionValue(item: SprintCatalogItem) {
 function sprintTimestamp(sprint: JiraSprint) {
   const value = Date.parse(sprint.endDate ?? sprint.startDate ?? '')
   return Number.isFinite(value) ? value : 0
+}
+
+function formatSprintDate(value: string | null) {
+  if (!value) return 'Not set'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return 'Not set'
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric'
+  }).format(date)
 }
 
 function dateInIsrael(value: string | null | undefined) {
@@ -739,6 +752,24 @@ export function SprintBoard({
               <Text size="xs" c="dimmed" lineClamp={2}>
                 {selectedSprint.goal || 'No sprint goal'}
               </Text>
+              <Group gap={6} wrap="wrap" className="sprint-date-range">
+                <Badge
+                  size="sm"
+                  variant="light"
+                  color="blue"
+                  leftSection={<IconCalendarEvent size={12} />}
+                >
+                  Start {formatSprintDate(selectedSprint.startDate)}
+                </Badge>
+                <Badge
+                  size="sm"
+                  variant="light"
+                  color={isPastSprint ? 'gray' : 'cyan'}
+                  leftSection={<IconCalendarEvent size={12} />}
+                >
+                  End {formatSprintDate(selectedSprint.endDate)}
+                </Badge>
+              </Group>
             </Stack>
           ) : null}
         </Group>

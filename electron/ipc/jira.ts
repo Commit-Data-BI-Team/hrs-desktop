@@ -19,12 +19,25 @@ import {
 } from '../utils/validation'
 import { resolveIntegrationAttachments } from '../integration/attachments'
 
-const PROJECT_KEY = 'VDA'
-const PROJECT_NAME = 'Data Analytics Tasks'
+const DEFAULT_PROJECT_KEYS = ['VDA', 'LSM']
+const JIRA_PROJECT_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}$/
+const configuredProjectKeys = (process.env.HRS_JIRA_PROJECT_KEYS ?? DEFAULT_PROJECT_KEYS.join(','))
+  .split(',')
+  .map(value => value.trim().toUpperCase())
+  .filter(value => JIRA_PROJECT_KEY_REGEX.test(value))
+const PROJECT_KEYS = configuredProjectKeys.length
+  ? Array.from(new Set(configuredProjectKeys))
+  : DEFAULT_PROJECT_KEYS
+const PRIMARY_PROJECT_KEY = PROJECT_KEYS[0]
+const PROJECT_NAME = PROJECT_KEYS.join(' + ')
 const JIRA_CACHE_TTL_MS = 5 * 60 * 1000
 const JIRA_PERSIST_TTL_MS = 6 * 60 * 60 * 1000
 const JIRA_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}-[0-9]+$/
 const JIRA_E2E = !app.isPackaged && (process.env.HRS_E2E === '1' || process.env.JIRA_E2E === '1')
+
+function projectJql(projectKey: string) {
+  return `project = ${projectKey}`
+}
 
 function redactSensitiveText(input: string): string {
   let text = input
@@ -332,7 +345,8 @@ type JiraCommentAttachmentCandidate = {
 
 const E2E_EPICS: JiraEpic[] = [
   { key: 'VDA-98', summary: 'Weizmann Institute of Science' },
-  { key: 'VDA-147', summary: 'Microsoft' }
+  { key: 'VDA-147', summary: 'Microsoft' },
+  { key: 'LSM-10', summary: 'LSM delivery' }
 ]
 
 const E2E_WORK_ITEMS_BY_EPIC: Record<string, JiraWorkItem[]> = {
@@ -394,6 +408,20 @@ const E2E_WORK_ITEMS_BY_EPIC: Record<string, JiraWorkItem[]> = {
           lastWorklog: null
         }
       ],
+      worklogs: [],
+      worklogTotal: 0,
+      lastWorklog: null
+    }
+  ],
+  'LSM-10': [
+    {
+      key: 'LSM-21',
+      summary: 'LSM discovery',
+      timespent: 2 * 3600,
+      estimateSeconds: 16 * 3600,
+      assigneeName: 'Unassigned',
+      statusName: 'To Do',
+      subtasks: [],
       worklogs: [],
       worklogTotal: 0,
       lastWorklog: null
@@ -887,14 +915,16 @@ export function registerJiraIpc() {
   if (JIRA_E2E) {
     let mappings: Record<string, string> = {
       'Weizmann Institute of Science': 'VDA-98',
-      Microsoft: 'VDA-147'
+      Microsoft: 'VDA-147',
+      LSM: 'LSM-10'
     }
     ipcMain.handle('jira:getStatus', async () => ({
       baseUrl: 'https://jira.local',
       email: 'e2e@jira.local',
       configured: true,
       hasCredentials: true,
-      projectKey: PROJECT_KEY,
+      projectKey: PRIMARY_PROJECT_KEY,
+      projectKeys: PROJECT_KEYS,
       projectName: PROJECT_NAME
     }))
     ipcMain.handle('jira:setCredentials', async () => true)
@@ -1143,7 +1173,8 @@ export function registerJiraIpc() {
       email: hasCredentials ? email : null,
       configured,
       hasCredentials,
-      projectKey: PROJECT_KEY,
+      projectKey: PRIMARY_PROJECT_KEY,
+      projectKeys: PROJECT_KEYS,
       projectName: PROJECT_NAME
     }
   })
@@ -1174,16 +1205,34 @@ export function registerJiraIpc() {
   })
 
   ipcMain.handle('jira:getEpics', async () => {
-    const cached = getCachedValue<JiraEpic[]>('epics')
+    const cacheKey = `epics:${PROJECT_KEYS.join(',')}`
+    const cached = getCachedValue<JiraEpic[]>(cacheKey)
     if (cached) return cached
     const EPIC_FETCH_LIMIT = 200
-    const jql = `project = ${PROJECT_KEY} AND issuetype = Epic ORDER BY updated DESC`
-    const data = await searchIssues(jql, ['summary'], { limit: EPIC_FETCH_LIMIT })
-    const epics = data.map(issue => ({
+    const results = await Promise.allSettled(
+      PROJECT_KEYS.map(projectKey =>
+        searchIssues(
+          `${projectJql(projectKey)} AND issuetype = Epic ORDER BY updated DESC`,
+          ['summary'],
+          { limit: EPIC_FETCH_LIMIT }
+        )
+      )
+    )
+    const successful = results.filter(
+      (result): result is PromiseFulfilledResult<JiraSearchIssue[]> => result.status === 'fulfilled'
+    )
+    if (!successful.length) {
+      const firstFailure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      )
+      throw firstFailure?.reason ?? new Error('Jira projects could not be loaded')
+    }
+    const data = successful.flatMap(result => result.value)
+    const epics = Array.from(new Map(data.map(issue => [issue.key, issue])).values()).map(issue => ({
       key: issue.key,
       summary: issue.fields?.summary ?? issue.key
     }))
-    setCachedValue('epics', epics, 30 * 60 * 1000)
+    setCachedValue(cacheKey, epics, 30 * 60 * 1000)
     return epics
   })
 
@@ -1616,12 +1665,30 @@ export function registerJiraIpc() {
     const currentUser = (await jiraRequest('/rest/api/3/myself')) as {
       accountId?: string
     }
-    const result = await searchIssuesWithLimit(
-      `project = ${PROJECT_KEY} AND worklogDate = "${safeDate}" AND worklogAuthor = currentUser() ORDER BY updated DESC`,
-      ['summary'],
-      200
+    const results = await Promise.allSettled(
+      PROJECT_KEYS.map(projectKey =>
+        searchIssuesWithLimit(
+          `${projectJql(projectKey)} AND worklogDate = "${safeDate}" AND worklogAuthor = currentUser() ORDER BY updated DESC`,
+          ['summary'],
+          200
+        )
+      )
     )
-    const issueQueue = result.issues.map(issue => issue.key)
+    const successful = results.filter(
+      (
+        result
+      ): result is PromiseFulfilledResult<{ issues: JiraSearchIssue[]; reachedLimit: boolean }> =>
+        result.status === 'fulfilled'
+    )
+    if (!successful.length) {
+      const firstFailure = results.find(
+        (result): result is PromiseRejectedResult => result.status === 'rejected'
+      )
+      throw firstFailure?.reason ?? new Error('Jira worklogs could not be searched')
+    }
+    const issueQueue = Array.from(
+      new Set(successful.flatMap(result => result.value.issues.map(issue => issue.key)))
+    )
     const worklogs: Array<ReturnType<typeof normalizeWorklogs>[number] & { issueKey: string }> = []
     const concurrency = Math.min(4, issueQueue.length)
     await Promise.all(
@@ -1638,7 +1705,12 @@ export function registerJiraIpc() {
         }
       })
     )
-    return { worklogs, partial: result.reachedLimit }
+    return {
+      worklogs,
+      partial:
+        successful.some(result => result.value.reachedLimit) ||
+        successful.length !== PROJECT_KEYS.length
+    }
   })
 
   ipcMain.handle('jira:createIssue', async (_event, payload: unknown) => {
@@ -1732,7 +1804,7 @@ export function registerJiraIpc() {
         const requiredPermission = ownsWorklog ? 'Delete Own Worklogs' : 'Delete All Worklogs'
         const displayName = currentUser.displayName?.trim() || 'The connected Jira user'
         throw new Error(
-          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}. Ask a Jira administrator to grant it in the VDA project permission scheme. The HRS report and gauge were not changed.`
+          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}. Ask a Jira administrator to grant it in the ${issueKey.split('-')[0]} project permission scheme. The HRS report and gauge were not changed.`
         )
       }
       await jiraRequest(

@@ -381,6 +381,7 @@ type JiraStatus = {
   email: string | null
   baseUrl: string
   projectKey: string
+  projectKeys?: string[]
   projectName?: string
   hasCredentials: boolean
 }
@@ -16001,7 +16002,7 @@ export default function App() {
                 />
                 <TextInput
                   label="Jira issue key"
-                  placeholder="VDA-123"
+                  placeholder="VDA-123 or LSM-123"
                   value={missionJiraIssueKey}
                   onChange={event => setMissionJiraIssueKey(event.currentTarget.value)}
                   size={compact ? 'xs' : 'sm'}

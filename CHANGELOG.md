@@ -27,6 +27,7 @@
 - Shared-task selection now automatically enables Jira logging and selects that task's created Jira issue; switching shared tasks switches the work item as well.
 - Changed the task-side Jira/Slack bubble to open a smooth in-tray slide-over sheet, preserving the tray's size and scroll position instead of expanding and repositioning the window.
 - Suppressed native tray resize/reposition requests while the Jira/Slack sheet mounts, animates, and unmounts, preventing the tray from appearing to close and reopen.
+- Expanded Jira from the hard-coded VDA project to **VDA + LSM**: epics, customer mappings, mission creation, worklogs, deletion reconciliation, budgets, and task updates now support either project.
 
 ## 1.0.18
 

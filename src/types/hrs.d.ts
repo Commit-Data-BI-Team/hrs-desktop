@@ -113,6 +113,7 @@ type JiraStatus = {
   email: string | null
   baseUrl: string
   projectKey: string
+  projectKeys?: string[]
   projectName?: string
   hasCredentials: boolean
 }

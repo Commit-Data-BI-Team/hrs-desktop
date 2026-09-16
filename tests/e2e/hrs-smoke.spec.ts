@@ -27,8 +27,17 @@ test('renders the tray reports KPIs and employee projects', async () => {
 
     await expect(window.getByLabel('HRS Comment')).toBeVisible()
     await expect(
-      window.getByRole('button', { name: 'Update Jira & Slack' })
+      window.getByRole('button', { name: 'Update Jira and Slack' })
     ).toBeVisible()
+    const jiraEpics = await window.evaluate(() => window.hrs.getJiraEpics())
+    expect(jiraEpics.map(epic => epic.key)).toContain('LSM-10')
+    const createdLsmMission = await window.evaluate(() =>
+      window.hrs.createJiraIssue({
+        parentIssueKey: 'LSM-10',
+        summary: 'E2E LSM mission'
+      })
+    )
+    expect(createdLsmMission.key).toMatch(/^LSM-/)
     await expect(window.getByRole('button', { name: 'Reports' })).toBeVisible()
     await window.getByRole('button', { name: 'Reports' }).click()
 
@@ -87,7 +96,7 @@ test('renders the tray reports KPIs and employee projects', async () => {
         element.scrollWidth <= element.clientWidth + 1
       )
     ).toBe(true)
-    await window.getByRole('button', { name: 'Update Jira & Slack' }).click()
+    await window.getByRole('button', { name: 'Update Jira and Slack' }).click()
     const updatePanel = window.locator('.tray-communicate-panel')
     await expect(updatePanel.locator('p').filter({ hasText: /^Send update$/ })).toBeVisible()
     await expect(window.getByLabel('HRS Comment')).toBeVisible()
@@ -168,6 +177,8 @@ test('renders the tray reports KPIs and employee projects', async () => {
         'Jira comment posted, status updated, 1 file uploaded · Slack message and 1 file posted.'
       )
     ).toBeVisible()
+    await updatePanel.getByRole('button', { name: 'Close customer update' }).click()
+    await expect(updatePanel).toBeHidden()
 
     const projectPicker = window.locator('.tray-filters').getByRole('textbox', { name: 'Project' })
     await projectPicker.click()

@@ -3082,7 +3082,7 @@ body.floating-mode {
   min-width: 0;
   box-sizing: border-box;
   overflow: hidden;
-  margin-top: -4px;
+  margin-top: 0;
   padding: 10px 12px;
   border: 1px solid color-mix(in srgb, var(--stroke) 72%, transparent);
   border-radius: 12px;
@@ -3405,6 +3405,7 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-content {
+  position: relative;
   width: 100%;
   max-width: 100%;
   min-width: 0;
@@ -3418,7 +3419,7 @@ html[data-platform='windows'] .tray-shell-enter {
 }
 
 .tray-window-controls {
-  position: fixed;
+  position: absolute;
   top: 6px;
   right: 10px;
   z-index: 8;
@@ -3559,6 +3560,7 @@ html[data-platform='windows'] .tray-shell-enter {
 .quick-jira-required-item {
   width: 100%;
   min-width: 0;
+  margin: 2px 0;
 }
 
 .quick-jira-required-item .mantine-Select-label {
@@ -5241,11 +5243,14 @@ html[data-platform='windows'] .tray-calendar {
 }
 
 .tray-time-grid {
-  margin-top: 2px;
+  margin-top: 6px;
 }
 
 .tray-duration {
-  margin-top: -10px;
+  min-height: 16px;
+  margin-top: 0;
+  margin-bottom: 4px;
+  line-height: 1.3;
 }
 
 .tray-loading {

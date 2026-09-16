@@ -48,6 +48,7 @@
 - Reduced the gap between the meeting/status bar and calendar and moved the month, navigation, and calendar content higher in the tray.
 - Stacked **Close** above **Pin** on the right edge and reserved navigation space so the Settings icon never overlaps the pin control.
 - Collapsed the Overall Project and Shared Task contributor breakdowns by default, keeping only each title, hours, percentage, and gauge visible until its chevron is expanded.
+- Removed legacy negative margins that pulled gauges and the duration line into adjacent controls, restoring clear vertical spacing around Task, Jira, gauges, time fields, and comments.
 
 ### Update reliability
 

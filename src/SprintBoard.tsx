@@ -1,11 +1,11 @@
 import {
+  ActionIcon,
   Alert,
   Badge,
   Button,
   Card,
   Group,
   Loader,
-  SegmentedControl,
   Select,
   Stack,
   Text,
@@ -17,11 +17,17 @@ import {
   IconGripVertical,
   IconRefresh,
   IconRoute,
-  IconSettings
+  IconUsers,
+  IconX
 } from '@tabler/icons-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { DragEvent as ReactDragEvent } from 'react'
-import type { JiraAgileBoard, JiraSprint, JiraSprintIssue } from './types/hrs'
+import type {
+  JiraAgileBoard,
+  JiraSprint,
+  JiraSprintIssue,
+  JiraSprintWorklogSummary
+} from './types/hrs'
 
 type SprintProjectStatus = {
   configured: boolean
@@ -41,10 +47,15 @@ type SprintUndo = {
   run: () => Promise<void>
 }
 
+type SprintCatalogItem = {
+  board: JiraAgileBoard
+  sprint: JiraSprint
+}
+
 type Props = {
   jiraStatus: SprintProjectStatus | null
   linkedIssueKeys: string[]
-  onOpenSettings: () => void
+  onClose: () => void
 }
 
 const COLUMN_LABELS: Record<SprintColumn, string> = {
@@ -76,7 +87,16 @@ function statusNameForColumn(column: Exclude<SprintColumn, 'backlog'>) {
   return 'To Do'
 }
 
-export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Props) {
+function sprintSelectionValue(item: SprintCatalogItem) {
+  return `${item.board.id}:${item.sprint.id}`
+}
+
+function sprintTimestamp(sprint: JiraSprint) {
+  const value = Date.parse(sprint.endDate ?? sprint.startDate ?? '')
+  return Number.isFinite(value) ? value : 0
+}
+
+export function SprintBoard({ jiraStatus, linkedIssueKeys, onClose }: Props) {
   const projectKeys = useMemo(() => {
     const values = jiraStatus?.projectKeys?.length
       ? jiraStatus.projectKeys
@@ -85,116 +105,161 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
         : ['VDA', 'LSM']
     return Array.from(new Set(values.map(value => value.trim().toUpperCase()).filter(Boolean)))
   }, [jiraStatus])
-  const [projectKey, setProjectKey] = useState(projectKeys[0] ?? 'VDA')
-  const [boards, setBoards] = useState<JiraAgileBoard[]>([])
-  const [boardId, setBoardId] = useState<string | null>(null)
-  const [sprints, setSprints] = useState<JiraSprint[]>([])
-  const [sprintId, setSprintId] = useState<string | null>(null)
+  const [catalog, setCatalog] = useState<SprintCatalogItem[]>([])
+  const [sprintSelection, setSprintSelection] = useState<string | null>(null)
   const [backlogIssues, setBacklogIssues] = useState<JiraSprintIssue[]>([])
   const [sprintIssues, setSprintIssues] = useState<JiraSprintIssue[]>([])
-  const [loadingBoards, setLoadingBoards] = useState(false)
-  const [loadingSprints, setLoadingSprints] = useState(false)
+  const [worklogSummaries, setWorklogSummaries] = useState<
+    Record<string, JiraSprintWorklogSummary>
+  >({})
+  const [loadingCatalog, setLoadingCatalog] = useState(false)
   const [loadingIssues, setLoadingIssues] = useState(false)
+  const [loadingWorklogs, setLoadingWorklogs] = useState(false)
   const [mutationLoading, setMutationLoading] = useState(false)
   const [dragState, setDragState] = useState<SprintDragState | null>(null)
   const [dragOverColumn, setDragOverColumn] = useState<SprintColumn | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [worklogError, setWorklogError] = useState<string | null>(null)
   const [success, setSuccess] = useState<string | null>(null)
   const [undoAction, setUndoAction] = useState<SprintUndo | null>(null)
-  const boardRequestRef = useRef(0)
-  const sprintRequestRef = useRef(0)
+  const catalogRequestRef = useRef(0)
   const issueRequestRef = useRef(0)
+  const worklogRequestRef = useRef(0)
   const linkedKeys = useMemo(
     () => new Set(linkedIssueKeys.map(key => key.trim().toUpperCase())),
     [linkedIssueKeys]
   )
 
-  useEffect(() => {
-    if (!projectKeys.includes(projectKey)) setProjectKey(projectKeys[0] ?? 'VDA')
-  }, [projectKeys, projectKey])
+  const selectedCatalogItem = useMemo(
+    () => catalog.find(item => sprintSelectionValue(item) === sprintSelection) ?? null,
+    [catalog, sprintSelection]
+  )
+  const selectedSprint = selectedCatalogItem?.sprint ?? null
+  const selectedBoard = selectedCatalogItem?.board ?? null
+  const isPastSprint = selectedSprint?.state === 'closed'
 
   useEffect(() => {
-    if (!jiraStatus?.configured || !projectKey) return
-    const requestId = ++boardRequestRef.current
-    setLoadingBoards(true)
+    if (!jiraStatus?.configured || !projectKeys.length) return
+    const requestId = ++catalogRequestRef.current
+    setLoadingCatalog(true)
     setError(null)
-    setBoards([])
-    setBoardId(null)
-    setSprints([])
-    setSprintId(null)
+    setCatalog([])
+    setSprintSelection(null)
     setBacklogIssues([])
     setSprintIssues([])
-    void window.hrs
-      .getJiraBoards(projectKey)
-      .then(result => {
-        if (requestId !== boardRequestRef.current) return
-        setBoards(result)
-        const saved = localStorage.getItem(`hrs-sprint-board:${projectKey}`)
-        const preferred = result.find(board => String(board.id) === saved) ?? result[0]
-        setBoardId(preferred ? String(preferred.id) : null)
-        if (!result.length) setError(`No Scrum board is available for ${projectKey}.`)
+    setWorklogSummaries({})
+    void (async () => {
+      const boardResults = await Promise.allSettled(
+        projectKeys.map(projectKey => window.hrs.getJiraBoards(projectKey))
+      )
+      const boards = Array.from(
+        new Map(
+          boardResults
+            .filter(
+              (result): result is PromiseFulfilledResult<JiraAgileBoard[]> =>
+                result.status === 'fulfilled'
+            )
+            .flatMap(result => result.value)
+            .map(board => [board.id, board])
+        ).values()
+      )
+      if (!boards.length) throw new Error('No Jira Scrum boards are available.')
+      const sprintResults = await Promise.allSettled(
+        boards.map(async board => ({ board, sprints: await window.hrs.getJiraSprints(board.id) }))
+      )
+      const items = sprintResults
+        .filter(
+          (
+            result
+          ): result is PromiseFulfilledResult<{ board: JiraAgileBoard; sprints: JiraSprint[] }> =>
+            result.status === 'fulfilled'
+        )
+        .flatMap(result =>
+          result.value.sprints
+            .filter(sprint => sprint.state === 'active' || sprint.state === 'closed')
+            .map(sprint => ({ board: result.value.board, sprint }))
+        )
+      const uniqueItems = Array.from(
+        new Map(items.map(item => [item.sprint.id, item])).values()
+      ).sort((left, right) => {
+        if (left.sprint.state !== right.sprint.state) {
+          return left.sprint.state === 'active' ? -1 : 1
+        }
+        return sprintTimestamp(right.sprint) - sprintTimestamp(left.sprint)
       })
+      if (requestId !== catalogRequestRef.current) return
+      setCatalog(uniqueItems)
+      const saved = localStorage.getItem('hrs-sprint-selection')
+      const preferred =
+        uniqueItems.find(item => sprintSelectionValue(item) === saved) ??
+        uniqueItems.find(item => item.sprint.state === 'active') ??
+        uniqueItems[0]
+      setSprintSelection(preferred ? sprintSelectionValue(preferred) : null)
+      if (!uniqueItems.length) setError('No active or past Jira sprints were found.')
+    })()
       .catch(reason => {
-        if (requestId === boardRequestRef.current) {
+        if (requestId === catalogRequestRef.current) {
           setError(reason instanceof Error ? reason.message : String(reason))
         }
       })
       .finally(() => {
-        if (requestId === boardRequestRef.current) setLoadingBoards(false)
+        if (requestId === catalogRequestRef.current) setLoadingCatalog(false)
       })
-  }, [jiraStatus?.configured, projectKey])
+  }, [jiraStatus?.configured, projectKeys])
 
-  useEffect(() => {
-    if (!boardId) return
-    const parsedBoardId = Number(boardId)
-    if (!Number.isFinite(parsedBoardId)) return
-    localStorage.setItem(`hrs-sprint-board:${projectKey}`, boardId)
-    const requestId = ++sprintRequestRef.current
-    setLoadingSprints(true)
-    setError(null)
-    setSprints([])
-    setSprintId(null)
-    setBacklogIssues([])
-    setSprintIssues([])
-    void window.hrs
-      .getJiraSprints(parsedBoardId)
-      .then(result => {
-        if (requestId !== sprintRequestRef.current) return
-        setSprints(result)
-        const saved = localStorage.getItem(`hrs-sprint:${boardId}`)
-        const preferred =
-          result.find(sprint => String(sprint.id) === saved) ??
-          result.find(sprint => sprint.state === 'active') ??
-          result[0]
-        setSprintId(preferred ? String(preferred.id) : null)
-        if (!result.length) setError('This board has no active or future sprint.')
-      })
-      .catch(reason => {
-        if (requestId === sprintRequestRef.current) {
-          setError(reason instanceof Error ? reason.message : String(reason))
-        }
-      })
-      .finally(() => {
-        if (requestId === sprintRequestRef.current) setLoadingSprints(false)
-      })
-  }, [boardId, projectKey])
+  async function loadWorklogSummaries(issues: JiraSprintIssue[], issueRequestId: number) {
+    const requestId = ++worklogRequestRef.current
+    setWorklogSummaries({})
+    setWorklogError(null)
+    if (!issues.length) {
+      setLoadingWorklogs(false)
+      return
+    }
+    setLoadingWorklogs(true)
+    try {
+      const keys = issues.map(issue => issue.key)
+      const chunks: string[][] = []
+      for (let index = 0; index < keys.length; index += 300) {
+        chunks.push(keys.slice(index, index + 300))
+      }
+      const results = (
+        await Promise.all(chunks.map(chunk => window.hrs.getJiraSprintWorklogSummaries(chunk)))
+      ).flat()
+      if (requestId !== worklogRequestRef.current || issueRequestId !== issueRequestRef.current) {
+        return
+      }
+      setWorklogSummaries(
+        Object.fromEntries(results.map(summary => [summary.issueKey, summary]))
+      )
+    } catch (reason) {
+      if (requestId === worklogRequestRef.current && issueRequestId === issueRequestRef.current) {
+        setWorklogError(
+          `Contributor hours could not be loaded: ${
+            reason instanceof Error ? reason.message : String(reason)
+          }`
+        )
+      }
+    } finally {
+      if (requestId === worklogRequestRef.current) setLoadingWorklogs(false)
+    }
+  }
 
   async function refreshIssues(options: { quiet?: boolean } = {}) {
-    if (!boardId || !sprintId) return
-    const parsedBoardId = Number(boardId)
-    const parsedSprintId = Number(sprintId)
-    if (!Number.isFinite(parsedBoardId) || !Number.isFinite(parsedSprintId)) return
+    if (!selectedBoard || !selectedSprint) return
     const requestId = ++issueRequestRef.current
     if (!options.quiet) setLoadingIssues(true)
     setError(null)
     try {
       const [backlog, sprint] = await Promise.all([
-        window.hrs.getJiraBacklogIssues(parsedBoardId),
-        window.hrs.getJiraSprintIssues(parsedBoardId, parsedSprintId)
+        selectedSprint.state === 'active'
+          ? window.hrs.getJiraBacklogIssues(selectedBoard.id)
+          : Promise.resolve([]),
+        window.hrs.getJiraSprintIssues(selectedBoard.id, selectedSprint.id)
       ])
       if (requestId !== issueRequestRef.current) return
       setBacklogIssues(backlog)
       setSprintIssues(sprint)
+      void loadWorklogSummaries([...backlog, ...sprint], requestId)
     } catch (reason) {
       if (requestId === issueRequestRef.current) {
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -205,15 +270,12 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
   }
 
   useEffect(() => {
-    if (!boardId || !sprintId) return
-    localStorage.setItem(`hrs-sprint:${boardId}`, sprintId)
+    if (!sprintSelection || !selectedCatalogItem) return
+    localStorage.setItem('hrs-sprint-selection', sprintSelection)
+    setSuccess(null)
+    setUndoAction(null)
     void refreshIssues()
-  }, [boardId, sprintId])
-
-  const selectedSprint = useMemo(
-    () => sprints.find(sprint => String(sprint.id) === sprintId) ?? null,
-    [sprints, sprintId]
-  )
+  }, [sprintSelection, selectedCatalogItem])
 
   const issuesByColumn = useMemo<Record<SprintColumn, JiraSprintIssue[]>>(
     () => ({
@@ -224,42 +286,39 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
     }),
     [backlogIssues, sprintIssues]
   )
+  const visibleColumns: SprintColumn[] = isPastSprint
+    ? ['todo', 'indeterminate', 'done']
+    : ['backlog', 'todo', 'indeterminate', 'done']
 
   async function transitionToColumn(issueKey: string, column: Exclude<SprintColumn, 'backlog'>) {
     const transitions = await window.hrs.getJiraTransitions(issueKey)
     const transition = transitions.find(
       item => categoryForStatusName(item.toStatusName) === column
     )
-    if (!transition) {
-      throw new Error(`No Jira transition is available for ${COLUMN_LABELS[column]}.`)
-    }
+    if (!transition) throw new Error(`No Jira transition is available for ${COLUMN_LABELS[column]}.`)
     await window.hrs.transitionJiraIssue({ issueKey, transitionId: transition.id })
   }
 
-  function optimisticallyMove(
-    issue: JiraSprintIssue,
-    target: SprintColumn
-  ) {
+  function optimisticallyMove(issue: JiraSprintIssue, target: SprintColumn) {
     setBacklogIssues(previous => previous.filter(item => item.key !== issue.key))
     setSprintIssues(previous => {
       const withoutIssue = previous.filter(item => item.key !== issue.key)
       if (target === 'backlog') return withoutIssue
       return [
         ...withoutIssue,
-        {
-          ...issue,
-          statusCategoryKey: target,
-          statusName: statusNameForColumn(target)
-        }
+        { ...issue, statusCategoryKey: target, statusName: statusNameForColumn(target) }
       ]
     })
-    if (target === 'backlog') {
-      setBacklogIssues(previous => [...previous, issue])
-    }
+    if (target === 'backlog') setBacklogIssues(previous => [...previous, issue])
   }
 
   async function moveIssue(issueKey: string, source: SprintColumn, target: SprintColumn) {
-    if (source === target || mutationLoading || !sprintId) return
+    if (
+      source === target ||
+      mutationLoading ||
+      !selectedSprint ||
+      selectedSprint.state !== 'active'
+    ) return
     const issue = [...backlogIssues, ...sprintIssues].find(item => item.key === issueKey)
     if (!issue) return
     const previousBacklog = backlogIssues
@@ -275,17 +334,13 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
       } else {
         if (source === 'backlog') {
           await window.hrs.moveJiraIssuesToSprint({
-            sprintId: Number(sprintId),
+            sprintId: selectedSprint.id,
             issueKeys: [issue.key]
           })
         }
-        if (issue.statusCategoryKey !== target) {
-          await transitionToColumn(issue.key, target)
-        }
+        if (issue.statusCategoryKey !== target) await transitionToColumn(issue.key, target)
       }
-      const sourceLabel = COLUMN_LABELS[source]
-      const targetLabel = COLUMN_LABELS[target]
-      setSuccess(`${issue.key} moved from ${sourceLabel} to ${targetLabel}.`)
+      setSuccess(`${issue.key} moved from ${COLUMN_LABELS[source]} to ${COLUMN_LABELS[target]}.`)
       setUndoAction({
         label: `Undo ${issue.key} move`,
         run: async () => {
@@ -296,7 +351,7 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
             await window.hrs.moveJiraIssuesToBacklog([issue.key])
           } else {
             await window.hrs.moveJiraIssuesToSprint({
-              sprintId: Number(sprintId),
+              sprintId: selectedSprint.id,
               issueKeys: [issue.key]
             })
             if (target !== 'backlog' && issue.statusCategoryKey !== target) {
@@ -317,12 +372,13 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
     }
   }
 
-  async function rankIssue(
-    issueKey: string,
-    targetIssueKey: string,
-    column: SprintColumn
-  ) {
-    if (issueKey === targetIssueKey || mutationLoading) return
+  async function rankIssue(issueKey: string, targetIssueKey: string, column: SprintColumn) {
+    if (
+      issueKey === targetIssueKey ||
+      mutationLoading ||
+      !selectedSprint ||
+      selectedSprint.state !== 'active'
+    ) return
     const items = issuesByColumn[column]
     const originalIndex = items.findIndex(issue => issue.key === issueKey)
     const targetIndex = items.findIndex(issue => issue.key === targetIssueKey)
@@ -337,16 +393,12 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
       setBacklogIssues(reordered)
     } else {
       const keys = new Set(reordered.map(issue => issue.key))
-      const untouched = sprintIssues.filter(issue => !keys.has(issue.key))
-      setSprintIssues([...untouched, ...reordered])
+      setSprintIssues([...sprintIssues.filter(issue => !keys.has(issue.key)), ...reordered])
     }
     setMutationLoading(true)
     setError(null)
     try {
-      await window.hrs.rankJiraIssues({
-        issueKeys: [issueKey],
-        rankBeforeIssue: targetIssueKey
-      })
+      await window.hrs.rankJiraIssues({ issueKeys: [issueKey], rankBeforeIssue: targetIssueKey })
       setSuccess(`${issueKey} reordered in ${COLUMN_LABELS[column]}.`)
       setUndoAction({
         label: `Undo ${issueKey} reorder`,
@@ -390,12 +442,14 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
 
   function handleColumnDrop(event: ReactDragEvent, target: SprintColumn) {
     event.preventDefault()
-    if (!dragState) return
+    if (!dragState || isPastSprint) return
     void moveIssue(dragState.issueKey, dragState.source, target)
   }
 
   function renderIssueCard(issue: JiraSprintIssue, column: SprintColumn) {
     const linked = linkedKeys.has(issue.key.toUpperCase())
+    const worklogs = worklogSummaries[issue.key]
+    const loggedSeconds = worklogs?.totalSeconds ?? issue.timespent
     return (
       <Card
         key={issue.key}
@@ -404,8 +458,9 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
         withBorder
         radius="md"
         className={`sprint-issue-card${dragState?.issueKey === issue.key ? ' is-dragging' : ''}`}
-        draggable={!mutationLoading}
+        draggable={!mutationLoading && !isPastSprint}
         onDragStart={event => {
+          if (isPastSprint) return
           event.dataTransfer.effectAllowed = 'move'
           event.dataTransfer.setData('text/plain', issue.key)
           setDragState({ issueKey: issue.key, source: column })
@@ -415,154 +470,170 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
           setDragOverColumn(null)
         }}
         onDragOver={event => {
+          if (isPastSprint) return
           event.preventDefault()
           event.stopPropagation()
         }}
         onDrop={event => {
           event.preventDefault()
           event.stopPropagation()
-          if (!dragState) return
-          if (dragState.source === column) {
-            void rankIssue(dragState.issueKey, issue.key, column)
-          } else {
-            void moveIssue(dragState.issueKey, dragState.source, column)
-          }
+          if (!dragState || isPastSprint) return
+          if (dragState.source === column) void rankIssue(dragState.issueKey, issue.key, column)
+          else void moveIssue(dragState.issueKey, dragState.source, column)
         }}
       >
-        <Stack gap={7}>
+        <Stack gap={8}>
           <Group justify="space-between" align="center" wrap="nowrap">
             <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
-              <IconGripVertical size={15} className="sprint-card-grip" />
+              {!isPastSprint ? <IconGripVertical size={15} className="sprint-card-grip" /> : null}
               <Text size="xs" fw={800} className="sprint-issue-key">
                 {issue.key}
               </Text>
             </Group>
-            {linked ? (
-              <Badge size="xs" variant="light" color="cyan">
-                HRS linked
-              </Badge>
-            ) : null}
+            {linked ? <Badge size="xs" variant="light" color="cyan">HRS linked</Badge> : null}
           </Group>
           <Text size="sm" fw={700} lineClamp={2} className="sprint-issue-summary">
             {issue.summary}
           </Text>
+          <Text size="xs" c="dimmed" truncate>
+            Assigned to {issue.assigneeName || 'Unassigned'}
+          </Text>
+
+          <div className="sprint-worklog-section">
+            <Group gap={5} mb={5}>
+              <IconUsers size={13} />
+              <Text size="xs" fw={800}>Reported hours</Text>
+              {loadingWorklogs && !worklogs ? <Loader size={11} /> : null}
+            </Group>
+            {worklogs?.contributors.length ? (
+              <Stack gap={4}>
+                {worklogs.contributors.map(contributor => (
+                  <Group
+                    key={`${issue.key}:${contributor.accountId ?? contributor.name}`}
+                    justify="space-between"
+                    align="center"
+                    wrap="nowrap"
+                    className="sprint-contributor-row"
+                    aria-label={`${contributor.name} reported ${formatSeconds(contributor.seconds)}`}
+                  >
+                    <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+                      <span className="sprint-contributor-avatar" aria-hidden="true">
+                        {contributor.name.trim().charAt(0).toUpperCase() || '?'}
+                      </span>
+                      <Text size="xs" truncate>{contributor.name}</Text>
+                    </Group>
+                    <Text size="xs" fw={800} className="sprint-contributor-hours">
+                      {formatSeconds(contributor.seconds)}
+                    </Text>
+                  </Group>
+                ))}
+              </Stack>
+            ) : loadingWorklogs && !worklogs ? (
+              <Text size="xs" c="dimmed">Loading contributors…</Text>
+            ) : (
+              <Text size="xs" c="dimmed">No reported hours</Text>
+            )}
+          </div>
+
           <Group justify="space-between" align="center" wrap="nowrap" gap="xs">
-            <Text size="xs" c="dimmed" truncate>
-              {issue.assigneeName || 'Unassigned'}
-            </Text>
-            <Tooltip
-              label={`${formatSeconds(issue.timespent)} logged of ${formatSeconds(issue.estimateSeconds)} estimated`}
-              withArrow
-            >
+            <Tooltip label={`${formatSeconds(issue.estimateSeconds)} original estimate`} withArrow>
               <Group gap={4} wrap="nowrap" className="sprint-card-time">
                 <IconClock size={12} />
-                <Text size="xs">
-                  {formatSeconds(issue.timespent)} / {formatSeconds(issue.estimateSeconds)}
-                </Text>
+                <Text size="xs">Logged {formatSeconds(loggedSeconds)}</Text>
               </Group>
             </Tooltip>
+            <Badge size="sm" variant="light" color={issue.remainingSeconds > 0 ? 'yellow' : 'teal'}>
+              {formatSeconds(issue.remainingSeconds)} remaining
+            </Badge>
           </Group>
         </Stack>
       </Card>
     )
   }
 
+  const closeButton = (
+    <Tooltip label="Close" withArrow>
+      <ActionIcon
+        className="sprint-close-button"
+        size="lg"
+        radius="xl"
+        variant="subtle"
+        aria-label="Close Sprint Board"
+        title="Close Sprint Board"
+        onClick={onClose}
+      >
+        <IconX size={22} />
+      </ActionIcon>
+    </Tooltip>
+  )
+
   if (!jiraStatus?.configured) {
     return (
-      <Card withBorder radius="lg" className="sprint-empty-state">
-        <Stack align="center" gap="sm">
-          <IconRoute size={36} />
-          <Text fw={800}>Connect Jira to manage sprints</Text>
-          <Text size="sm" c="dimmed" ta="center">
-            The Sprint Board uses the same Jira API token and permissions as HRS Desktop.
-          </Text>
-          <Button leftSection={<IconSettings size={15} />} onClick={onOpenSettings}>
-            Open settings
-          </Button>
-        </Stack>
-      </Card>
+      <>
+        {closeButton}
+        <Card withBorder radius="lg" className="sprint-empty-state">
+          <Stack align="center" gap="sm">
+            <IconRoute size={36} />
+            <Text fw={800}>Connect Jira to manage sprints</Text>
+            <Text size="sm" c="dimmed" ta="center">
+              Connect Jira from HRS Desktop settings, then reopen the Sprint Board.
+            </Text>
+          </Stack>
+        </Card>
+      </>
     )
   }
 
   return (
     <Stack gap="md" className="sprint-board-root">
+      {closeButton}
       <Group justify="space-between" align="flex-start" wrap="wrap" gap="md">
         <Stack gap={5}>
           <Group gap="xs">
             <IconRoute size={22} />
-            <Text fw={900} size="xl">
-              Jira Sprint Board
-            </Text>
+            <Text fw={900} size="xl">Jira Sprint Board</Text>
           </Group>
           <Text size="sm" c="dimmed">
-            Drag Jira issues between backlog and sprint statuses. Every drop is saved to Jira.
+            {isPastSprint
+              ? 'Review completed sprint issues and the hours reported by every contributor.'
+              : 'Drag Jira issues between backlog and sprint statuses. Every drop is saved to Jira.'}
           </Text>
         </Stack>
-        <Group gap="xs">
+        <Group gap="xs" className="sprint-header-actions">
           {mutationLoading ? <Loader size="sm" /> : null}
           <Button
             size="xs"
             variant="light"
             leftSection={<IconRefresh size={14} />}
             loading={loadingIssues}
-            disabled={!boardId || !sprintId}
+            disabled={!selectedCatalogItem}
             onClick={() => void refreshIssues()}
           >
             Refresh
-          </Button>
-          <Button
-            size="xs"
-            variant="subtle"
-            leftSection={<IconSettings size={14} />}
-            onClick={onOpenSettings}
-          >
-            Settings
           </Button>
         </Group>
       </Group>
 
       <Card withBorder radius="lg" className="sprint-board-toolbar">
         <Group align="flex-end" gap="md" wrap="wrap">
-          <div>
-            <Text size="xs" fw={800} mb={6}>
-              Jira project
-            </Text>
-            <SegmentedControl
-              value={projectKey}
-              onChange={setProjectKey}
-              data={projectKeys.map(key => ({ value: key, label: key }))}
-              size="xs"
-            />
-          </div>
-          <Select
-            label="Scrum board"
-            placeholder={loadingBoards ? 'Loading boards…' : 'Choose board'}
-            data={boards.map(board => ({ value: String(board.id), label: board.name }))}
-            value={boardId}
-            onChange={setBoardId}
-            searchable
-            disabled={loadingBoards || !boards.length}
-            rightSection={loadingBoards ? <Loader size={14} /> : undefined}
-            className="sprint-board-select"
-          />
           <Select
             label="Sprint"
-            placeholder={loadingSprints ? 'Loading sprints…' : 'Choose sprint'}
-            data={sprints.map(sprint => ({
-              value: String(sprint.id),
-              label: `${sprint.state === 'active' ? '● ' : ''}${sprint.name}`
+            placeholder={loadingCatalog ? 'Loading active and past sprints…' : 'Choose a sprint'}
+            data={catalog.map(item => ({
+              value: sprintSelectionValue(item),
+              label: `${item.sprint.state === 'active' ? 'Active' : 'Past'} · ${item.sprint.name}`
             }))}
-            value={sprintId}
-            onChange={setSprintId}
+            value={sprintSelection}
+            onChange={setSprintSelection}
             searchable
-            disabled={loadingSprints || !sprints.length}
-            rightSection={loadingSprints ? <Loader size={14} /> : undefined}
-            className="sprint-board-select"
+            disabled={loadingCatalog || !catalog.length}
+            rightSection={loadingCatalog ? <Loader size={14} /> : undefined}
+            className="sprint-only-select"
           />
           {selectedSprint ? (
             <Stack gap={3} className="sprint-goal-copy">
-              <Badge size="xs" color={selectedSprint.state === 'active' ? 'teal' : 'blue'}>
-                {selectedSprint.state}
+              <Badge size="xs" color={isPastSprint ? 'gray' : 'teal'}>
+                {isPastSprint ? 'Past sprint · Read only' : 'Active sprint'}
               </Badge>
               <Text size="xs" c="dimmed" lineClamp={2}>
                 {selectedSprint.goal || 'No sprint goal'}
@@ -572,11 +643,8 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
         </Group>
       </Card>
 
-      {error ? (
-        <Alert color="red" variant="light" radius="md">
-          {error}
-        </Alert>
-      ) : null}
+      {error ? <Alert color="red" variant="light" radius="md">{error}</Alert> : null}
+      {worklogError ? <Alert color="yellow" variant="light" radius="md">{worklogError}</Alert> : null}
       {success ? (
         <Alert color="teal" variant="light" radius="md">
           <Group justify="space-between" align="center" wrap="wrap">
@@ -598,8 +666,11 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
         </Alert>
       ) : null}
 
-      <div className="sprint-board-columns" aria-busy={loadingIssues || mutationLoading}>
-        {(Object.keys(COLUMN_LABELS) as SprintColumn[]).map(column => {
+      <div
+        className={`sprint-board-columns${isPastSprint ? ' is-past' : ''}`}
+        aria-busy={loadingIssues || mutationLoading}
+      >
+        {visibleColumns.map(column => {
           const issues = issuesByColumn[column]
           return (
             <section
@@ -609,14 +680,14 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
                 'sprint-column',
                 `is-${column}`,
                 dragOverColumn === column ? 'is-drag-over' : ''
-              ]
-                .join(' ')
-                .trim()}
+              ].join(' ').trim()}
               onDragEnter={event => {
+                if (isPastSprint) return
                 event.preventDefault()
                 setDragOverColumn(column)
               }}
               onDragOver={event => {
+                if (isPastSprint) return
                 event.preventDefault()
                 event.dataTransfer.dropEffect = 'move'
               }}
@@ -628,19 +699,15 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
               onDrop={event => handleColumnDrop(event, column)}
             >
               <Group justify="space-between" align="center" className="sprint-column-header">
-                <Text fw={800} size="sm">
-                  {COLUMN_LABELS[column]}
-                </Text>
-                <Badge size="xs" variant="light">
-                  {issues.length}
-                </Badge>
+                <Text fw={800} size="sm">{COLUMN_LABELS[column]}</Text>
+                <Badge size="xs" variant="light">{issues.length}</Badge>
               </Group>
               <Stack gap="xs" className="sprint-column-list">
                 {issues.map(issue => renderIssueCard(issue, column))}
                 {!issues.length ? (
                   <div className="sprint-column-empty">
                     <Text size="xs" c="dimmed" ta="center">
-                      Drop issues here
+                      {isPastSprint ? 'No issues' : 'Drop issues here'}
                     </Text>
                   </div>
                 ) : null}
@@ -651,8 +718,9 @@ export function SprintBoard({ jiraStatus, linkedIssueKeys, onOpenSettings }: Pro
       </div>
 
       <Text size="xs" c="dimmed" ta="center">
-        Moving and ranking issues requires Jira Edit and Schedule Issues permissions. Sprint creation
-        and completion remain managed in Jira for this first version.
+        {isPastSprint
+          ? 'Past sprints are read-only. Contributor totals come from Jira worklogs.'
+          : 'Moving and ranking issues requires Jira Edit and Schedule Issues permissions.'}
       </Text>
     </Stack>
   )

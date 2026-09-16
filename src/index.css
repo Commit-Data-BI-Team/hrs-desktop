@@ -5311,10 +5311,10 @@ body.sprints-mode {
   background: linear-gradient(145deg, rgba(13, 28, 37, 0.94), rgba(9, 18, 25, 0.9));
 }
 
-.sprint-board-select {
-  flex: 1 1 240px;
-  min-width: 220px;
-  max-width: 360px;
+.sprint-only-select {
+  flex: 1 1 520px;
+  min-width: min(360px, 100%);
+  max-width: 760px;
 }
 
 .sprint-goal-copy {
@@ -5331,6 +5331,30 @@ body.sprints-mode {
   flex: 1 1 auto;
   min-height: 0;
   overflow: hidden;
+}
+
+.sprint-board-columns.is-past {
+  grid-template-columns: repeat(3, minmax(240px, 1fr));
+}
+
+.sprint-close-button {
+  position: fixed;
+  top: 14px;
+  right: 16px;
+  z-index: 80;
+  color: #a9c6d3;
+  background: rgba(8, 18, 24, 0.78);
+  border: 1px solid rgba(132, 195, 225, 0.2);
+  backdrop-filter: blur(16px);
+}
+
+.sprint-close-button:hover {
+  color: #eefaff;
+  background: rgba(32, 69, 87, 0.9);
+}
+
+.sprint-header-actions {
+  margin-right: 46px;
 }
 
 .sprint-column {
@@ -5432,10 +5456,47 @@ body.sprints-mode {
   font-variant-numeric: tabular-nums;
 }
 
+.sprint-worklog-section {
+  padding: 7px 8px;
+  border: 1px solid rgba(117, 181, 211, 0.13);
+  border-radius: 10px;
+  background: rgba(4, 12, 17, 0.42);
+}
+
+.sprint-contributor-row {
+  min-width: 0;
+  padding: 3px 5px;
+  border-radius: 8px;
+  background: rgba(112, 181, 211, 0.08);
+}
+
+.sprint-contributor-avatar {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  color: #e8fbff;
+  background: linear-gradient(145deg, rgba(41, 145, 181, 0.9), rgba(80, 92, 178, 0.9));
+  font-size: 0.62rem;
+  font-weight: 900;
+}
+
+.sprint-contributor-hours {
+  flex: 0 0 auto;
+  color: #83e4cb;
+  font-variant-numeric: tabular-nums;
+}
+
 @media (max-width: 1050px) {
   .sprint-board-columns {
     grid-template-columns: repeat(2, minmax(240px, 1fr));
     overflow-y: auto;
+  }
+
+  .sprint-board-columns.is-past {
+    grid-template-columns: repeat(2, minmax(240px, 1fr));
   }
 
   .sprint-column {
@@ -5458,6 +5519,11 @@ body.sprints-mode {
   .sprint-board-columns {
     grid-template-columns: 1fr;
     overflow: visible;
+  }
+
+
+  .sprint-board-columns.is-past {
+    grid-template-columns: 1fr;
   }
 }
 

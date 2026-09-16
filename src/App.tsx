@@ -22538,8 +22538,8 @@ export default function App() {
             linkedIssueKeys={allProjectMissions
               .map(mission => mission.jiraIssueKey?.trim() ?? '')
               .filter(Boolean)}
-            onOpenSettings={() => {
-              void openSettingsWindow()
+            onClose={() => {
+              void window.hrs.closeSprintWindow()
             }}
           />
         </Container>

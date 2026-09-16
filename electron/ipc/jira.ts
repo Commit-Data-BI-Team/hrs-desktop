@@ -201,9 +201,11 @@ type JiraSearchIssue = {
     aggregatetimespent?: number | null
     timespent?: number | null
     timeoriginalestimate?: number | null
+    timeestimate?: number | null
     timetracking?: {
       originalEstimateSeconds?: number | null
       timeSpentSeconds?: number | null
+      remainingEstimateSeconds?: number | null
     }
     assignee?: {
       displayName?: string | null
@@ -302,6 +304,19 @@ type JiraSprintIssue = {
   assigneeName: string | null
   timespent: number
   estimateSeconds: number
+  remainingSeconds: number
+}
+
+type JiraSprintContributor = {
+  accountId: string | null
+  name: string
+  seconds: number
+}
+
+type JiraSprintWorklogSummary = {
+  issueKey: string
+  contributors: JiraSprintContributor[]
+  totalSeconds: number
 }
 
 type JiraIssueCreatePayload = {
@@ -475,6 +490,15 @@ const E2E_SPRINTS: Record<number, JiraSprint[]> = {
       startDate: '2026-09-01T08:00:00.000Z',
       endDate: '2026-09-14T17:00:00.000Z',
       originBoardId: 101
+    },
+    {
+      id: 901,
+      name: 'VDA Sprint 11',
+      state: 'closed',
+      goal: 'Complete the previous reporting milestone',
+      startDate: '2026-08-15T08:00:00.000Z',
+      endDate: '2026-08-31T17:00:00.000Z',
+      originBoardId: 101
     }
   ],
   202: [
@@ -499,7 +523,8 @@ let e2eSprintBacklog: Record<number, JiraSprintIssue[]> = {
       statusCategoryKey: 'todo',
       assigneeName: 'Dror Rahamim',
       timespent: 0,
-      estimateSeconds: 8 * 3600
+      estimateSeconds: 8 * 3600,
+      remainingSeconds: 8 * 3600
     }
   ],
   202: [
@@ -510,7 +535,8 @@ let e2eSprintBacklog: Record<number, JiraSprintIssue[]> = {
       statusCategoryKey: 'todo',
       assigneeName: null,
       timespent: 0,
-      estimateSeconds: 4 * 3600
+      estimateSeconds: 4 * 3600,
+      remainingSeconds: 4 * 3600
     }
   ]
 }
@@ -524,10 +550,49 @@ let e2eSprintIssues: Record<number, JiraSprintIssue[]> = {
       statusCategoryKey: 'indeterminate',
       assigneeName: 'Vitaly Shechtman',
       timespent: 2 * 3600,
-      estimateSeconds: 8 * 3600
+      estimateSeconds: 8 * 3600,
+      remainingSeconds: 6 * 3600
+    }
+  ],
+  901: [
+    {
+      key: 'VDA-590',
+      summary: 'Previous sprint delivery',
+      statusName: 'Done',
+      statusCategoryKey: 'done',
+      assigneeName: 'Dror Rahamim',
+      timespent: 6 * 3600,
+      estimateSeconds: 8 * 3600,
+      remainingSeconds: 2 * 3600
     }
   ],
   2001: []
+}
+
+const E2E_SPRINT_WORKLOGS: Record<string, JiraSprintWorklogSummary> = {
+  'VDA-600': {
+    issueKey: 'VDA-600',
+    contributors: [],
+    totalSeconds: 0
+  },
+  'VDA-601': {
+    issueKey: 'VDA-601',
+    contributors: [
+      { accountId: 'e2e-dror', name: 'Dror Rahamim', seconds: 90 * 60 },
+      { accountId: 'e2e-vitaly', name: 'Vitaly Shechtman', seconds: 30 * 60 }
+    ],
+    totalSeconds: 2 * 3600
+  },
+  'VDA-590': {
+    issueKey: 'VDA-590',
+    contributors: [{ accountId: 'e2e-dror', name: 'Dror Rahamim', seconds: 6 * 3600 }],
+    totalSeconds: 6 * 3600
+  },
+  'LSM-30': {
+    issueKey: 'LSM-30',
+    contributors: [],
+    totalSeconds: 0
+  }
 }
 
 function validateEpicKey(value: unknown): string {
@@ -897,6 +962,13 @@ function validateIssueKeyList(value: unknown, label: string) {
   return Array.from(new Set(value.map(issueKey => validateJiraIssueKey(issueKey))))
 }
 
+function validateSprintSummaryIssueKeys(value: unknown) {
+  if (!Array.isArray(value) || !value.length || value.length > 300) {
+    throw new Error('Invalid Jira sprint worklog list: expected 1-300 issue keys')
+  }
+  return Array.from(new Set(value.map(issueKey => validateJiraIssueKey(issueKey))))
+}
+
 function normalizeSprintStatusCategory(
   categoryKey: string | null | undefined,
   statusName: string | null | undefined
@@ -927,7 +999,17 @@ function normalizeSprintIssue(issue: JiraSearchIssue): JiraSprintIssue {
     estimateSeconds:
       issue.fields?.timeoriginalestimate ??
       issue.fields?.timetracking?.originalEstimateSeconds ??
-      0
+      0,
+    remainingSeconds:
+      issue.fields?.timeestimate ??
+      issue.fields?.timetracking?.remainingEstimateSeconds ??
+      Math.max(
+        0,
+        (issue.fields?.timeoriginalestimate ??
+          issue.fields?.timetracking?.originalEstimateSeconds ??
+          0) -
+          (issue.fields?.timespent ?? issue.fields?.timetracking?.timeSpentSeconds ?? 0)
+      )
   }
 }
 
@@ -957,7 +1039,8 @@ async function fetchAgileValues<T>(path: string, limit = 200): Promise<T[]> {
 async function fetchAgileIssues(path: string, limit = 500): Promise<JiraSprintIssue[]> {
   const issues: JiraSearchIssue[] = []
   let startAt = 0
-  const fields = 'summary,status,assignee,timespent,timeoriginalestimate,timetracking'
+  const fields =
+    'summary,status,assignee,timespent,timeoriginalestimate,timeestimate,timetracking'
   while (issues.length < limit) {
     const separator = path.includes('?') ? '&' : '?'
     const data = (await jiraRequest(
@@ -1374,6 +1457,17 @@ export function registerJiraIpc() {
         return e2eSprintIssues[id] ?? []
       }
     )
+    ipcMain.handle('jira:getSprintWorklogSummaries', async (_event, issueKeys: unknown) => {
+      const keys = validateSprintSummaryIssueKeys(issueKeys)
+      return keys.map(
+        issueKey =>
+          E2E_SPRINT_WORKLOGS[issueKey] ?? {
+            issueKey,
+            contributors: [],
+            totalSeconds: 0
+          }
+      )
+    })
     ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
       const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
         payload ?? {},
@@ -1580,7 +1674,7 @@ export function registerJiraIpc() {
       startDate?: string | null
       endDate?: string | null
       originBoardId?: number | null
-    }>(`/rest/agile/1.0/board/${id}/sprint?state=active,future`, 100)
+    }>(`/rest/agile/1.0/board/${id}/sprint?state=active,closed`, 300)
     return values
       .filter(
         sprint =>
@@ -1615,6 +1709,52 @@ export function registerJiraIpc() {
       )
     }
   )
+
+  ipcMain.handle('jira:getSprintWorklogSummaries', async (_event, issueKeys: unknown) => {
+    const queue = validateSprintSummaryIssueKeys(issueKeys)
+    const summaries: JiraSprintWorklogSummary[] = []
+    const concurrency = Math.min(6, queue.length)
+    await Promise.all(
+      Array.from({ length: concurrency }, async () => {
+        while (queue.length) {
+          const issueKey = queue.shift()
+          if (!issueKey) return
+          const cacheKey = `sprint-worklogs:${issueKey}`
+          const cached = getCachedValue<JiraSprintWorklogSummary>(cacheKey)
+          if (cached) {
+            summaries.push(cached)
+            continue
+          }
+          const contributors = new Map<string, JiraSprintContributor>()
+          const worklogs = await fetchAllWorklogs(issueKey)
+          for (const worklog of worklogs) {
+            const accountId = worklog.author?.accountId?.trim() || null
+            const name = worklog.author?.displayName?.trim() || 'Jira user'
+            const key = accountId || name.toLocaleLowerCase()
+            const existing = contributors.get(key)
+            contributors.set(key, {
+              accountId,
+              name,
+              seconds: (existing?.seconds ?? 0) + Math.max(0, worklog.timeSpentSeconds ?? 0)
+            })
+          }
+          const summary: JiraSprintWorklogSummary = {
+            issueKey,
+            contributors: Array.from(contributors.values()).sort(
+              (left, right) => right.seconds - left.seconds || left.name.localeCompare(right.name)
+            ),
+            totalSeconds: worklogs.reduce(
+              (total, worklog) => total + Math.max(0, worklog.timeSpentSeconds ?? 0),
+              0
+            )
+          }
+          setCachedValue(cacheKey, summary, 2 * 60 * 1000)
+          summaries.push(summary)
+        }
+      })
+    )
+    return summaries
+  })
 
   ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
     const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(

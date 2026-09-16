@@ -4,7 +4,7 @@ import fs from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 
-test('manages VDA and LSM Jira sprint issues with drag and drop', async () => {
+test('manages active and past Jira sprints with worklog contributors', async () => {
   const userDataDir = await fs.mkdtemp(path.join(os.tmpdir(), 'hrs-sprint-board-'))
   const app = await electron.launch({
     args: ['.', `--user-data-dir=${userDataDir}`],
@@ -24,11 +24,10 @@ test('manages VDA and LSM Jira sprint issues with drag and drop', async () => {
     await sprintPage.waitForLoadState('domcontentloaded')
 
     await expect(sprintPage.getByText('Jira Sprint Board', { exact: true })).toBeVisible()
-    await expect(sprintPage.getByRole('textbox', { name: 'Scrum board' })).toHaveValue(
-      'VDA Scrum'
-    )
+    await expect(sprintPage.getByRole('textbox', { name: 'Scrum board' })).toHaveCount(0)
+    await expect(sprintPage.getByText('Jira project', { exact: true })).toHaveCount(0)
     await expect(sprintPage.getByRole('textbox', { name: 'Sprint' })).toHaveValue(
-      '● VDA Sprint 12'
+      'Active · VDA Sprint 12'
     )
     await expect(sprintPage.locator('[data-issue-key="VDA-600"]')).toHaveAttribute(
       'data-column',
@@ -38,14 +37,17 @@ test('manages VDA and LSM Jira sprint issues with drag and drop', async () => {
       'data-column',
       'indeterminate'
     )
-
-    await sprintPage.getByText('LSM', { exact: true }).click()
-    await expect(sprintPage.getByRole('textbox', { name: 'Scrum board' })).toHaveValue(
-      'LSM Scrum'
-    )
-    await expect(sprintPage.getByRole('textbox', { name: 'Sprint' })).toHaveValue(
-      '● LSM Sprint 3'
-    )
+    await expect(
+      sprintPage.getByLabel('Dror Rahamim reported 1h 30m')
+    ).toBeVisible()
+    await expect(
+      sprintPage.getByLabel('Vitaly Shechtman reported 30m')
+    ).toBeVisible()
+    await expect(sprintPage.locator('[data-issue-key="VDA-601"]')).toContainText('6h remaining')
+    const sprintSelect = sprintPage.getByRole('textbox', { name: 'Sprint' })
+    await sprintSelect.click()
+    await sprintPage.getByRole('option', { name: 'Active · LSM Sprint 3' }).click()
+    await expect(sprintSelect).toHaveValue('Active · LSM Sprint 3')
     const backlogIssue = sprintPage.locator('[data-issue-key="LSM-30"]')
     await expect(backlogIssue).toHaveAttribute('data-column', 'backlog')
 
@@ -61,6 +63,21 @@ test('manages VDA and LSM Jira sprint issues with drag and drop', async () => {
       'data-column',
       'backlog'
     )
+
+    await sprintSelect.click()
+    await sprintPage.getByRole('option', { name: 'Past · VDA Sprint 11' }).click()
+    await expect(sprintSelect).toHaveValue('Past · VDA Sprint 11')
+    await expect(sprintPage.getByText('Past sprint · Read only')).toBeVisible()
+    await expect(sprintPage.getByText('Backlog', { exact: true })).toHaveCount(0)
+    const pastIssue = sprintPage.locator('[data-issue-key="VDA-590"]')
+    await expect(pastIssue).toContainText('Dror Rahamim')
+    await expect(pastIssue).toContainText('2h remaining')
+    await expect(pastIssue).toHaveAttribute('draggable', 'false')
+
+    await Promise.all([
+      sprintPage.waitForEvent('close'),
+      sprintPage.getByRole('button', { name: 'Close Sprint Board' }).click()
+    ])
   } finally {
     await app.close()
     await fs.rm(userDataDir, { recursive: true, force: true })

@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getBacklogIssues', boardId),
   getJiraSprintIssues: (boardId: number, sprintId: number) =>
     ipcRenderer.invoke('jira:getSprintIssues', boardId, sprintId),
+  getJiraSprintWorklogSummaries: (issueKeys: string[]) =>
+    ipcRenderer.invoke('jira:getSprintWorklogSummaries', issueKeys),
   moveJiraIssuesToSprint: (payload: { sprintId: number; issueKeys: string[] }) =>
     ipcRenderer.invoke('jira:moveIssuesToSprint', payload),
   moveJiraIssuesToBacklog: (issueKeys: string[]) =>
@@ -347,6 +349,7 @@ contextBridge.exposeInMainWorld('hrs', {
   openSettingsWindow: () => ipcRenderer.invoke('app:openSettingsWindow'),
   openMeetingsWindow: () => ipcRenderer.invoke('app:openMeetingsWindow'),
   openSprintWindow: () => ipcRenderer.invoke('app:openSprintWindow'),
+  closeSprintWindow: () => ipcRenderer.invoke('app:closeSprintWindow'),
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') =>
     ipcRenderer.invoke('app:setNativeThemeMode', mode),
   getAppVersion: () => ipcRenderer.invoke('app:getVersion'),

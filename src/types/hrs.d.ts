@@ -148,6 +148,19 @@ export type JiraSprintIssue = {
   assigneeName: string | null
   timespent: number
   estimateSeconds: number
+  remainingSeconds: number
+}
+
+export type JiraSprintContributor = {
+  accountId: string | null
+  name: string
+  seconds: number
+}
+
+export type JiraSprintWorklogSummary = {
+  issueKey: string
+  contributors: JiraSprintContributor[]
+  totalSeconds: number
 }
 
 type JiraWorkItem = {
@@ -646,6 +659,9 @@ type HrsApi = {
   getJiraSprints: (boardId: number) => Promise<JiraSprint[]>
   getJiraBacklogIssues: (boardId: number) => Promise<JiraSprintIssue[]>
   getJiraSprintIssues: (boardId: number, sprintId: number) => Promise<JiraSprintIssue[]>
+  getJiraSprintWorklogSummaries: (
+    issueKeys: string[]
+  ) => Promise<JiraSprintWorklogSummary[]>
   moveJiraIssuesToSprint: (payload: {
     sprintId: number
     issueKeys: string[]
@@ -979,6 +995,7 @@ type HrsApi = {
   openSettingsWindow: () => Promise<boolean>
   openMeetingsWindow: () => Promise<boolean>
   openSprintWindow: () => Promise<boolean>
+  closeSprintWindow: () => Promise<boolean>
   setNativeThemeMode: (mode: 'dark' | 'oled' | 'liquid' | 'h4c37') => Promise<{
     nativeLiquidGlass: boolean
     supported: boolean

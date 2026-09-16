@@ -1521,6 +1521,10 @@ app.whenReady().then(() => {
     openSprintWindow()
     return true
   })
+  ipcMain.handle('app:closeSprintWindow', () => {
+    if (sprintWindow && !sprintWindow.isDestroyed()) sprintWindow.close()
+    return true
+  })
   ipcMain.handle('app:openFloatingTimer', () => {
     hideMainWindowForFloating()
     createFloatingWindow()

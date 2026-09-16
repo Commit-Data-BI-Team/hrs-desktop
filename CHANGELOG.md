@@ -4,10 +4,12 @@
 
 ### Jira sprint management
 
-- Added a dedicated Jira Sprint Board window for both **VDA** and **LSM**, opened directly from the tray.
-- Loads the available Scrum boards and active or future sprints from Jira using the existing Jira connection.
+- Added a dedicated Jira Sprint Board window, opened directly from the tray and closed with its own top-right **X**.
+- Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
+- Keeps active sprints editable and displays completed sprints in a clear read-only history view.
 - Added drag-and-drop columns for **Backlog**, **To Do**, **In Progress**, and **Done**, with changes saved immediately to Jira.
 - Supports moving issues into or out of a sprint, transitioning their Jira status, and reordering cards using Jira rank.
+- Shows every Jira worklog contributor on each task with their individual reported hours, total logged time, and the task's remaining Jira estimate.
 - Added optimistic updates, automatic rollback on Jira errors, a one-click **Undo**, manual refresh, sprint goals, assignees, time progress, and HRS-linked issue badges.
 - Keeps each column independently scrollable and adapts the board to smaller Windows and macOS displays without forcing the app fullscreen.
 

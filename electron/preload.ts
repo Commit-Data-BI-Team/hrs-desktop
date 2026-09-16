@@ -31,6 +31,12 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getBacklogIssues', boardId),
   getJiraSprintIssues: (boardId: number, sprintId: number) =>
     ipcRenderer.invoke('jira:getSprintIssues', boardId, sprintId),
+  getJiraSprintIssueDetails: (issueKey: string) =>
+    ipcRenderer.invoke('jira:getSprintIssueDetails', issueKey),
+  startJiraSprintIssue: (issueKey: string) =>
+    ipcRenderer.invoke('jira:startSprintIssue', issueKey),
+  completeJiraSprintIssueByConsensus: (payload: { issueKey: string; taskId: string }) =>
+    ipcRenderer.invoke('jira:completeSprintIssueByConsensus', payload),
   moveJiraIssuesToSprint: (payload: { sprintId: number; issueKeys: string[] }) =>
     ipcRenderer.invoke('jira:moveIssuesToSprint', payload),
   moveJiraIssuesToBacklog: (issueKeys: string[]) =>
@@ -119,6 +125,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('supabase:getSharedFictiveTaskUsage', { taskIds, startDate, endDate }),
   getSupabaseSprintTaskUsage: (issueKeys: string[], startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getSprintTaskUsage', { issueKeys, startDate, endDate }),
+  setSupabaseSprintTaskCompletion: (taskId: string, completed: boolean) =>
+    ipcRenderer.invoke('supabase:setSprintTaskCompletion', { taskId, completed }),
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string

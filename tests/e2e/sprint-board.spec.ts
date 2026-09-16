@@ -118,6 +118,45 @@ test('employees can view the in-app sprint board but cannot mutate Jira', async 
       'draggable',
       'false'
     )
+    const activeIssue = mainPage.locator('[data-issue-key="VDA-601"]')
+    await expect(activeIssue).toContainText('Done 15 Sept 2026')
+    await activeIssue.getByRole('button', { name: 'Details' }).click()
+    await expect(activeIssue.getByText('Detailed Jira description for VDA-601.')).toBeVisible()
+    await expect(
+      activeIssue.getByRole('button', { name: 'Open Jira attachment sprint-spec.png' })
+    ).toBeVisible()
+    await expect(activeIssue.getByText('Sprint comment for VDA-601.')).toBeVisible()
+
+    const todoIssue = mainPage.locator('[data-issue-key="VDA-602"]')
+    const prematureCompletionError = await mainPage.evaluate(async () => {
+      try {
+        await window.hrs.completeJiraSprintIssueByConsensus({
+          issueKey: 'VDA-602',
+          taskId: '00000000-0000-4000-8000-000000000602'
+        })
+        return null
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error)
+      }
+    })
+    expect(prematureCompletionError).toContain('Every reporting employee')
+    await todoIssue.getByRole('button', { name: 'Start work' }).click()
+    await expect(mainPage.locator('[data-issue-key="VDA-602"]')).toHaveAttribute(
+      'data-column',
+      'indeterminate'
+    )
+
+    await activeIssue.getByRole('button', { name: 'Mark done' }).click()
+    await expect(mainPage.locator('[data-issue-key="VDA-601"]')).toHaveAttribute(
+      'data-column',
+      'done'
+    )
+    await expect(mainPage.locator('[data-issue-key="VDA-601"]')).toContainText(
+      'Vitaly Shechtman'
+    )
+    await expect(mainPage.locator('[data-issue-key="VDA-601"]')).toContainText(
+      /Done \d{2} Sept 2026/
+    )
     const mutationError = await mainPage.evaluate(async () => {
       try {
         await window.hrs.moveJiraIssuesToSprint({ sprintId: 1001, issueKeys: ['VDA-600'] })

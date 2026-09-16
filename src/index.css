@@ -5665,6 +5665,76 @@ body.sprints-mode {
   font-variant-numeric: tabular-nums;
 }
 
+.sprint-contributor-completion {
+  flex: 0 0 auto;
+  min-width: 92px;
+}
+
+.sprint-card-actions {
+  padding-top: 2px;
+  border-top: 1px solid rgba(117, 181, 211, 0.1);
+}
+
+.sprint-issue-details {
+  margin-top: 3px;
+  padding: 9px;
+  border: 1px solid rgba(112, 184, 220, 0.16);
+  border-radius: 10px;
+  background: rgba(4, 12, 18, 0.48);
+}
+
+.sprint-detail-description,
+.sprint-detail-comment-text {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.sprint-detail-attachments {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 6px;
+}
+
+.sprint-detail-attachment {
+  display: grid;
+  grid-template-columns: 30px minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  padding: 6px;
+  color: #bdeaff;
+  text-align: left;
+  border: 1px solid rgba(99, 188, 239, 0.2);
+  border-radius: 8px;
+  background: rgba(48, 121, 160, 0.1);
+  cursor: pointer;
+}
+
+.sprint-detail-attachment:hover {
+  border-color: rgba(99, 199, 249, 0.45);
+  background: rgba(48, 141, 190, 0.16);
+}
+
+.sprint-detail-attachment img {
+  width: 30px;
+  height: 30px;
+  object-fit: cover;
+  border-radius: 5px;
+}
+
+.sprint-detail-attachment span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sprint-detail-comment {
+  padding: 7px;
+  border-radius: 8px;
+  background: rgba(93, 150, 183, 0.08);
+  border-left: 2px solid rgba(77, 171, 247, 0.5);
+}
+
 @media (max-width: 1050px) {
   .sprint-board-columns {
     grid-template-columns: repeat(2, minmax(240px, 1fr));

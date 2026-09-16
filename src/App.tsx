@@ -20348,6 +20348,10 @@ export default function App() {
                       .filter(Boolean)}
                     supabaseConnected={Boolean(supabaseStatus?.email)}
                     canEdit={supabaseStatus?.profile?.role === 'manager'}
+                    currentEmployeeId={supabaseStatus?.profile?.employee_id ?? null}
+                    currentEmployeeName={
+                      supabaseStatus?.profile?.display_name || supabaseStatus?.email || null
+                    }
                     onExpand={() => {
                       void openSprintWindow()
                     }}
@@ -22904,6 +22908,10 @@ export default function App() {
               .filter(Boolean)}
             supabaseConnected={Boolean(supabaseStatus?.email)}
             canEdit={supabaseStatus?.profile?.role === 'manager'}
+            currentEmployeeId={supabaseStatus?.profile?.employee_id ?? null}
+            currentEmployeeName={
+              supabaseStatus?.profile?.display_name || supabaseStatus?.email || null
+            }
             onClose={() => {
               setMainView('default')
               void window.hrs.closeSprintWindow()

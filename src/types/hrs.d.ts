@@ -150,6 +150,18 @@ export type JiraSprintIssue = {
   estimateSeconds: number
 }
 
+export type JiraSprintIssueDetails = {
+  issueKey: string
+  description: string
+  attachments: Array<{
+    id: string
+    name: string
+    mimeType: string | null
+    previewDataUrl?: string | null
+  }>
+  comments: IntegrationRecentMessage[]
+}
+
 export type SupabaseSprintTaskUsage = {
   issueKey: string
   taskId: string
@@ -160,7 +172,11 @@ export type SupabaseSprintTaskUsage = {
     employeeId: number
     employeeName: string
     seconds: number
+    completedAt: string | null
   }>
+  completionAvailable: boolean
+  completionRequiredCount: number
+  completionCount: number
 }
 
 type JiraWorkItem = {
@@ -659,6 +675,12 @@ type HrsApi = {
   getJiraSprints: (boardId: number) => Promise<JiraSprint[]>
   getJiraBacklogIssues: (boardId: number) => Promise<JiraSprintIssue[]>
   getJiraSprintIssues: (boardId: number, sprintId: number) => Promise<JiraSprintIssue[]>
+  getJiraSprintIssueDetails: (issueKey: string) => Promise<JiraSprintIssueDetails>
+  startJiraSprintIssue: (issueKey: string) => Promise<boolean>
+  completeJiraSprintIssueByConsensus: (payload: {
+    issueKey: string
+    taskId: string
+  }) => Promise<boolean>
   moveJiraIssuesToSprint: (payload: {
     sprintId: number
     issueKeys: string[]
@@ -792,6 +814,10 @@ type HrsApi = {
     startDate: string,
     endDate: string
   ) => Promise<SupabaseSprintTaskUsage[]>
+  setSupabaseSprintTaskCompletion: (
+    taskId: string,
+    completed: boolean
+  ) => Promise<{ completedAt: string | null }>
   syncSupabaseWorkReports: (payload: {
     startDate: string
     endDate: string

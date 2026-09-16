@@ -9,6 +9,12 @@
 - Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
 - Shows the selected sprint's Israel-local start and end dates in both compact and expanded views.
 - Preloads the selected sprint, Jira missions, and Supabase employee totals while other tray tabs are open, caches the last complete view for instant rendering, and refreshes details quietly every minute without clearing the screen into loading states.
+- Lets authenticated employees move Jira items from **To Do** to **In Progress** directly from the Sprint Board.
+- Added per-reporter **Mark done** confirmations stored in Supabase, including the exact Israel-local confirmation date and time beside every reporting employee.
+- Automatically transitions the Jira work item to **Done** only after every employee who reported hours on the shared task has confirmed completion; the consensus is revalidated in the main process before Jira is changed.
+- Added expandable Jira task details with the complete description, downloadable attachments and image previews, and the latest Jira comments.
+
+> **Administrator note:** Apply `supabase/migrations/005_sprint_task_completions.sql` before using collaborative sprint completion.
 - Keeps active sprints editable and displays completed sprints in a clear read-only history view.
 - Uses the authenticated Supabase profile role for access control: managers can drag, transition, and rank Jira cards, while employees receive the complete board as a read-only view.
 - Enforces the manager requirement again in the main-process Jira mutation handlers so employee access cannot bypass the disabled UI controls.

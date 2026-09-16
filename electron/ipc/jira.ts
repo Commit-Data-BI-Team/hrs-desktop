@@ -18,7 +18,11 @@ import {
   validateStringLength
 } from '../utils/validation'
 import { resolveIntegrationAttachments } from '../integration/attachments'
-import { requireSupabaseManager } from './supabase'
+import {
+  requireSprintTaskCompletionConsensus,
+  requireSupabaseManager,
+  requireSupabaseUser
+} from './supabase'
 
 const DEFAULT_PROJECT_KEYS = ['VDA', 'LSM']
 const JIRA_PROJECT_KEY_REGEX = /^[A-Z][A-Z0-9_]{0,14}$/
@@ -305,6 +309,18 @@ type JiraSprintIssue = {
   estimateSeconds: number
 }
 
+type JiraSprintIssueDetails = {
+  issueKey: string
+  description: string
+  attachments: Array<{
+    id: string
+    name: string
+    mimeType: string | null
+    previewDataUrl?: string | null
+  }>
+  comments: ReturnType<typeof normalizeJiraComment>[]
+}
+
 type JiraIssueCreatePayload = {
   parentIssueKey: string
   summary: string
@@ -535,6 +551,15 @@ let e2eSprintIssues: Record<number, JiraSprintIssue[]> = {
       assigneeName: 'Vitaly Shechtman',
       timespent: 2 * 3600,
       estimateSeconds: 8 * 3600
+    },
+    {
+      key: 'VDA-602',
+      summary: 'Employee-startable task',
+      statusName: 'To Do',
+      statusCategoryKey: 'todo',
+      assigneeName: 'Vitaly Shechtman',
+      timespent: 45 * 60,
+      estimateSeconds: 4 * 3600
     }
   ],
   901: [
@@ -1417,6 +1442,64 @@ export function registerJiraIpc() {
         return e2eSprintIssues[id] ?? []
       }
     )
+    ipcMain.handle('jira:getSprintIssueDetails', async (_event, issueKey: unknown) => {
+      const key = validateJiraIssueKey(issueKey)
+      return {
+        issueKey: key,
+        description: `Detailed Jira description for ${key}.`,
+        attachments:
+          key === 'VDA-601'
+            ? [
+                {
+                  id: '10000',
+                  name: 'sprint-spec.png',
+                  mimeType: 'image/png',
+                  previewDataUrl:
+                    'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=='
+                }
+              ]
+            : [],
+        comments: [
+          {
+            id: `detail-${key}`,
+            source: 'jira' as const,
+            authorId: 'e2e-vitaly',
+            authorName: 'Vitaly Shechtman',
+            avatarUrl: null,
+            text: `Sprint comment for ${key}.`,
+            attachments: [],
+            createdAt: '2026-09-15T09:15:00.000Z'
+          }
+        ]
+      } satisfies JiraSprintIssueDetails
+    })
+    ipcMain.handle('jira:startSprintIssue', async (_event, issueKey: unknown) => {
+      await requireSupabaseUser()
+      const key = validateJiraIssueKey(issueKey)
+      if (!PROJECT_KEYS.includes(key.split('-')[0])) {
+        throw new Error('This Jira project is not enabled for HRS sprint management.')
+      }
+      for (const issues of Object.values(e2eSprintIssues)) {
+        const issue = issues.find(item => item.key === key)
+        if (issue) Object.assign(issue, { statusName: 'In Progress', statusCategoryKey: 'indeterminate' })
+      }
+      return true
+    })
+    ipcMain.handle('jira:completeSprintIssueByConsensus', async (_event, payload: unknown) => {
+      const safe = validateExactObject<{ issueKey?: unknown; taskId?: unknown }>(
+        payload ?? {},
+        ['issueKey', 'taskId'],
+        'Jira sprint completion'
+      )
+      const key = validateJiraIssueKey(safe.issueKey)
+      const taskId = validateStringLength(safe.taskId, 1, 64)
+      await requireSprintTaskCompletionConsensus(taskId, key)
+      for (const issues of Object.values(e2eSprintIssues)) {
+        const issue = issues.find(item => item.key === key)
+        if (issue) Object.assign(issue, { statusName: 'Done', statusCategoryKey: 'done' })
+      }
+      return true
+    })
     ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
       await requireSupabaseManager()
       const safe = validateExactObject<{ sprintId?: unknown; issueKeys?: unknown }>(
@@ -1661,6 +1744,97 @@ export function registerJiraIpc() {
       )
     }
   )
+
+  ipcMain.handle('jira:getSprintIssueDetails', async (_event, issueKey: unknown) => {
+    const key = validateJiraIssueKey(issueKey)
+    const [issueData, commentsData] = await Promise.all([
+      jiraRequest(
+        `/rest/api/3/issue/${encodeURIComponent(key)}?fields=description,attachment`
+      ) as Promise<{
+        fields?: { description?: unknown; attachment?: JiraIssueAttachment[] }
+      }>,
+      jiraRequest(
+        `/rest/api/3/issue/${encodeURIComponent(key)}/comment?maxResults=20&orderBy=-created`
+      ) as Promise<{ comments?: JiraComment[] }>
+    ])
+    const issueAttachments = issueData.fields?.attachment ?? []
+    let previewBudget = 6
+    const attachments = await Promise.all(
+      issueAttachments
+        .filter(attachment => attachment.id !== undefined && attachment.filename?.trim())
+        .slice(0, 50)
+        .map(async attachment => {
+          const id = String(attachment.id)
+          const mimeType = attachment.mimeType?.trim() || null
+          let previewDataUrl: string | null = null
+          if (mimeType?.startsWith('image/') && previewBudget > 0) {
+            previewBudget -= 1
+            previewDataUrl = await getJiraAttachmentPreviewDataUrl(id)
+          }
+          return {
+            id,
+            name: attachment.filename!.trim(),
+            mimeType,
+            previewDataUrl
+          }
+        })
+    )
+    const comments = (commentsData.comments ?? [])
+      .map(comment => normalizeJiraComment(comment, issueAttachments))
+      .filter(comment => comment.id && (comment.text || comment.attachments.length))
+      .slice(0, 20)
+    return {
+      issueKey: key,
+      description: jiraCommentBodyToText(issueData.fields?.description).trim().slice(0, 10_000),
+      attachments,
+      comments
+    } satisfies JiraSprintIssueDetails
+  })
+
+  ipcMain.handle('jira:startSprintIssue', async (_event, issueKey: unknown) => {
+    await requireSupabaseUser()
+    const key = validateJiraIssueKey(issueKey)
+    if (!PROJECT_KEYS.includes(key.split('-')[0])) {
+      throw new Error('This Jira project is not enabled for HRS sprint management.')
+    }
+    const data = (await jiraRequest(
+      `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`
+    )) as { transitions?: JiraTransition[] }
+    const transition = (data.transitions ?? []).find(item =>
+      normalizeSprintStatusCategory(null, item.to?.name ?? item.name) === 'indeterminate'
+    )
+    if (!transition) throw new Error('No Jira transition to In Progress is available.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transition.id } })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
+
+  ipcMain.handle('jira:completeSprintIssueByConsensus', async (_event, payload: unknown) => {
+    const safe = validateExactObject<{ issueKey?: unknown; taskId?: unknown }>(
+      payload ?? {},
+      ['issueKey', 'taskId'],
+      'Jira sprint completion'
+    )
+    const key = validateJiraIssueKey(safe.issueKey)
+    const taskId = validateStringLength(safe.taskId, 1, 64)
+    await requireSprintTaskCompletionConsensus(taskId, key)
+    const data = (await jiraRequest(
+      `/rest/api/3/issue/${encodeURIComponent(key)}/transitions`
+    )) as { transitions?: JiraTransition[] }
+    const transition = (data.transitions ?? []).find(item =>
+      normalizeSprintStatusCategory(null, item.to?.name ?? item.name) === 'done'
+    )
+    if (!transition) throw new Error('No Jira transition to Done is available.')
+    await jiraRequest(`/rest/api/3/issue/${encodeURIComponent(key)}/transitions`, {
+      method: 'POST',
+      body: JSON.stringify({ transition: { id: transition.id } })
+    })
+    clearAllWorkItemCaches()
+    return true
+  })
 
   ipcMain.handle('jira:moveIssuesToSprint', async (_event, payload: unknown) => {
     await requireSupabaseManager()

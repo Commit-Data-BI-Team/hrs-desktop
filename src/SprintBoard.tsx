@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Card,
+  Collapse,
   Group,
   Loader,
   SegmentedControl,
@@ -16,8 +17,14 @@ import {
   IconArrowBackUp,
   IconArrowsMaximize,
   IconCalendarEvent,
+  IconChevronDown,
+  IconChevronRight,
+  IconCircleCheck,
   IconClock,
   IconGripVertical,
+  IconMessageCircle,
+  IconPaperclip,
+  IconPlayerPlay,
   IconRefresh,
   IconRoute,
   IconUsers,
@@ -29,6 +36,7 @@ import type {
   JiraAgileBoard,
   JiraSprint,
   JiraSprintIssue,
+  JiraSprintIssueDetails,
   SupabaseSprintTaskUsage
 } from './types/hrs'
 
@@ -73,6 +81,8 @@ type Props = {
   linkedIssueKeys: string[]
   supabaseConnected: boolean
   canEdit: boolean
+  currentEmployeeId: number | null
+  currentEmployeeName: string | null
   compact?: boolean
   onExpand?: () => void
   onClose: () => void
@@ -154,6 +164,20 @@ function formatSprintDate(value: string | null) {
   }).format(date)
 }
 
+function formatCompletionDate(value: string | null) {
+  if (!value) return null
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return null
+  return new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Asia/Jerusalem',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  }).format(date)
+}
+
 function dateInIsrael(value: string | null | undefined) {
   if (!value) return null
   const date = new Date(value)
@@ -182,6 +206,8 @@ export function SprintBoard({
   linkedIssueKeys,
   supabaseConnected,
   canEdit,
+  currentEmployeeId,
+  currentEmployeeName,
   compact = false,
   onExpand,
   onClose
@@ -217,6 +243,12 @@ export function SprintBoard({
   const [loadingSupabaseUsage, setLoadingSupabaseUsage] = useState(false)
   const [catalogRefreshTick, setCatalogRefreshTick] = useState(0)
   const [mutationLoading, setMutationLoading] = useState(false)
+  const [startLoadingKey, setStartLoadingKey] = useState<string | null>(null)
+  const [completionLoadingKey, setCompletionLoadingKey] = useState<string | null>(null)
+  const [expandedIssueKey, setExpandedIssueKey] = useState<string | null>(null)
+  const [detailsLoadingKey, setDetailsLoadingKey] = useState<string | null>(null)
+  const [detailsByIssue, setDetailsByIssue] = useState<Record<string, JiraSprintIssueDetails>>({})
+  const [detailsErrorByIssue, setDetailsErrorByIssue] = useState<Record<string, string>>({})
   const [dragState, setDragState] = useState<SprintDragState | null>(null)
   const [dragOverColumn, setDragOverColumn] = useState<SprintColumn | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -334,7 +366,7 @@ export function SprintBoard({
     setSupabaseUsageError(null)
     if (!issues.length) {
       setLoadingSupabaseUsage(false)
-      return
+      return null
     }
     setLoadingSupabaseUsage(true)
     try {
@@ -373,6 +405,7 @@ export function SprintBoard({
           }
         }
       })
+      return nextUsage
     } catch (reason) {
       if (
         requestId === supabaseUsageRequestRef.current &&
@@ -387,6 +420,7 @@ export function SprintBoard({
     } finally {
       if (requestId === supabaseUsageRequestRef.current) setLoadingSupabaseUsage(false)
     }
+    return null
   }
 
   async function refreshIssues(options: { quiet?: boolean } = {}) {
@@ -639,12 +673,112 @@ export function SprintBoard({
     void moveIssue(dragState.issueKey, dragState.source, target)
   }
 
+  async function startEmployeeWork(issue: JiraSprintIssue) {
+    if (isPastSprint || issue.statusCategoryKey !== 'todo') return
+    setStartLoadingKey(issue.key)
+    setError(null)
+    try {
+      await window.hrs.startJiraSprintIssue(issue.key)
+      setSprintIssues(previous =>
+        previous.map(item =>
+          item.key === issue.key
+            ? { ...item, statusName: 'In Progress', statusCategoryKey: 'indeterminate' }
+            : item
+        )
+      )
+      setSuccess(`${issue.key} moved to In Progress.`)
+      await refreshIssues({ quiet: true })
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setStartLoadingKey(null)
+    }
+  }
+
+  async function toggleEmployeeCompletion(issue: JiraSprintIssue, usage: SupabaseSprintTaskUsage) {
+    if (!selectedSprint || !sprintSelection || isPastSprint || issue.statusCategoryKey === 'done') {
+      return
+    }
+    const reporter = usage.employees.find(employee => employee.employeeId === currentEmployeeId)
+    if (!reporter) return
+    const nextCompleted = !reporter.completedAt
+    setCompletionLoadingKey(issue.key)
+    setError(null)
+    try {
+      await window.hrs.setSupabaseSprintTaskCompletion(usage.taskId, nextCompleted)
+      const updatedUsage = await loadSupabaseUsage(
+        [...backlogIssues, ...sprintIssues],
+        selectedSprint,
+        issueRequestRef.current,
+        sprintSelection,
+        backlogIssues,
+        sprintIssues
+      )
+      const nextTaskUsage = updatedUsage?.[issue.key]
+      const consensusReached = Boolean(
+        nextCompleted &&
+          nextTaskUsage &&
+          nextTaskUsage.completionRequiredCount > 0 &&
+          nextTaskUsage.completionCount >= nextTaskUsage.completionRequiredCount
+      )
+      if (consensusReached) {
+        await window.hrs.completeJiraSprintIssueByConsensus({
+          issueKey: issue.key,
+          taskId: usage.taskId
+        })
+        setSuccess(`${issue.key} moved to Done after every reporter confirmed completion.`)
+        await refreshIssues({ quiet: true })
+      } else {
+        setSuccess(
+          nextCompleted
+            ? `${currentEmployeeName || 'You'} marked ${issue.key} done.`
+            : `${currentEmployeeName || 'Your'} completion confirmation was removed.`
+        )
+      }
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setCompletionLoadingKey(null)
+    }
+  }
+
+  async function toggleIssueDetails(issueKey: string) {
+    if (expandedIssueKey === issueKey) {
+      setExpandedIssueKey(null)
+      return
+    }
+    setExpandedIssueKey(issueKey)
+    if (detailsByIssue[issueKey] || detailsLoadingKey === issueKey) return
+    setDetailsLoadingKey(issueKey)
+    setDetailsErrorByIssue(previous => {
+      const next = { ...previous }
+      delete next[issueKey]
+      return next
+    })
+    try {
+      const details = await window.hrs.getJiraSprintIssueDetails(issueKey)
+      setDetailsByIssue(previous => ({ ...previous, [issueKey]: details }))
+    } catch (reason) {
+      setDetailsErrorByIssue(previous => ({
+        ...previous,
+        [issueKey]: reason instanceof Error ? reason.message : String(reason)
+      }))
+    } finally {
+      setDetailsLoadingKey(current => (current === issueKey ? null : current))
+    }
+  }
+
   function renderIssueCard(issue: JiraSprintIssue, column: SprintColumn) {
     const linked = linkedKeys.has(issue.key.toUpperCase())
     const usage = supabaseUsage[issue.key]
     const loggedSeconds = usage?.usedSeconds ?? 0
     const budgetSeconds = usage?.budgetSeconds ?? issue.estimateSeconds
     const remainingSeconds = Math.max(0, budgetSeconds - loggedSeconds)
+    const currentReporter = usage?.employees.find(
+      employee => employee.employeeId === currentEmployeeId
+    )
+    const details = detailsByIssue[issue.key]
+    const detailsExpanded = expandedIssueKey === issue.key
     return (
       <Card
         key={issue.key}
@@ -695,10 +829,17 @@ export function SprintBoard({
           </Text>
 
           <div className="sprint-worklog-section">
-            <Group gap={5} mb={5}>
-              <IconUsers size={13} />
-              <Text size="xs" fw={800}>Supabase reported hours</Text>
-              {loadingSupabaseUsage && !usage ? <Loader size={11} /> : null}
+            <Group justify="space-between" align="center" mb={5} wrap="nowrap">
+              <Group gap={5} wrap="nowrap">
+                <IconUsers size={13} />
+                <Text size="xs" fw={800}>Supabase reported hours</Text>
+                {loadingSupabaseUsage && !usage ? <Loader size={11} /> : null}
+              </Group>
+              {usage?.completionAvailable && usage.completionRequiredCount > 0 ? (
+                <Badge size="xs" variant="light" color="teal">
+                  {usage.completionCount}/{usage.completionRequiredCount} done
+                </Badge>
+              ) : null}
             </Group>
             {usage?.employees.length ? (
               <Stack gap={4}>
@@ -717,9 +858,18 @@ export function SprintBoard({
                       </span>
                       <Text size="xs" truncate>{employee.employeeName}</Text>
                     </Group>
-                    <Text size="xs" fw={800} className="sprint-contributor-hours">
-                      {formatSeconds(employee.seconds)}
-                    </Text>
+                    <Stack gap={1} align="flex-end" className="sprint-contributor-completion">
+                      <Text size="xs" fw={800} className="sprint-contributor-hours">
+                        {formatSeconds(employee.seconds)}
+                      </Text>
+                      {employee.completedAt ? (
+                        <Text size="xs" c="teal">
+                          Done {formatCompletionDate(employee.completedAt)}
+                        </Text>
+                      ) : (
+                        <Text size="xs" c="dimmed">Not confirmed</Text>
+                      )}
+                    </Stack>
                   </Group>
                 ))}
               </Stack>
@@ -754,6 +904,145 @@ export function SprintBoard({
               Supabase totals unavailable
             </Text>
           )}
+
+          <Group justify="space-between" align="center" gap={6} wrap="wrap" className="sprint-card-actions">
+            <Group gap={5} wrap="wrap">
+              {!isPastSprint && issue.statusCategoryKey === 'todo' ? (
+                <Button
+                  size="compact-xs"
+                  variant="light"
+                  leftSection={<IconPlayerPlay size={13} />}
+                  loading={startLoadingKey === issue.key}
+                  onClick={() => void startEmployeeWork(issue)}
+                >
+                  Start work
+                </Button>
+              ) : null}
+              {!isPastSprint &&
+              issue.statusCategoryKey !== 'done' &&
+              usage?.completionAvailable &&
+              currentReporter ? (
+                <Button
+                  size="compact-xs"
+                  variant={currentReporter.completedAt ? 'filled' : 'light'}
+                  color="teal"
+                  leftSection={<IconCircleCheck size={13} />}
+                  loading={completionLoadingKey === issue.key}
+                  onClick={() => void toggleEmployeeCompletion(issue, usage)}
+                >
+                  {currentReporter.completedAt ? 'Done confirmed' : 'Mark done'}
+                </Button>
+              ) : null}
+            </Group>
+            <Button
+              size="compact-xs"
+              variant="subtle"
+              leftSection={<IconMessageCircle size={13} />}
+              rightSection={
+                detailsExpanded ? <IconChevronDown size={13} /> : <IconChevronRight size={13} />
+              }
+              aria-expanded={detailsExpanded}
+              onClick={() => void toggleIssueDetails(issue.key)}
+            >
+              Details
+            </Button>
+          </Group>
+
+          {!isPastSprint &&
+          usage?.completionAvailable &&
+          usage.employees.length > 0 &&
+          !currentReporter &&
+          issue.statusCategoryKey !== 'done' ? (
+            <Text size="xs" c="dimmed">
+              Report hours on this task before confirming completion.
+            </Text>
+          ) : null}
+
+          {!usage?.completionAvailable && usage ? (
+            <Text size="xs" c="yellow">
+              Apply Supabase migration 005 to enable shared completion confirmations.
+            </Text>
+          ) : null}
+
+          <Collapse in={detailsExpanded} transitionDuration={180}>
+            <div className="sprint-issue-details">
+              {detailsLoadingKey === issue.key ? (
+                <Group gap="xs">
+                  <Loader size="xs" />
+                  <Text size="xs" c="dimmed">Loading Jira details…</Text>
+                </Group>
+              ) : detailsErrorByIssue[issue.key] ? (
+                <Text size="xs" c="red">{detailsErrorByIssue[issue.key]}</Text>
+              ) : details ? (
+                <Stack gap="sm">
+                  <div>
+                    <Text size="xs" fw={800}>Description</Text>
+                    <Text size="xs" c="dimmed" className="sprint-detail-description">
+                      {details.description || 'No Jira description.'}
+                    </Text>
+                  </div>
+                  <div>
+                    <Group gap={5} mb={5}>
+                      <IconPaperclip size={13} />
+                      <Text size="xs" fw={800}>Attachments · {details.attachments.length}</Text>
+                    </Group>
+                    {details.attachments.length ? (
+                      <div className="sprint-detail-attachments">
+                        {details.attachments.map(attachment => (
+                          <button
+                            key={attachment.id}
+                            type="button"
+                            className="sprint-detail-attachment"
+                            aria-label={`Open Jira attachment ${attachment.name}`}
+                            onClick={() =>
+                              void window.hrs.openJiraAttachment({
+                                id: attachment.id,
+                                filename: attachment.name
+                              })
+                            }
+                          >
+                            {attachment.previewDataUrl ? (
+                              <img src={attachment.previewDataUrl} alt="" />
+                            ) : (
+                              <IconPaperclip size={18} />
+                            )}
+                            <span>{attachment.name}</span>
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      <Text size="xs" c="dimmed">No attachments.</Text>
+                    )}
+                  </div>
+                  <div>
+                    <Group gap={5} mb={5}>
+                      <IconMessageCircle size={13} />
+                      <Text size="xs" fw={800}>Comments · {details.comments.length}</Text>
+                    </Group>
+                    {details.comments.length ? (
+                      <Stack gap={5}>
+                        {details.comments.map(comment => (
+                          <div key={comment.id} className="sprint-detail-comment">
+                            <Group justify="space-between" gap={6} wrap="nowrap">
+                              <Text size="xs" fw={800} truncate>{comment.authorName}</Text>
+                              <Text size="xs" c="dimmed">
+                                {formatCompletionDate(comment.createdAt)}
+                              </Text>
+                            </Group>
+                            <Text size="xs" className="sprint-detail-comment-text">
+                              {comment.text || 'Attachment'}
+                            </Text>
+                          </div>
+                        ))}
+                      </Stack>
+                    ) : (
+                      <Text size="xs" c="dimmed">No comments.</Text>
+                    )}
+                  </div>
+                </Stack>
+              ) : null}
+            </div>
+          </Collapse>
         </Stack>
       </Card>
     )

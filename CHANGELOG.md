@@ -18,6 +18,7 @@
 - Detects rejected Microsoft usernames or passwords immediately, shows the real recovery action instead of waiting for a token timeout, and reopens the meeting credentials for correction.
 - Verifies DUO server delivery before displaying a push/call success state, detects expired or denied DUO prompts, and tells users to open Duo Mobile manually when phone notifications do not appear.
 - Added a **Use Duo passcode** fallback so Microsoft meeting sync can finish headlessly even when Duo push notifications and phone calls are not delivered.
+- Replaced the blind post-DUO sleep and multi-minute Graph Explorer fallback with an immediate 10-second redirect watcher that captures Microsoft’s full token before the page clears it.
 
 ## 1.0.18
 

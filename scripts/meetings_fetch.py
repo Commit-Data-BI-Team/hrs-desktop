@@ -1061,31 +1061,59 @@ def wait_for_duo_request_confirmation(
     )
 
 
-def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 90) -> str | None:
+def extract_access_token_from_all_windows(driver) -> str | None:
+    # Chrome performance events preserve the full OAuth redirect URL even when the
+    # Graph Explorer SPA immediately removes its fragment from the address bar.
+    token = extract_access_token_from_performance_log(driver)
+    if token:
+        return token
+
+    try:
+        handles = list(driver.window_handles)
+    except (NoSuchWindowException, WebDriverException):
+        handles = []
+    for handle in handles:
+        try:
+            driver.switch_to.window(handle)
+            token = extract_access_token_from_oauth_capture(driver)
+            if token:
+                return token
+            token = extract_access_token(driver)
+            if token:
+                return token
+            host = (urlparse(driver.current_url or "").hostname or "").lower()
+            if host == "developer.microsoft.com":
+                token = extract_access_token_from_indexeddb(driver)
+                if token:
+                    return token
+        except (NoSuchWindowException, WebDriverException, ProtocolError, OSError):
+            continue
+    return None
+
+
+def wait_for_microsoft_oauth_redirect(driver, timeout_seconds: int = 10) -> str | None:
     deadline = time.time() + timeout_seconds
     last_log = 0.0
     while time.time() < deadline:
         raise_for_microsoft_sign_in_error(driver)
         raise_for_duo_error(driver)
-        token = wait_for_access_token_in_current_url(driver, 1)
+        token = extract_access_token_from_all_windows(driver)
         if token:
+            log("Microsoft Graph token captured after DUO approval.")
             return token
         try:
             if click_stay_signed_in_confirmation(driver):
-                time.sleep(2)
+                time.sleep(0.25)
                 continue
         except (WebDriverException, ProtocolError, OSError) as exc:
             if not is_browser_transport_error(exc):
                 raise
-        token = extract_access_token(driver)
-        if token:
-            log("Microsoft Graph token acquired after Microsoft authentication.")
-            return token
         now = time.time()
-        if now - last_log > 10:
-            log("Waiting for Microsoft authentication to return to Graph Explorer.")
+        if now - last_log > 2:
+            remaining = max(1, int(deadline - now + 0.999))
+            log(f"Waiting for DUO approval and Microsoft redirect ({remaining}s remaining).")
             last_log = now
-        time.sleep(1.0)
+        time.sleep(0.25)
     return None
 
 
@@ -1831,7 +1859,6 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                                 )
                             log("Waiting for DUO approval in Duo Mobile.")
                         driver.switch_to.default_content()
-                        time.sleep(10)
                     except TimeoutException:
                         raise_for_microsoft_sign_in_error(driver)
                         log("DUO verification buttons not found. Continuing.")
@@ -1846,10 +1873,15 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
                             raise
 
                 if duo_clicked:
-                    access_token = wait_for_microsoft_oauth_redirect(driver, 90)
+                    log("Waiting up to 10 seconds for DUO approval.")
+                    access_token = wait_for_microsoft_oauth_redirect(driver, 10)
+                    if not access_token:
+                        raise RuntimeError(
+                            "DUO approval did not complete the Microsoft sign-in within 10 seconds. Start meeting sync again, approve immediately, and keep Duo Mobile open."
+                        )
                 elif not auth_window_closed:
                     click_stay_signed_in_confirmation(driver)
-                    access_token = wait_for_microsoft_oauth_redirect(driver, 90)
+                    access_token = wait_for_microsoft_oauth_redirect(driver, 20)
                 else:
                     access_token = None
                 if access_token:
@@ -1869,8 +1901,6 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
 
         log("Waiting for Graph access token.")
         try:
-            if duo_clicked:
-                wait_for_graph_explorer_after_duo(driver, 60)
             trigger_graph_query(driver)
             access_token = wait_for_access_token(driver, 30, include_indexeddb=True)
             if not access_token:
@@ -1883,8 +1913,6 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
             if not is_browser_transport_error(exc):
                 raise
             driver = restart_graph_driver(driver, browser, headless, str(exc))
-            if duo_clicked:
-                wait_for_graph_explorer_after_duo(driver, 60)
             trigger_graph_query(driver)
             access_token = wait_for_access_token(driver, 30, include_indexeddb=True)
             if not access_token:

@@ -2504,6 +2504,9 @@ export default function App() {
   const [integrationError, setIntegrationError] = useState<string | null>(null)
   const [integrationSuccess, setIntegrationSuccess] = useState<string | null>(null)
   const [integrationComposerOpen, setIntegrationComposerOpen] = useState(false)
+  const [integrationRoutingOpen, setIntegrationRoutingOpen] = useState(false)
+  const [integrationHistoryOpen, setIntegrationHistoryOpen] = useState(false)
+  const [integrationToolsOpen, setIntegrationToolsOpen] = useState(false)
   const [integrationQuickLogLinked, setIntegrationQuickLogLinked] = useState(false)
   const integrationSheetResizeLockedRef = useRef(false)
   const integrationSheetResizeUnlockTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -5927,6 +5930,7 @@ export default function App() {
     setIntegrationTransitionId(null)
     setIntegrationError(null)
     setIntegrationSuccess(null)
+    setIntegrationHistoryOpen(false)
     requestAnimationFrame(() => integrationTextareaRef.current?.focus())
   }
 
@@ -6525,6 +6529,9 @@ export default function App() {
     setIntegrationSuccess(null)
     setIntegrationReplyTarget(null)
     setIntegrationDestination('both')
+    setIntegrationRoutingOpen(false)
+    setIntegrationHistoryOpen(false)
+    setIntegrationToolsOpen(false)
     setIntegrationQuickLogLinked(Boolean(context?.followQuickLog))
     if (context?.message !== undefined) setIntegrationMessageText(context.message)
     if (nextCustomer) {
@@ -6629,17 +6636,17 @@ export default function App() {
       <Stack gap="xs" className="tray-communicate-panel is-inline">
         <Card radius="md" withBorder className="tray-integration-composer-card">
           <Stack gap="xs">
-            <Group justify="space-between" align="center">
+            <Group justify="space-between" align="center" className="integration-sheet-header">
               <div>
                 <Text fw={700} size="sm">
                   {integrationReplyTarget
                     ? `Reply to ${integrationReplyTarget.authorName}`
-                    : 'Send update'}
+                    : 'Update Jira & Slack'}
                 </Text>
                 <Text size="xs" c="dimmed">
                   {integrationReplyTarget
                     ? `Replying on ${integrationReplyTarget.source === 'jira' ? 'Jira' : 'Slack'}.`
-                    : 'Send the same customer update to Jira and Slack together.'}
+                    : 'Write once and send to both destinations.'}
                 </Text>
               </div>
               <ActionIcon
@@ -6660,7 +6667,7 @@ export default function App() {
                 <Text size="xs" fw={700}>
                   {integrationReplyTarget
                     ? `Reply only in ${integrationReplyTarget.source === 'jira' ? 'Jira' : 'Slack'}`
-                    : 'New messages send to both'}
+                    : integrationCustomer || 'Customer update'}
                 </Text>
                 <Group gap={6} wrap="nowrap">
                   {(!integrationReplyTarget || integrationReplyTarget.source === 'jira') && (
@@ -6673,16 +6680,40 @@ export default function App() {
               </Group>
             </Card>
 
-            <Select
-              label="Customer"
-              placeholder="Choose customer"
-              data={customers}
-              value={integrationCustomer}
-              onChange={selectIntegrationCustomer}
-              searchable
-              clearable
-              size="xs"
-            />
+            <div className="integration-routing-section">
+              <Button
+                fullWidth
+                size="xs"
+                variant="subtle"
+                className="integration-disclosure-button"
+                rightSection={
+                  integrationRoutingOpen
+                    ? <IconChevronDown size={14} />
+                    : <IconChevronRight size={14} />
+                }
+                aria-expanded={integrationRoutingOpen}
+                onClick={() => setIntegrationRoutingOpen(value => !value)}
+              >
+                <span className="integration-disclosure-copy">
+                  <strong>Delivery</strong>
+                  <small>
+                    {integrationCustomer || 'Customer'} · {integrationJiraIssueKey || 'Jira'} ·{' '}
+                    {channelOptions.find(option => option.value === integrationSlackChannelId)?.label || 'Slack'}
+                  </small>
+                </span>
+              </Button>
+              <Collapse in={integrationRoutingOpen} transitionDuration={160}>
+                <Stack gap="xs" pt="xs">
+                  <Select
+                    label="Customer"
+                    placeholder="Choose customer"
+                    data={customers}
+                    value={integrationCustomer}
+                    onChange={selectIntegrationCustomer}
+                    searchable
+                    clearable
+                    size="xs"
+                  />
 
             {integrationUsesJira() && (
               <Card radius="md" withBorder className="integration-destination-card">
@@ -6758,8 +6789,31 @@ export default function App() {
                 </Stack>
               </Card>
             )}
+                </Stack>
+              </Collapse>
+            </div>
 
-            <Card radius="md" withBorder className="integration-recent-card">
+            <div className="integration-history-section">
+              <Button
+                fullWidth
+                size="xs"
+                variant="subtle"
+                className="integration-disclosure-button"
+                rightSection={
+                  integrationHistoryOpen
+                    ? <IconChevronDown size={14} />
+                    : <IconChevronRight size={14} />
+                }
+                aria-expanded={integrationHistoryOpen}
+                onClick={() => setIntegrationHistoryOpen(value => !value)}
+              >
+                <span className="integration-disclosure-copy">
+                  <strong>Conversation</strong>
+                  <small>{integrationRecentMessages.length} recent message{integrationRecentMessages.length === 1 ? '' : 's'}</small>
+                </span>
+              </Button>
+              <Collapse in={integrationHistoryOpen} transitionDuration={160}>
+            <Card radius="md" withBorder className="integration-recent-card" mt="xs">
               <Stack gap={8}>
                 <Group justify="space-between" align="center" wrap="nowrap">
                   <div>
@@ -7195,12 +7249,33 @@ export default function App() {
                 )}
               </Stack>
             </Card>
+              </Collapse>
+            </div>
 
             <div
               className={`integration-main-composer${
                 integrationReplyTarget ? ' is-hidden-for-reply' : ''
               }`}
             >
+            <Button
+              fullWidth
+              size="xs"
+              variant="subtle"
+              className="integration-disclosure-button integration-tools-toggle"
+              rightSection={
+                integrationToolsOpen
+                  ? <IconChevronDown size={14} />
+                  : <IconChevronRight size={14} />
+              }
+              aria-expanded={integrationToolsOpen}
+              onClick={() => setIntegrationToolsOpen(value => !value)}
+            >
+              <span className="integration-disclosure-copy">
+                <strong>Writing tools</strong>
+                <small>Formatting, RTL, images, and files</small>
+              </span>
+            </Button>
+            <Collapse in={integrationToolsOpen} transitionDuration={160}>
             <Group
               justify="space-between"
               align="center"
@@ -7294,6 +7369,7 @@ export default function App() {
                 </Button>
               </Group>
             </Group>
+            </Collapse>
 
             <Popover
               opened={!integrationReplyTarget && integrationMentionOpen}
@@ -7340,7 +7416,7 @@ export default function App() {
                   {directoryBadge('slack')}
                 </Group>
                 {integrationMentionCandidates.length ? (
-                  <Stack gap={4}>
+                  <Stack gap="xs">
                     {integrationMentionCandidates.map(candidate => {
                       const favorite = isIntegrationFavorite(candidate)
                       return (
@@ -10194,7 +10270,9 @@ export default function App() {
     const effectiveFromTime = overrides?.fromTime ?? fromTime
     const effectiveToTime = overrides?.toTime ?? toTime
     const effectiveReportingFrom = overrides?.reportingFrom ?? reportingFrom
-    const shouldLogToJira = overrides?.logToJira ?? logToJira
+    const shouldLogToJira = effectiveMission?.virtual
+      ? true
+      : overrides?.logToJira ?? logToJira
     const effectiveCustomerName =
       effectiveMission?.customerName?.trim() || effectiveTask?.customerName || customerName
     const effectiveProjectName =
@@ -11753,7 +11831,7 @@ export default function App() {
       setFloatingStartError('Select a task before starting the timer.')
       return
     }
-    if (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey))) {
+    if (jiraLoggingEnabled && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey))) {
       setFloatingStartError(
         jiraConfigured ? 'Select a Jira work item or disable Jira logging.' : 'Connect Jira first.'
       )
@@ -13997,6 +14075,8 @@ export default function App() {
     if (!missionId) return null
     return allProjectMissions.find(mission => mission.id === missionId) ?? null
   }, [debouncedTaskName, allProjectMissions])
+  const isFictiveTaskSelected = Boolean(selectedQuickLogMission?.virtual)
+  const jiraLoggingEnabled = isFictiveTaskSelected || logToJira
 
   const selectedQuickLogMissionTaskId = useMemo(() => {
     const originalTaskId = selectedQuickLogMission?.hrsTaskIds?.[0]
@@ -14036,7 +14116,7 @@ export default function App() {
 
   useEffect(() => {
     const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase()
-    if (selectedQuickLogMission && missionIssueKey && jiraConfigured) {
+    if (selectedQuickLogMission?.virtual && missionIssueKey) {
       autoJiraMissionRef.current = selectedQuickLogMission.id
       setJiraIssueKey(missionIssueKey)
       setLogToJira(true)
@@ -14047,7 +14127,7 @@ export default function App() {
       setJiraIssueKey(null)
       setLogToJira(false)
     }
-  }, [selectedQuickLogMission?.id, selectedQuickLogMission?.jiraIssueKey, jiraConfigured])
+  }, [selectedQuickLogMission?.id, selectedQuickLogMission?.jiraIssueKey])
 
   useEffect(() => {
     if (!integrationComposerOpen || !integrationQuickLogLinked) return
@@ -15897,6 +15977,89 @@ export default function App() {
           )
         })}
       </div>
+    )
+  }
+
+  function renderQuickLogJiraControls() {
+    if (!jiraConfigured && !isFictiveTaskSelected) return null
+    const missionIssueKey = selectedQuickLogMission?.jiraIssueKey?.trim().toUpperCase() ?? ''
+    const jiraEnabled = isFictiveTaskSelected || logToJira
+    return (
+      <Card radius="md" withBorder className="quick-jira-inline-card">
+        <Stack gap={6}>
+          <Group justify="space-between" align="center" wrap="nowrap">
+            <Stack gap={1} style={{ minWidth: 0 }}>
+              <Text size="xs" fw={800}>
+                Jira worklog
+              </Text>
+              <Text size="xs" c="dimmed" lineClamp={1}>
+                {isFictiveTaskSelected
+                  ? 'Required for this shared task'
+                  : jiraEnabled
+                    ? 'Enabled for this report'
+                    : 'Optional for regular HRS tasks'}
+              </Text>
+            </Stack>
+            {isFictiveTaskSelected ? (
+              <Badge size="xs" color="teal" variant="light" leftSection={<IconCheck size={11} />}>
+                Required
+              </Badge>
+            ) : (
+              <Switch
+                size="xs"
+                checked={logToJira}
+                onChange={event => {
+                  const next = event.currentTarget.checked
+                  setLogToJira(next)
+                  if (next && !jiraIssueKey && quickLogJiraIssueOptions.length) {
+                    setJiraIssueKey(quickLogJiraIssueOptions[0].value)
+                  }
+                }}
+                label="Log to Jira"
+              />
+            )}
+          </Group>
+
+          {isFictiveTaskSelected && !jiraConfigured ? (
+            <Alert color="red" variant="light" radius="sm">
+              Connect Jira before logging this shared task.
+            </Alert>
+          ) : null}
+
+          {jiraConfigured &&
+          jiraEnabled &&
+          (isFictiveTaskSelected || (customerName && mappedEpicKey)) ? (
+            <Select
+              label="Work item"
+              description={
+                isFictiveTaskSelected
+                  ? `Automatically linked to ${selectedQuickLogMission?.name ?? 'the shared task'}.`
+                  : undefined
+              }
+              placeholder="Choose an issue"
+              data={quickLogJiraIssueOptions}
+              value={(isFictiveTaskSelected ? missionIssueKey : jiraIssueKey) || null}
+              onChange={value => {
+                if (isFictiveTaskSelected) return
+                setJiraIssueKey(value)
+                if (!value) setLogToJira(false)
+              }}
+              searchable={!isFictiveTaskSelected}
+              clearable={!isFictiveTaskSelected}
+              allowDeselect={!isFictiveTaskSelected}
+              nothingFoundMessage="No work items found"
+              disabled={jiraLoadingIssues || isFictiveTaskSelected}
+              size="xs"
+            />
+          ) : null}
+
+          {jiraConfigured && jiraEnabled && !isFictiveTaskSelected && customerName && !mappedEpicKey ? (
+            <Text size="xs" c="dimmed">
+              Map this customer to a Jira epic to select a work item.
+            </Text>
+          ) : null}
+        </Stack>
+      </Card>
     )
   }
 
@@ -19749,27 +19912,40 @@ export default function App() {
               }}
             />
             {renderQuickFictiveUsageBar(true)}
-            <Switch
-              checked={logToJira}
-              onChange={event => {
-                const next = event.currentTarget.checked
-                setLogToJira(next)
-                if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                  setJiraIssueKey(jiraIssueOptions[0].value)
-                }
-              }}
-              label="Log to Jira"
-            />
-            {logToJira && (
+            {isFictiveTaskSelected ? (
+              <Badge variant="light" color="teal" leftSection={<IconCheck size={12} />}>
+                Jira worklog required
+              </Badge>
+            ) : (
+              <Switch
+                checked={logToJira}
+                onChange={event => {
+                  const next = event.currentTarget.checked
+                  setLogToJira(next)
+                  if (next && !jiraIssueKey && jiraIssueOptions.length) {
+                    setJiraIssueKey(jiraIssueOptions[0].value)
+                  }
+                }}
+                label="Log to Jira"
+              />
+            )}
+            {jiraLoggingEnabled && (
               <>
                 {jiraConfigured && mappedEpicKey ? (
                   <Select
                     label="Jira work item"
                     placeholder="Select Jira work item"
-                    data={jiraIssueOptions}
-                    value={jiraIssueKey}
-                    onChange={value => setJiraIssueKey(value)}
-                    searchable
+                    data={quickLogJiraIssueOptions}
+                    value={
+                      (isFictiveTaskSelected
+                        ? selectedQuickLogMission?.jiraIssueKey
+                        : jiraIssueKey) ?? null
+                    }
+                    onChange={value => {
+                      if (!isFictiveTaskSelected) setJiraIssueKey(value)
+                    }}
+                    searchable={!isFictiveTaskSelected}
+                    disabled={isFictiveTaskSelected}
                     comboboxProps={{
                       withinPortal: true,
                       floatingStrategy: 'fixed',
@@ -20547,6 +20723,7 @@ export default function App() {
                         </Tooltip>
                       </div>
                     </SimpleGrid>
+                    {renderQuickLogJiraControls()}
                     {renderQuickFictiveUsageBar(true)}
 
                     <SimpleGrid cols={2} spacing="xs" className="tray-time-grid">
@@ -20611,46 +20788,6 @@ export default function App() {
                       )}
                     </Transition>
 
-                    {jiraConfigured && (
-                      <Stack gap="xs" className="tray-jira-section">
-                        <Group justify="space-between" align="center">
-                          <Text size="xs" c="dimmed">
-                            Jira work item
-                          </Text>
-                          <Switch
-                            size="xs"
-                            checked={logToJira}
-                            onChange={event => {
-                              const next = event.currentTarget.checked
-                              setLogToJira(next)
-                              if (next && !jiraIssueKey && quickLogJiraIssueOptions.length) {
-                                setJiraIssueKey(quickLogJiraIssueOptions[0].value)
-                              }
-                            }}
-                            label="Log to Jira"
-                          />
-                        </Group>
-
-                        {customerName && mappedEpicKey && (
-                          <Select
-                            label="Jira work item"
-                            placeholder="Choose an issue"
-                            data={quickLogJiraIssueOptions}
-                            value={jiraIssueKey}
-                            onChange={value => {
-                              setJiraIssueKey(value)
-                              if (!value) setLogToJira(false)
-                            }}
-                            searchable
-                            clearable
-                            nothingFoundMessage="No work items found"
-                            disabled={jiraLoadingIssues}
-                            size="xs"
-                          />
-                        )}
-                      </Stack>
-                    )}
-
                     {logError && (
                       <Alert color="red" variant="light" radius="md">
                         {logError}
@@ -20672,7 +20809,8 @@ export default function App() {
                         !duration ||
                         !logDate ||
                         comment.trim().length < 3 ||
-                        (logToJira && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                        (jiraLoggingEnabled &&
+                          (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
                       }
                       onClick={() => {
                         if (taskIdForLog && duration) {
@@ -25293,18 +25431,29 @@ export default function App() {
                               <Text size="sm" c="dimmed">
                                 Jira work item
                               </Text>
-                              <Switch
-                                size="sm"
-                                checked={logToJira}
-                                onChange={event => {
-                                  const next = event.currentTarget.checked
-                                  setLogToJira(next)
-                                  if (next && !jiraIssueKey && jiraIssueOptions.length) {
-                                    setJiraIssueKey(jiraIssueOptions[0].value)
-                                  }
-                                }}
-                                label="Log to Jira"
-                              />
+                              {isFictiveTaskSelected ? (
+                                <Badge
+                                  size="sm"
+                                  color="teal"
+                                  variant="light"
+                                  leftSection={<IconCheck size={12} />}
+                                >
+                                  Required
+                                </Badge>
+                              ) : (
+                                <Switch
+                                  size="sm"
+                                  checked={logToJira}
+                                  onChange={event => {
+                                    const next = event.currentTarget.checked
+                                    setLogToJira(next)
+                                    if (next && !jiraIssueKey && jiraIssueOptions.length) {
+                                      setJiraIssueKey(jiraIssueOptions[0].value)
+                                    }
+                                  }}
+                                  label="Log to Jira"
+                                />
+                              )}
                             </Group>
 
                             {!customerName && (
@@ -25319,20 +25468,25 @@ export default function App() {
                               </Text>
                             )}
 
-                            {customerName && mappedEpicKey && (
+                            {customerName && mappedEpicKey && jiraLoggingEnabled && (
                               <Select
                                 label="Jira work item"
                                 placeholder="Choose an issue"
-                                data={jiraIssueOptions}
-                                value={jiraIssueKey}
+                                data={quickLogJiraIssueOptions}
+                                value={
+                                  (isFictiveTaskSelected
+                                    ? selectedQuickLogMission?.jiraIssueKey
+                                    : jiraIssueKey) ?? null
+                                }
                                 onChange={value => {
+                                  if (isFictiveTaskSelected) return
                                   setJiraIssueKey(value)
                                   if (!value) setLogToJira(false)
                                 }}
-                                searchable
-                                clearable
+                                searchable={!isFictiveTaskSelected}
+                                clearable={!isFictiveTaskSelected}
                                 nothingFoundMessage="No work items found"
-                                disabled={jiraLoadingIssues}
+                                disabled={jiraLoadingIssues || isFictiveTaskSelected}
                               />
                             )}
 
@@ -25407,7 +25561,7 @@ export default function App() {
                               !duration ||
                               !logDate ||
                               comment.trim().length < 3 ||
-                              (logToJira &&
+                              (jiraLoggingEnabled &&
                                 (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
                             }
                             onClick={() => {
@@ -26587,7 +26741,7 @@ export default function App() {
           <Group justify="space-between" align="center">
             <Text size="sm">Jira logging</Text>
             <Text size="sm" fw={600}>
-              {logToJira ? 'On' : 'Off'}
+              {jiraLoggingEnabled ? 'On' : 'Off'}
             </Text>
           </Group>
 

@@ -3531,6 +3531,21 @@ html[data-platform='windows'] .tray-shell-enter {
   border: 1px solid rgba(171, 119, 255, 0.16);
 }
 
+.quick-meetings-panel + .tray-calendar-shell {
+  margin-top: -4px;
+}
+
+.quick-jira-inline-card {
+  padding: 9px 10px;
+  border-color: rgba(91, 185, 239, 0.2);
+  background: linear-gradient(145deg, rgba(18, 48, 66, 0.5), rgba(12, 24, 33, 0.72));
+}
+
+.quick-jira-inline-card .mantine-Select-label,
+.quick-jira-inline-card .mantine-InputWrapper-description {
+  font-size: 0.63rem;
+}
+
 .tray-calendar-status-legend {
   display: flex;
   align-items: center;
@@ -4435,6 +4450,66 @@ html[data-platform='windows'] .tray-shell-enter {
   display: flex;
   flex-direction: column;
   gap: var(--mantine-spacing-xs);
+  order: 1;
+}
+
+.integration-routing-section {
+  order: 2;
+}
+
+.integration-history-section {
+  order: 3;
+}
+
+.integration-disclosure-button {
+  height: auto;
+  min-height: 42px;
+  padding: 6px 9px;
+  color: var(--text-primary);
+  text-align: left;
+  border: 1px solid rgba(105, 177, 218, 0.16);
+  border-radius: 10px;
+  background: rgba(58, 113, 145, 0.06);
+}
+
+.integration-disclosure-button:hover {
+  background: rgba(67, 151, 199, 0.12);
+  border-color: rgba(100, 190, 238, 0.28);
+}
+
+.integration-disclosure-button .mantine-Button-label {
+  width: 100%;
+  justify-content: flex-start;
+}
+
+.integration-disclosure-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+}
+
+.integration-disclosure-copy strong,
+.integration-disclosure-copy small {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.integration-disclosure-copy strong {
+  font-size: 0.72rem;
+}
+
+.integration-disclosure-copy small {
+  color: var(--muted);
+  font-size: 0.61rem;
+  font-weight: 500;
+}
+
+.integration-tools-toggle {
+  min-height: 36px;
 }
 
 .integration-main-composer.is-hidden-for-reply {

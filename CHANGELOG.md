@@ -25,6 +25,13 @@
 - Limits the alias to that recent-shortcut view; task selectors, reports, HRS logging, Supabase synchronization, and source data keep the original customer, task name, and ID.
 - Persists shortcut aliases locally by their stable route and provides a one-click **Restore original** action.
 
+### Simpler Jira and Slack updates
+
+- Rebuilt the customer-update sheet around the message composer and Send action, with compact **Writing tools**, **Delivery**, and **Conversation** disclosures instead of showing every control simultaneously.
+- Keeps Jira routing, optional status changes, Slack channel selection, recent threads, attachments, formatting, RTL, and mentions available without overwhelming the default view.
+- Moved Jira worklog controls directly below the Task selector and restored comfortable spacing throughout the remaining Quick Log form.
+- Makes Jira logging mandatory and non-disableable for fictive/shared tasks, automatically locks the matching Jira work item, and leaves Jira logging off by default for regular HRS tasks.
+
 ### Compact tray header
 
 - Removed the Clockify action from the Quick Log meeting bar and placed the clickable **Missing hours** and **Unreported days** indicators in its former space.

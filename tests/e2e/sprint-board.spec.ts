@@ -54,6 +54,8 @@ test('manages active and past Jira sprints with Supabase contributors', async ()
     await expect(
       sprintPage.getByLabel('Vitaly Shechtman reported 30m from Supabase')
     ).toBeVisible()
+    await expect(sprintPage.getByText('0 days remaining')).toBeVisible()
+    await expect(sprintPage.getByText('Mission hours 2h 45m used / 12h')).toBeVisible()
     await expect(sprintPage.locator('[data-issue-key="VDA-601"]')).toContainText('6h remaining')
     const sprintSelect = sprintPage.getByRole('textbox', { name: 'Sprint' })
     await sprintSelect.click()

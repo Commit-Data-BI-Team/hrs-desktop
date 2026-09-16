@@ -201,6 +201,15 @@ function sprintUsageRange(sprint: JiraSprint) {
   return { start, end: end < start ? start : end }
 }
 
+function getRemainingSprintDays(sprint: JiraSprint) {
+  const today = dateInIsrael(new Date().toISOString())
+  const end = dateInIsrael(sprint.endDate)
+  if (!today || !end) return null
+  const todayMs = Date.parse(`${today}T00:00:00.000Z`)
+  const endMs = Date.parse(`${end}T00:00:00.000Z`)
+  return Math.max(0, Math.ceil((endMs - todayMs) / (24 * 60 * 60 * 1000)))
+}
+
 export function SprintBoard({
   jiraStatus,
   linkedIssueKeys,
@@ -505,6 +514,18 @@ export function SprintBoard({
     }),
     [backlogIssues, sprintIssues]
   )
+  const sprintHourTotals = useMemo(() => {
+    return sprintIssues.reduce(
+      (totals, issue) => {
+        const usage = supabaseUsage[issue.key]
+        totals.usedSeconds += usage?.usedSeconds ?? 0
+        totals.budgetSeconds += usage?.budgetSeconds ?? issue.estimateSeconds ?? 0
+        return totals
+      },
+      { usedSeconds: 0, budgetSeconds: 0 }
+    )
+  }, [sprintIssues, supabaseUsage])
+  const remainingSprintDays = selectedSprint ? getRemainingSprintDays(selectedSprint) : null
   const visibleColumns: SprintColumn[] = isPastSprint
     ? ['todo', 'indeterminate', 'done']
     : ['backlog', 'todo', 'indeterminate', 'done']
@@ -1177,6 +1198,27 @@ export function SprintBoard({
                   leftSection={<IconCalendarEvent size={12} />}
                 >
                   End {formatSprintDate(selectedSprint.endDate)}
+                </Badge>
+                <Badge
+                  size="sm"
+                  variant="light"
+                  color={remainingSprintDays && remainingSprintDays > 0 ? 'yellow' : 'gray'}
+                  leftSection={<IconClock size={12} />}
+                >
+                  {remainingSprintDays === null
+                    ? 'Remaining days not set'
+                    : `${remainingSprintDays} day${remainingSprintDays === 1 ? '' : 's'} remaining`}
+                </Badge>
+                <Badge
+                  size="sm"
+                  variant="light"
+                  color="teal"
+                  leftSection={<IconClock size={12} />}
+                >
+                  Mission hours {formatSeconds(sprintHourTotals.usedSeconds)} used /{' '}
+                  {sprintHourTotals.budgetSeconds > 0
+                    ? formatSeconds(sprintHourTotals.budgetSeconds)
+                    : 'No budget'}
                 </Badge>
               </Group>
             </Stack>

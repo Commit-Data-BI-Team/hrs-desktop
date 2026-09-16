@@ -55,6 +55,19 @@ type SprintCatalogItem = {
   sprint: JiraSprint
 }
 
+type SprintCachedView = {
+  backlogIssues: JiraSprintIssue[]
+  sprintIssues: JiraSprintIssue[]
+  supabaseUsage: Record<string, SupabaseSprintTaskUsage>
+  savedAt: string
+}
+
+type SprintBoardCache = {
+  catalog: SprintCatalogItem[]
+  sprintSelection: string | null
+  views: Record<string, SprintCachedView>
+}
+
 type Props = {
   jiraStatus: SprintProjectStatus | null
   linkedIssueKeys: string[]
@@ -70,6 +83,32 @@ const COLUMN_LABELS: Record<SprintColumn, string> = {
   todo: 'To Do',
   indeterminate: 'In Progress',
   done: 'Done'
+}
+
+const SPRINT_BOARD_CACHE_KEY = 'hrs-sprint-board-cache-v1'
+
+function readSprintBoardCache(): SprintBoardCache {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(SPRINT_BOARD_CACHE_KEY) || '{}') as Partial<
+      SprintBoardCache
+    >
+    return {
+      catalog: Array.isArray(parsed.catalog) ? parsed.catalog : [],
+      sprintSelection:
+        typeof parsed.sprintSelection === 'string' ? parsed.sprintSelection : null,
+      views: parsed.views && typeof parsed.views === 'object' ? parsed.views : {}
+    }
+  } catch {
+    return { catalog: [], sprintSelection: null, views: {} }
+  }
+}
+
+function writeSprintBoardCache(cache: SprintBoardCache) {
+  try {
+    localStorage.setItem(SPRINT_BOARD_CACHE_KEY, JSON.stringify(cache))
+  } catch {
+    // Cache is best-effort; live Jira and Supabase remain authoritative.
+  }
 }
 
 function formatSeconds(seconds: number) {
@@ -147,6 +186,10 @@ export function SprintBoard({
   onExpand,
   onClose
 }: Props) {
+  const initialCache = useMemo(readSprintBoardCache, [])
+  const initialView = initialCache.sprintSelection
+    ? initialCache.views[initialCache.sprintSelection]
+    : undefined
   const projectKeys = useMemo(() => {
     const values = jiraStatus?.projectKeys?.length
       ? jiraStatus.projectKeys
@@ -155,17 +198,24 @@ export function SprintBoard({
         : ['VDA', 'LSM']
     return Array.from(new Set(values.map(value => value.trim().toUpperCase()).filter(Boolean)))
   }, [jiraStatus])
-  const [catalog, setCatalog] = useState<SprintCatalogItem[]>([])
-  const [sprintSelection, setSprintSelection] = useState<string | null>(null)
+  const [catalog, setCatalog] = useState<SprintCatalogItem[]>(initialCache.catalog)
+  const [sprintSelection, setSprintSelection] = useState<string | null>(
+    initialCache.sprintSelection
+  )
   const [compactColumn, setCompactColumn] = useState<SprintColumn>('indeterminate')
-  const [backlogIssues, setBacklogIssues] = useState<JiraSprintIssue[]>([])
-  const [sprintIssues, setSprintIssues] = useState<JiraSprintIssue[]>([])
+  const [backlogIssues, setBacklogIssues] = useState<JiraSprintIssue[]>(
+    initialView?.backlogIssues ?? []
+  )
+  const [sprintIssues, setSprintIssues] = useState<JiraSprintIssue[]>(
+    initialView?.sprintIssues ?? []
+  )
   const [supabaseUsage, setSupabaseUsage] = useState<
     Record<string, SupabaseSprintTaskUsage>
-  >({})
-  const [loadingCatalog, setLoadingCatalog] = useState(false)
+  >(initialView?.supabaseUsage ?? {})
+  const [loadingCatalog, setLoadingCatalog] = useState(!initialCache.catalog.length)
   const [loadingIssues, setLoadingIssues] = useState(false)
   const [loadingSupabaseUsage, setLoadingSupabaseUsage] = useState(false)
+  const [catalogRefreshTick, setCatalogRefreshTick] = useState(0)
   const [mutationLoading, setMutationLoading] = useState(false)
   const [dragState, setDragState] = useState<SprintDragState | null>(null)
   const [dragOverColumn, setDragOverColumn] = useState<SprintColumn | null>(null)
@@ -195,11 +245,6 @@ export function SprintBoard({
     const requestId = ++catalogRequestRef.current
     setLoadingCatalog(true)
     setError(null)
-    setCatalog([])
-    setSprintSelection(null)
-    setBacklogIssues([])
-    setSprintIssues([])
-    setSupabaseUsage({})
     void (async () => {
       const boardResults = await Promise.allSettled(
         projectKeys.map(projectKey => window.hrs.getJiraBoards(projectKey))
@@ -242,11 +287,21 @@ export function SprintBoard({
       if (requestId !== catalogRequestRef.current) return
       setCatalog(uniqueItems)
       const saved = localStorage.getItem('hrs-sprint-selection')
-      const preferred =
-        uniqueItems.find(item => sprintSelectionValue(item) === saved) ??
-        uniqueItems.find(item => item.sprint.state === 'active') ??
-        uniqueItems[0]
-      setSprintSelection(preferred ? sprintSelectionValue(preferred) : null)
+      setSprintSelection(current => {
+        const preferred =
+          uniqueItems.find(item => sprintSelectionValue(item) === current) ??
+          uniqueItems.find(item => sprintSelectionValue(item) === saved) ??
+          uniqueItems.find(item => item.sprint.state === 'active') ??
+          uniqueItems[0]
+        const nextSelection = preferred ? sprintSelectionValue(preferred) : null
+        const cache = readSprintBoardCache()
+        writeSprintBoardCache({
+          catalog: uniqueItems,
+          sprintSelection: nextSelection,
+          views: cache.views
+        })
+        return nextSelection
+      })
       if (!uniqueItems.length) setError('No active or past Jira sprints were found.')
     })()
       .catch(reason => {
@@ -257,15 +312,25 @@ export function SprintBoard({
       .finally(() => {
         if (requestId === catalogRequestRef.current) setLoadingCatalog(false)
       })
-  }, [jiraStatus?.configured, projectKeys])
+  }, [jiraStatus?.configured, projectKeys, catalogRefreshTick])
+
+  useEffect(() => {
+    if (!jiraStatus?.configured) return
+    const intervalId = window.setInterval(() => {
+      setCatalogRefreshTick(value => value + 1)
+    }, 5 * 60 * 1000)
+    return () => window.clearInterval(intervalId)
+  }, [jiraStatus?.configured])
 
   async function loadSupabaseUsage(
     issues: JiraSprintIssue[],
     sprint: JiraSprint,
-    issueRequestId: number
+    issueRequestId: number,
+    selectionKey: string,
+    cachedBacklogIssues: JiraSprintIssue[],
+    cachedSprintIssues: JiraSprintIssue[]
   ) {
     const requestId = ++supabaseUsageRequestRef.current
-    setSupabaseUsage({})
     setSupabaseUsageError(null)
     if (!issues.length) {
       setLoadingSupabaseUsage(false)
@@ -292,7 +357,22 @@ export function SprintBoard({
       ) {
         return
       }
-      setSupabaseUsage(Object.fromEntries(results.map(usage => [usage.issueKey, usage])))
+      const nextUsage = Object.fromEntries(results.map(usage => [usage.issueKey, usage]))
+      setSupabaseUsage(nextUsage)
+      const cache = readSprintBoardCache()
+      writeSprintBoardCache({
+        ...cache,
+        sprintSelection: selectionKey,
+        views: {
+          ...cache.views,
+          [selectionKey]: {
+            backlogIssues: cachedBacklogIssues,
+            sprintIssues: cachedSprintIssues,
+            supabaseUsage: nextUsage,
+            savedAt: new Date().toISOString()
+          }
+        }
+      })
     } catch (reason) {
       if (
         requestId === supabaseUsageRequestRef.current &&
@@ -310,7 +390,7 @@ export function SprintBoard({
   }
 
   async function refreshIssues(options: { quiet?: boolean } = {}) {
-    if (!selectedBoard || !selectedSprint) return
+    if (!selectedBoard || !selectedSprint || !sprintSelection) return
     const requestId = ++issueRequestRef.current
     if (!options.quiet) setLoadingIssues(true)
     setError(null)
@@ -324,7 +404,29 @@ export function SprintBoard({
       if (requestId !== issueRequestRef.current) return
       setBacklogIssues(backlog)
       setSprintIssues(sprint)
-      void loadSupabaseUsage([...backlog, ...sprint], selectedSprint, requestId)
+      const cache = readSprintBoardCache()
+      const previousUsage = cache.views[sprintSelection]?.supabaseUsage ?? supabaseUsage
+      writeSprintBoardCache({
+        ...cache,
+        sprintSelection,
+        views: {
+          ...cache.views,
+          [sprintSelection]: {
+            backlogIssues: backlog,
+            sprintIssues: sprint,
+            supabaseUsage: previousUsage,
+            savedAt: new Date().toISOString()
+          }
+        }
+      })
+      void loadSupabaseUsage(
+        [...backlog, ...sprint],
+        selectedSprint,
+        requestId,
+        sprintSelection,
+        backlog,
+        sprint
+      )
     } catch (reason) {
       if (requestId === issueRequestRef.current) {
         setError(reason instanceof Error ? reason.message : String(reason))
@@ -339,8 +441,26 @@ export function SprintBoard({
     localStorage.setItem('hrs-sprint-selection', sprintSelection)
     setSuccess(null)
     setUndoAction(null)
-    void refreshIssues()
+    const cachedView = readSprintBoardCache().views[sprintSelection]
+    if (cachedView) {
+      setBacklogIssues(cachedView.backlogIssues)
+      setSprintIssues(cachedView.sprintIssues)
+      setSupabaseUsage(cachedView.supabaseUsage)
+    } else {
+      setBacklogIssues([])
+      setSprintIssues([])
+      setSupabaseUsage({})
+    }
+    void refreshIssues({ quiet: Boolean(cachedView) })
   }, [sprintSelection, selectedCatalogItem, supabaseConnected])
+
+  useEffect(() => {
+    if (!selectedCatalogItem) return
+    const intervalId = window.setInterval(() => {
+      void refreshIssues({ quiet: true })
+    }, 60 * 1000)
+    return () => window.clearInterval(intervalId)
+  }, [selectedCatalogItem, supabaseConnected])
 
   const issuesByColumn = useMemo<Record<SprintColumn, JiraSprintIssue[]>>(
     () => ({
@@ -703,7 +823,7 @@ export function SprintBoard({
             size="xs"
             variant="light"
             leftSection={<IconRefresh size={14} />}
-            loading={loadingIssues}
+            loading={!compact && loadingIssues}
             disabled={!selectedCatalogItem}
             onClick={() => void refreshIssues()}
           >
@@ -726,7 +846,7 @@ export function SprintBoard({
         <Group align="flex-end" gap="md" wrap="wrap">
           <Select
             label="Sprint"
-            placeholder={loadingCatalog ? 'Loading active and past sprints…' : 'Choose a sprint'}
+            placeholder="Choose a sprint"
             data={catalog.map(item => ({
               value: sprintSelectionValue(item),
               label: `${item.sprint.state === 'active' ? 'Active' : 'Past'} · ${item.sprint.name}`
@@ -734,8 +854,8 @@ export function SprintBoard({
             value={sprintSelection}
             onChange={setSprintSelection}
             searchable
-            disabled={loadingCatalog || !catalog.length}
-            rightSection={loadingCatalog ? <Loader size={14} /> : undefined}
+            disabled={!catalog.length}
+            rightSection={!compact && loadingCatalog && !catalog.length ? <Loader size={14} /> : undefined}
             className="sprint-only-select"
           />
           {selectedSprint ? (

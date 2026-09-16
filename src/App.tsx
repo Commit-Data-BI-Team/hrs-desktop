@@ -20158,6 +20158,26 @@ export default function App() {
               </div>
 
               <div className={`tray-panel-body${trayPanel === 'clockify' ? ' is-clockify' : ''}`}>
+                <div
+                  className={`tray-sprint-preloaded-panel${
+                    trayPanel === 'sprints' ? ' is-visible' : ''
+                  }`}
+                  aria-hidden={trayPanel !== 'sprints'}
+                >
+                  <SprintBoard
+                    compact
+                    jiraStatus={jiraStatus}
+                    linkedIssueKeys={allProjectMissions
+                      .map(mission => mission.jiraIssueKey?.trim() ?? '')
+                      .filter(Boolean)}
+                    supabaseConnected={Boolean(supabaseStatus?.email)}
+                    canEdit={supabaseStatus?.profile?.role === 'manager'}
+                    onExpand={() => {
+                      void openSprintWindow()
+                    }}
+                    onClose={() => switchTrayPanel('log')}
+                  />
+                </div>
                 {trayPanel === 'log' ? (
                   <Stack gap={4}>
                     {quickLogMeetingsPanel}
@@ -22062,21 +22082,7 @@ export default function App() {
                     </Card>
                     )}
                   </Stack>
-                ) : trayPanel === 'sprints' ? (
-                  <SprintBoard
-                    compact
-                    jiraStatus={jiraStatus}
-                    linkedIssueKeys={allProjectMissions
-                      .map(mission => mission.jiraIssueKey?.trim() ?? '')
-                      .filter(Boolean)}
-                    supabaseConnected={Boolean(supabaseStatus?.email)}
-                    canEdit={supabaseStatus?.profile?.role === 'manager'}
-                    onExpand={() => {
-                      void openSprintWindow()
-                    }}
-                    onClose={() => switchTrayPanel('log')}
-                  />
-                ) : (
+                ) : trayPanel === 'sprints' ? null : (
                   <Stack gap="xs" className="tray-settings-panel">
                     <Card radius="md" withBorder className="tray-settings-card tray-theme-settings-card">
                       <Stack gap="xs">

@@ -3451,6 +3451,14 @@ html[data-platform='windows'] .tray-shell-enter {
   min-height: 0;
 }
 
+.tray-sprint-preloaded-panel {
+  display: none;
+}
+
+.tray-sprint-preloaded-panel.is-visible {
+  display: block;
+}
+
 .tray-panel-body.is-clockify {
   height: calc(100vh - 182px);
 }

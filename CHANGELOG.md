@@ -8,6 +8,7 @@
 - Added an explicit **Expand** action that opens the existing full board inside the main HRS application window; the expanded view closes with its own top-right **X**.
 - Replaced the project and board controls with one searchable selector that automatically combines active and past sprints across the configured Jira projects; future sprints stay hidden.
 - Shows the selected sprint's Israel-local start and end dates in both compact and expanded views.
+- Preloads the selected sprint, Jira missions, and Supabase employee totals while other tray tabs are open, caches the last complete view for instant rendering, and refreshes details quietly every minute without clearing the screen into loading states.
 - Keeps active sprints editable and displays completed sprints in a clear read-only history view.
 - Uses the authenticated Supabase profile role for access control: managers can drag, transition, and rank Jira cards, while employees receive the complete board as a read-only view.
 - Enforces the manager requirement again in the main-process Jira mutation handlers so employee access cannot bypass the disabled UI controls.

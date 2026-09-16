@@ -3518,6 +3518,57 @@ html[data-platform='windows'] .tray-shell-enter {
   border: 1px solid rgba(171, 119, 255, 0.16);
 }
 
+.tray-calendar-status-legend {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  min-height: 20px;
+  padding: 0 4px;
+}
+
+.tray-calendar-status-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  color: rgba(220, 231, 235, 0.76);
+  font-size: 0.61rem;
+  font-weight: 700;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.tray-calendar-status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 7px;
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.04);
+}
+
+.tray-calendar-status-item.is-incomplete .tray-calendar-status-dot {
+  background: rgba(244, 191, 104, 0.98);
+  box-shadow: 0 0 0 2px rgba(244, 191, 104, 0.14);
+}
+
+.tray-calendar-status-item.is-unreported .tray-calendar-status-dot {
+  background: rgba(239, 83, 93, 0.98);
+  box-shadow: 0 0 0 2px rgba(239, 83, 93, 0.14);
+}
+
+.tray-calendar-status-count {
+  min-width: 15px;
+  padding: 2px 4px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.06);
+  color: rgba(239, 247, 249, 0.92);
+  text-align: center;
+  font-size: 0.56rem;
+  font-variant-numeric: tabular-nums;
+}
+
 .quick-meetings-actions {
   width: 100%;
   display: grid !important;

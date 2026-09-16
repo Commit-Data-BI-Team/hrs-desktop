@@ -17344,6 +17344,43 @@ export default function App() {
     [monthlyReport]
   )
 
+  const trayCalendarStatusCounts = useMemo(() => {
+    const monthStart = dayjs(reportMonth).startOf('month')
+    const today = dayjs().startOf('day')
+    const lastRelevantDay = monthStart.endOf('month').isBefore(today, 'day')
+      ? monthStart.endOf('month')
+      : today
+    if (lastRelevantDay.isBefore(monthStart, 'day')) {
+      return { incomplete: 0, unreported: 0 }
+    }
+
+    let incomplete = 0
+    let unreported = 0
+    let cursor = monthStart
+    while (cursor.isBefore(lastRelevantDay, 'day') || cursor.isSame(lastRelevantDay, 'day')) {
+      const key = cursor.format('YYYY-MM-DD')
+      const info = reportsByDate.get(key)
+      const hasReports = Boolean(info?.day.reports.length)
+      const isWeekend = weekendDays.includes(cursor.day() as DayOfWeek)
+      const isIsraeliNoWorkHoliday = Boolean(
+        israeliHolidaysByDate.get(key)?.some(holiday => holiday.yomTov)
+      )
+      const isHoliday = Boolean(info?.day.isHoliday) || isIsraeliNoWorkHoliday
+      const targetMinutes = getDayTargetMinutes(info?.day)
+
+      if (!isWeekend && !isHoliday && targetMinutes > 0) {
+        if (!hasReports) {
+          unreported += 1
+        } else if ((info?.totalMinutes ?? 0) < targetMinutes) {
+          incomplete += 1
+        }
+      }
+      cursor = cursor.add(1, 'day')
+    }
+
+    return { incomplete, unreported }
+  }, [reportMonth, reportsByDate, weekendDays, israeliHolidaysByDate])
+
   const handleFloatingLog = async () => {
     if (!taskIdForLog) {
       setLogError('Select a task to log work.')
@@ -19737,6 +19774,39 @@ export default function App() {
                 {trayPanel === 'log' ? (
                   <Stack gap="xs">
                     {quickLogMeetingsPanel}
+                    <div
+                      className="tray-calendar-status-legend"
+                      aria-label="Calendar reporting status legend"
+                    >
+                      <Tooltip
+                        label="Reported workdays below the required daily hours"
+                        withArrow
+                        openDelay={150}
+                        withinPortal
+                      >
+                        <span className="tray-calendar-status-item is-incomplete">
+                          <span className="tray-calendar-status-dot" aria-hidden="true" />
+                          <span>Missing hours</span>
+                          <span className="tray-calendar-status-count">
+                            {trayCalendarStatusCounts.incomplete}
+                          </span>
+                        </span>
+                      </Tooltip>
+                      <Tooltip
+                        label="Past required workdays with no reported hours; weekends and holidays are excluded"
+                        withArrow
+                        openDelay={150}
+                        withinPortal
+                      >
+                        <span className="tray-calendar-status-item is-unreported">
+                          <span className="tray-calendar-status-dot" aria-hidden="true" />
+                          <span>Unreported days</span>
+                          <span className="tray-calendar-status-count">
+                            {trayCalendarStatusCounts.unreported}
+                          </span>
+                        </span>
+                      </Tooltip>
+                    </div>
                     <div className="tray-calendar-shell">
                       {(() => {
                         const monthStart = dayjs(reportMonth).startOf('month')
@@ -19782,7 +19852,13 @@ export default function App() {
                                       ? calendarReportsByDate.get(dayCell.key)
                                       : undefined
                                     const hasReports = Boolean(info?.day.reports.length)
-                                    const isHoliday = Boolean(info?.day.isHoliday)
+                                    const dayHolidays = israeliHolidaysByDate.get(dayCell.key) ?? []
+                                    const hasIsraeliHoliday = dayHolidays.length > 0
+                                    const isIsraeliNoWorkHoliday = dayHolidays.some(
+                                      holiday => holiday.yomTov
+                                    )
+                                    const isHoliday =
+                                      Boolean(info?.day.isHoliday) || isIsraeliNoWorkHoliday
                                     const isWeekend = weekendDays.includes(dateValue.day() as DayOfWeek)
                                     const isFuture = dateValue.isAfter(dayjs(), 'day')
                                     const dayTargetMinutes = getDayTargetMinutes(info?.day)
@@ -19823,8 +19899,6 @@ export default function App() {
                                     const dayMeetings = meetingsVisibleByDate.get(dayCell.key) ?? []
                                     const hasMeetings = dayMeetings.length > 0
                                     const hasManyMeetings = dayMeetings.length > 1
-                                    const dayHolidays = israeliHolidaysByDate.get(dayCell.key) ?? []
-                                    const hasIsraeliHoliday = dayHolidays.length > 0
                                     const hasDayHoverContent = hasReports || hasMeetings || hasIsraeliHoliday
                                     return (
                                       <HoverCard

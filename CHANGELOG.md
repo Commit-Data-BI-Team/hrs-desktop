@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Shared tasks with their own Jira work item can log hours without a separate customer-to-Epic mapping. Quick Log keeps the task's Jira issue selected and enables Log work when the HRS task, date, time, and comment are valid.
+
 ## 1.0.19
 
 ### Jira sprint management

@@ -11752,7 +11752,11 @@ export default function App() {
       setFloatingStartError('Select a task before starting the timer.')
       return
     }
-    if (jiraLoggingEnabled && (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey))) {
+    if (
+      jiraLoggingEnabled &&
+      (!jiraConfigured ||
+        !(selectedQuickLogMission?.jiraIssueKey || jiraIssueKey || mappedEpicKey))
+    ) {
       setFloatingStartError(
         jiraConfigured ? 'Select a Jira work item or disable Jira logging.' : 'Connect Jira first.'
       )
@@ -13579,7 +13583,14 @@ export default function App() {
   }, [shouldLoadJiraBudgetData, jiraConfigured])
 
   useEffect(() => {
-    if (!jiraConfigured || !mappedEpicKey) {
+    const selectedMissionId = getMissionIdFromTaskValue(debouncedTaskName)
+    const selectedMissionIssueKey = selectedMissionId
+      ? allProjectMissions
+          .find(mission => mission.id === selectedMissionId && mission.virtual)
+          ?.jiraIssueKey?.trim()
+          .toUpperCase() ?? null
+      : null
+    if (!jiraConfigured) {
       setJiraIssues([])
       setJiraIssueKey(null)
       setJiraIssueLoadError(null)
@@ -13587,14 +13598,17 @@ export default function App() {
       setLogToJira(false)
       return
     }
+    if (!mappedEpicKey) {
+      // A shared task already has its own Jira issue. Its customer does not need an
+      // additional Epic mapping just to save a worklog to that issue.
+      setJiraIssues([])
+      setJiraIssueKey(selectedMissionIssueKey)
+      setJiraIssueLoadError(null)
+      setJiraLoadingIssues(false)
+      setLogToJira(Boolean(selectedMissionIssueKey))
+      return
+    }
     if (logToJira) {
-      const selectedMissionId = getMissionIdFromTaskValue(debouncedTaskName)
-      const selectedMissionIssueKey = selectedMissionId
-        ? allProjectMissions
-            .find(mission => mission.id === selectedMissionId)
-            ?.jiraIssueKey?.trim()
-            .toUpperCase() ?? null
-        : null
       setJiraIssueKey(selectedMissionIssueKey)
       setJiraIssues([])
       void loadJiraWorkItems(mappedEpicKey)
@@ -20782,7 +20796,8 @@ export default function App() {
                         !logDate ||
                         comment.trim().length < 3 ||
                         (jiraLoggingEnabled &&
-                          (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                          (!jiraConfigured ||
+                            !(selectedQuickLogMission?.jiraIssueKey || jiraIssueKey || mappedEpicKey)))
                       }
                       onClick={() => {
                         if (taskIdForLog && duration) {
@@ -25538,7 +25553,8 @@ export default function App() {
                               !logDate ||
                               comment.trim().length < 3 ||
                               (jiraLoggingEnabled &&
-                                (!jiraConfigured || (!jiraIssueKey && !mappedEpicKey)))
+                                (!jiraConfigured ||
+                                  !(selectedQuickLogMission?.jiraIssueKey || jiraIssueKey || mappedEpicKey)))
                             }
                             onClick={() => {
                               if (taskIdForLog && duration) {

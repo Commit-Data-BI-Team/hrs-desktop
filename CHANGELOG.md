@@ -2,7 +2,11 @@
 
 ## Unreleased
 
-- Shared tasks with their own Jira work item can log hours without a separate customer-to-Epic mapping. Quick Log keeps the task's Jira issue selected and enables Log work when the HRS task, date, time, and comment are valid.
+## 1.0.20
+
+### Shared-task time logging
+
+- Fixed Quick Log blocking time entries for shared tasks that have their own Jira work item but no customer-to-Epic mapping. The selected task now keeps its linked Jira issue and allows logging when the HRS task, date, time, and comment are valid.
 
 ## 1.0.19
 

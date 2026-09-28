@@ -7,6 +7,7 @@
 ### Shared-task time logging
 
 - Fixed Quick Log blocking time entries for shared tasks that have their own Jira work item but no customer-to-Epic mapping. The selected task now keeps its linked Jira issue and allows logging when the HRS task, date, time, and comment are valid.
+- Retries macOS installer packaging when GitHub's disk-image utility temporarily reports a busy image; signing and other build failures still stop the release.
 
 ## 1.0.19
 

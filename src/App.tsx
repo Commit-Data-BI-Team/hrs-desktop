@@ -85,6 +85,7 @@ import { FixedSizeList, type ListChildComponentProps } from 'react-window'
 import * as XLSX from 'xlsx'
 import LiquidGlass from 'liquid-glass-react'
 import {
+  CUMULATIVE_USAGE_RANGE,
   aggregateEmployeeProjects,
   aggregateSharedProjects,
   getGlobalProjectCapMinutes,
@@ -297,6 +298,7 @@ type QuickUsageGauge = {
   capMinutes: number
   percent: number
   status: 'green' | 'yellow' | 'red'
+  unknown?: boolean
   employees: Array<{
     employeeId: number | null
     employeeName: string
@@ -4782,17 +4784,14 @@ export default function App() {
       return null
     }
     try {
-      const { start, end } = getMonthRange(reportMonth)
+      const { start, end } = CUMULATIVE_USAGE_RANGE
       const usage = await window.hrs.getSupabaseProjectUsage(
         normalizedCustomer,
         normalizedProject,
         start,
         end
       )
-      const key = `${dayjs(reportMonth).format('YYYY-MM')}:${getSharedProjectKey(
-        normalizedCustomer,
-        normalizedProject
-      )}`
+      const key = getSharedProjectKey(normalizedCustomer, normalizedProject)
       setSupabaseProjectUsageByKey(previous => ({ ...previous, [key]: usage }))
       return usage
     } catch (error) {
@@ -5457,7 +5456,7 @@ export default function App() {
       return []
     }
     try {
-      const { start, end } = getMonthRange(reportMonth)
+      const { start, end } = CUMULATIVE_USAGE_RANGE
       const usage = await window.hrs.getSharedFictiveTaskUsage(ids, start, end)
       const nextUsage = Object.fromEntries(usage.map(item => [item.taskId, item]))
       setSharedFictiveTaskUsage(previous =>
@@ -8669,7 +8668,7 @@ export default function App() {
         if (taskCapMinutes > 0) {
           let usedTaskMinutes = getMissionUsedMinutesFromReports(effectiveMission, allReportItems)
           if (effectiveMission.shared && window.hrs?.getSharedFictiveTaskUsage) {
-            const { start, end } = getMonthRange(reportMonth)
+            const { start, end } = CUMULATIVE_USAGE_RANGE
             const usage = await window.hrs.getSharedFictiveTaskUsage(
               [effectiveMission.id],
               start,
@@ -10328,7 +10327,7 @@ export default function App() {
         for (const mission of matchingCappedMissions) {
           let usedMinutes = getMissionUsedMinutesFromReports(mission, capSourceReports)
           if (mission.shared && window.hrs?.getSharedFictiveTaskUsage) {
-            const { start, end } = getMonthRange(reportMonth)
+            const { start, end } = CUMULATIVE_USAGE_RANGE
             const freshUsage = await window.hrs.getSharedFictiveTaskUsage(
               [mission.id],
               start,
@@ -13114,7 +13113,7 @@ export default function App() {
       return
     }
     void refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
-  }, [reportMonth, supabaseStatus?.email, sharedFictiveTasks])
+  }, [supabaseStatus?.email, sharedFictiveTasks])
 
   useEffect(() => {
     const syncMonthOnRollover = () => {
@@ -14132,10 +14131,10 @@ export default function App() {
 
   const selectedQuickLogProjectKey =
     selectedQuickLogUsageCustomer && selectedQuickLogUsageProject
-      ? `${dayjs(reportMonth).format('YYYY-MM')}:${getSharedProjectKey(
+      ? getSharedProjectKey(
           selectedQuickLogUsageCustomer,
           selectedQuickLogUsageProject
-        )}`
+        )
       : null
   const selectedQuickLogProjectUsage = selectedQuickLogProjectKey
     ? supabaseProjectUsageByKey[selectedQuickLogProjectKey] ?? null
@@ -14185,7 +14184,6 @@ export default function App() {
   }, [
     selectedQuickLogUsageCustomer,
     selectedQuickLogUsageProject,
-    reportMonth,
     supabaseStatus?.email,
     supabaseStatus?.profile?.employee_id
   ])
@@ -14207,22 +14205,27 @@ export default function App() {
         selectedQuickLogProjectUsage,
         selectedQuickLogCombinedSharedProjectUsage
       )
+      const unknown = selectedQuickLogMission.shared && !resolvedProjectUsage
       const usedMinutes = resolvedProjectUsage
         ? Math.round(resolvedProjectUsage.usedSeconds / 60)
-        : getProjectUsedMinutesFromReports(
-            selectedQuickLogUsageCustomer,
-            selectedQuickLogUsageProject,
-            allReportItems
-          )
+        : unknown
+          ? 0
+          : getProjectUsedMinutesFromReports(
+              selectedQuickLogUsageCustomer,
+              selectedQuickLogUsageProject,
+              allReportItems
+            )
       const employees = resolvedProjectUsage
         ? resolvedProjectUsage.employees.map(employee => ({
               employeeId: employee.employeeId,
               employeeName: employee.employeeName,
               minutes: Math.round(employee.seconds / 60)
             }))
-        : usedMinutes > 0
-          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-          : []
+        : unknown
+          ? []
+          : usedMinutes > 0
+            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+            : []
       const percent = (usedMinutes / projectCapMinutes) * 100
       gauges.push({
         kind: 'project',
@@ -14231,6 +14234,7 @@ export default function App() {
         capMinutes: projectCapMinutes,
         percent,
         status: toStatus(percent),
+        unknown,
         employees
       })
     }
@@ -14242,18 +14246,23 @@ export default function App() {
       const sharedUsage = selectedQuickLogMission.shared
         ? sharedFictiveTaskUsage[selectedQuickLogMission.id]
         : null
+      const unknown = selectedQuickLogMission.shared && !sharedUsage
       const usedMinutes = sharedUsage
         ? Math.round(sharedUsage.usedSeconds / 60)
-        : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
+        : unknown
+          ? 0
+          : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
       const employees = sharedUsage
         ? sharedUsage.employees.map(employee => ({
             employeeId: employee.employeeId,
             employeeName: employee.employeeName,
             minutes: Math.round(employee.seconds / 60)
           }))
-        : usedMinutes > 0
-          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-          : []
+        : unknown
+          ? []
+          : usedMinutes > 0
+            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+            : []
       const percent = (usedMinutes / taskCapMinutes) * 100
       gauges.push({
         kind: 'task',
@@ -14262,6 +14271,7 @@ export default function App() {
         capMinutes: taskCapMinutes,
         percent,
         status: toStatus(percent),
+        unknown,
         employees
       })
     }
@@ -15848,8 +15858,10 @@ export default function App() {
     return (
       <div className={`quick-fictive-usage-stack${compact ? ' is-compact' : ''}`}>
         {selectedQuickLogUsageGauges.map(gauge => {
-          const width = `${Math.min(Math.max(gauge.percent, 0), 100)}%`
-          const percentLabel = `${Math.round(gauge.percent)}%`
+          const width = gauge.unknown
+            ? '0%'
+            : `${Math.min(Math.max(gauge.percent, 0), 100)}%`
+          const percentLabel = gauge.unknown ? '—' : `${Math.round(gauge.percent)}%`
           const detailsOpen = quickUsageDetailsOpen[gauge.kind]
           return (
             <div
@@ -15872,7 +15884,8 @@ export default function App() {
                   c="dimmed"
                   className="quick-fictive-usage-hours"
                 >
-                  {minutesToHHMM(gauge.usedMinutes)} / {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
+                  {gauge.unknown ? '—' : minutesToHHMM(gauge.usedMinutes)} /{' '}
+                  {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
                   {percentLabel}
                 </Text>
                 {gauge.employees.length > 0 ? (

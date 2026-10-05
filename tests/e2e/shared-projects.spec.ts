@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test'
 import {
+  CUMULATIVE_USAGE_RANGE,
   aggregateEmployeeProjects,
   aggregateSharedProjects,
   getGlobalProjectCapMinutes,
@@ -40,6 +41,22 @@ const entries: SharedProjectSourceEntry[] = [
     taskId: '303'
   }
 ]
+
+test('cumulative gauge and cap requests span reports from different months', () => {
+  const reports = [
+    { date: '2026-08-26', seconds: 5 * 3600 },
+    { date: '2026-09-03', seconds: 12 * 3600 }
+  ]
+  const totalSeconds = reports
+    .filter(
+      report =>
+        report.date >= CUMULATIVE_USAGE_RANGE.start &&
+        report.date <= CUMULATIVE_USAGE_RANGE.end
+    )
+    .reduce((total, report) => total + report.seconds, 0)
+
+  expect(totalSeconds).toBe(17 * 3600)
+})
 
 test('combines different tasks only when customer and project both match', () => {
   const projects = aggregateSharedProjects(entries)

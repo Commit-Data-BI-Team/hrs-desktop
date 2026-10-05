@@ -241,13 +241,22 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          gh release edit "$HRS_RELEASE_TAG" -R "$GH_REPO" --draft=false
+          PREVIOUS_LATEST=''
           if [[ "$HRS_RELEASE_MODE" == 'manual' ]]; then
-            RELEASE_ID="$(gh release view "$HRS_RELEASE_TAG" -R "$GH_REPO" --json databaseId -q .databaseId)"
-            gh api -X PATCH "repos/${GH_REPO}/releases/${RELEASE_ID}" -f make_latest=false >/dev/null
-            LATEST_TAG="$(gh api "repos/${GH_REPO}/releases/latest" -q .tag_name)"
-            if [[ "$LATEST_TAG" == "$HRS_RELEASE_TAG" ]]; then
-              echo 'Manual-only release must not become Latest for in-app updates.' >&2
+            PREVIOUS_LATEST="$(gh api "repos/${GH_REPO}/releases/latest" -q .tag_name)"
+            if [[ "$PREVIOUS_LATEST" == "$HRS_RELEASE_TAG" ]]; then
+              echo 'A manual-only release is already Latest; restore the prior updater release before retrying.' >&2
               exit 1
             fi
+          fi
+          gh release edit "$HRS_RELEASE_TAG" -R "$GH_REPO" --draft=false
+          if [[ "$HRS_RELEASE_MODE" == 'manual' ]]; then
+            gh release edit "$PREVIOUS_LATEST" -R "$GH_REPO" --latest
+            LATEST_TAG="$(gh api "repos/${GH_REPO}/releases/latest" -q .tag_name)"
+            if [[ "$LATEST_TAG" != "$PREVIOUS_LATEST" ]]; then
+              echo "Expected $PREVIOUS_LATEST to remain Latest, got $LATEST_TAG" >&2
+              exit 1
+            fi
+          else
+            gh release edit "$HRS_RELEASE_TAG" -R "$GH_REPO" --latest
           fi

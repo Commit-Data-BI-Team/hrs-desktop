@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Quick Log shared-task and overall-project gauges now retain cumulative hours and contributor totals when switching calendar months; lifetime budget checks use the same all-time totals.
+
 ## 1.0.20
 
 ### Shared-task time logging

@@ -61,6 +61,13 @@ export type ProjectUsageSnapshot = {
   employees: ProjectUsageContributor[]
 }
 
+// Budgets and Quick Log gauges are cumulative, regardless of which calendar
+// month is open. Supabase applies each task/budget's actual creation date.
+export const CUMULATIVE_USAGE_RANGE = {
+  start: '1900-01-01',
+  end: '9999-12-31'
+} as const
+
 export function resolveOverallProjectUsage(
   authoritativeUsage: ProjectUsageSnapshot | null | undefined,
   reconstructedUsage: (ProjectUsageSnapshot & { ready: boolean }) | null | undefined

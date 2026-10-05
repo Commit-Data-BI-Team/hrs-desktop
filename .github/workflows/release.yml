@@ -5,6 +5,11 @@ on:
     tags:
       - "v*"
 
+# Manual mode is an explicit repository setting until a Developer ID certificate
+# is available. It publishes installers, never macOS updater metadata.
+env:
+  HRS_RELEASE_MODE: ${{ vars.HRS_RELEASE_MODE || 'signed' }}
+
 permissions:
   contents: write
 
@@ -35,7 +40,7 @@ jobs:
         env:
           CSC_LINK: ${{ secrets.CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
-          HRS_REQUIRE_MAC_SIGNING: '1'
+          HRS_REQUIRE_MAC_SIGNING: ${{ vars.HRS_RELEASE_MODE == 'manual' && '0' || '1' }}
       - uses: actions/upload-artifact@v4
         with:
           name: release-mac-${{ matrix.arch }}
@@ -87,26 +92,43 @@ jobs:
       - name: Prepare release files
         run: |
           set -euo pipefail
+          if [[ ! "$GITHUB_REF_NAME" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Expected a deliberate version tag such as v1.0.20, got $GITHUB_REF_NAME" >&2
+            exit 1
+          fi
           VERSION="${GITHUB_REF_NAME#v}"
+          PACKAGE_VERSION="$(node -p "require('./package.json').version")"
+          if [[ "$VERSION" != "$PACKAGE_VERSION" ]]; then
+            echo "Tag $GITHUB_REF_NAME does not match package version $PACKAGE_VERSION" >&2
+            exit 1
+          fi
+          if [[ "$HRS_RELEASE_MODE" != 'manual' && "$HRS_RELEASE_MODE" != 'signed' ]]; then
+            echo "Unknown HRS_RELEASE_MODE: $HRS_RELEASE_MODE" >&2
+            exit 1
+          fi
           mkdir -p release-files
 
           cp "dist-assets/release-mac-arm64/HRS Desktop-${VERSION}-arm64.dmg" "release-files/HRS-Desktop-${VERSION}-arm64.dmg"
           cp "dist-assets/release-mac-x64/HRS Desktop-${VERSION}.dmg" "release-files/HRS-Desktop-${VERSION}.dmg"
-          cp "dist-assets/release-mac-arm64/HRS Desktop-${VERSION}-arm64-mac.zip" "release-files/HRS-Desktop-${VERSION}-arm64-mac.zip"
-          cp "dist-assets/release-mac-x64/HRS Desktop-${VERSION}-mac.zip" "release-files/HRS-Desktop-${VERSION}-mac.zip"
-          node scripts/merge-latest-mac-yml.mjs \
-            "dist-assets/release-mac-arm64/latest-mac.yml" \
-            "dist-assets/release-mac-x64/latest-mac.yml" \
-            "release-files/latest-mac.yml"
+          if [[ "$HRS_RELEASE_MODE" == 'signed' ]]; then
+            cp "dist-assets/release-mac-arm64/HRS Desktop-${VERSION}-arm64-mac.zip" "release-files/HRS-Desktop-${VERSION}-arm64-mac.zip"
+            cp "dist-assets/release-mac-x64/HRS Desktop-${VERSION}-mac.zip" "release-files/HRS-Desktop-${VERSION}-mac.zip"
+            node scripts/merge-latest-mac-yml.mjs \
+              "dist-assets/release-mac-arm64/latest-mac.yml" \
+              "dist-assets/release-mac-x64/latest-mac.yml" \
+              "release-files/latest-mac.yml"
+          fi
 
           cp "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe" "release-files/HRS-Desktop-Setup-${VERSION}.exe"
-          if [[ -f "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe.blockmap" ]]; then
+          if [[ "$HRS_RELEASE_MODE" == 'signed' && -f "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe.blockmap" ]]; then
             cp "dist-assets/release-win/HRS Desktop Setup ${VERSION}.exe.blockmap" "release-files/HRS-Desktop-Setup-${VERSION}.exe.blockmap"
           fi
           if [[ -f "dist-assets/release-win/HRS Desktop-${VERSION}-portable.exe" ]]; then
             cp "dist-assets/release-win/HRS Desktop-${VERSION}-portable.exe" "release-files/HRS-Desktop-${VERSION}-portable.exe"
           fi
-          cp "dist-assets/release-win/latest.yml" "release-files/latest.yml"
+          if [[ "$HRS_RELEASE_MODE" == 'signed' ]]; then
+            cp "dist-assets/release-win/latest.yml" "release-files/latest.yml"
+          fi
           if [[ -f CHANGELOG.md ]]; then
             awk "/^## ${VERSION}$/{flag=1; print; next} /^## /{flag=0} flag" CHANGELOG.md > "release-files/CHANGELOG-${VERSION}.md"
           fi
@@ -114,18 +136,36 @@ jobs:
             cp "docs/HRS-Desktop-${VERSION}-Hebrew-Guide.docx" "release-files/HRS-Desktop-${VERSION}-Hebrew-Guide.docx"
           fi
 
+          (cd release-files && sha256sum ./* > "SHA256SUMS-${VERSION}.txt")
+
           ls -lah release-files
       - name: Create release if missing
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           VERSION="${GITHUB_REF_NAME#v}"
-          NOTES_FILE="release-files/CHANGELOG-${VERSION}.md"
-          if [[ ! -s "$NOTES_FILE" ]]; then
-            printf "## %s\n\n- Automated release.\n" "$GITHUB_REF_NAME" > "$NOTES_FILE"
+          CHANGELOG_FILE="release-files/CHANGELOG-${VERSION}.md"
+          NOTES_FILE="release-notes-${VERSION}.md"
+          if [[ "$HRS_RELEASE_MODE" == 'manual' ]]; then
+            printf 'Manual installation only. macOS in-app automatic updates are not available for this release. Download the DMG for your Mac and replace the installed app manually.\n\n' > "$NOTES_FILE"
+          else
+            : > "$NOTES_FILE"
           fi
-          gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" >/dev/null 2>&1 || \
-          gh release create "$GITHUB_REF_NAME" -R "$GH_REPO" --title "$GITHUB_REF_NAME" --notes-file "$NOTES_FILE"
+          if [[ -s "$CHANGELOG_FILE" ]]; then
+            cat "$CHANGELOG_FILE" >> "$NOTES_FILE"
+          else
+            printf "## %s\n\n- Automated release.\n" "$GITHUB_REF_NAME" >> "$NOTES_FILE"
+          fi
+          if ! gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" >/dev/null 2>&1; then
+            TITLE="$GITHUB_REF_NAME"
+            CREATE_FLAGS=(--draft --verify-tag)
+            if [[ "$HRS_RELEASE_MODE" == 'manual' ]]; then
+              TITLE="$GITHUB_REF_NAME (manual install)"
+              CREATE_FLAGS+=(--latest=false)
+            fi
+            gh release create "$GITHUB_REF_NAME" -R "$GH_REPO" --title "$TITLE" --notes-file "$NOTES_FILE" "${CREATE_FLAGS[@]}"
+          fi
           gh release edit "$GITHUB_REF_NAME" -R "$GH_REPO" --notes-file "$NOTES_FILE"
       - name: Keep only required assets
         env:
@@ -137,15 +177,20 @@ jobs:
             "HRS-Desktop-${VERSION}-arm64.dmg"
             "HRS-Desktop-${VERSION}.dmg"
             "HRS-Desktop-Setup-${VERSION}.exe"
-            "HRS-Desktop-Setup-${VERSION}.exe.blockmap"
             "HRS-Desktop-${VERSION}-portable.exe"
-            "HRS-Desktop-${VERSION}-arm64-mac.zip"
-            "HRS-Desktop-${VERSION}-mac.zip"
             "CHANGELOG-${VERSION}.md"
             "HRS-Desktop-${VERSION}-Hebrew-Guide.docx"
-            "latest-mac.yml"
-            "latest.yml"
+            "SHA256SUMS-${VERSION}.txt"
           )
+          if [[ "$HRS_RELEASE_MODE" == 'signed' ]]; then
+            ALLOWED+=(
+              "HRS-Desktop-Setup-${VERSION}.exe.blockmap"
+              "HRS-Desktop-${VERSION}-arm64-mac.zip"
+              "HRS-Desktop-${VERSION}-mac.zip"
+              "latest-mac.yml"
+              "latest.yml"
+            )
+          fi
           mapfile -t CURRENT < <(gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" --json assets -q '.assets[].name')
           for name in "${CURRENT[@]}"; do
             keep=0
@@ -163,4 +208,28 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          set -euo pipefail
           gh release upload "$GITHUB_REF_NAME" release-files/* -R "$GH_REPO" --clobber
+          mapfile -t VERIFIED < <(gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" --json assets -q '.assets[] | select(.size > 0) | .name')
+          for file in release-files/*; do
+            name="${file##*/}"
+            if ! printf '%s\n' "${VERIFIED[@]}" | grep -Fxq "$name"; then
+              echo "Release asset missing or empty: $name" >&2
+              exit 1
+            fi
+          done
+      - name: Publish verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh release edit "$GITHUB_REF_NAME" -R "$GH_REPO" --draft=false
+          if [[ "$HRS_RELEASE_MODE" == 'manual' ]]; then
+            RELEASE_ID="$(gh release view "$GITHUB_REF_NAME" -R "$GH_REPO" --json databaseId -q .databaseId)"
+            gh api -X PATCH "repos/${GH_REPO}/releases/${RELEASE_ID}" -f make_latest=false >/dev/null
+            LATEST_TAG="$(gh api "repos/${GH_REPO}/releases/latest" -q .tag_name)"
+            if [[ "$LATEST_TAG" == "$GITHUB_REF_NAME" ]]; then
+              echo 'Manual-only release must not become Latest for in-app updates.' >&2
+              exit 1
+            fi
+          fi

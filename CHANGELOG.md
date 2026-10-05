@@ -2,14 +2,14 @@
 
 ## Unreleased
 
-- Quick Log shared-task and overall-project gauges now retain cumulative hours and contributor totals when switching calendar months; lifetime budget checks use the same all-time totals.
-
 ## 1.0.20
 
 ### Shared-task time logging
 
+- Quick Log shared-task and overall-project gauges now retain cumulative hours and contributor totals when switching calendar months; lifetime budget checks use the same all-time totals.
 - Fixed Quick Log blocking time entries for shared tasks that have their own Jira work item but no customer-to-Epic mapping. The selected task now keeps its linked Jira issue and allows logging when the HRS task, date, time, and comment are valid.
 - Retries macOS installer packaging when GitHub's disk-image utility temporarily reports a busy image; signing and other build failures still stop the release.
+- Deliberate version tags can publish verified manual-install packages without advertising an unsigned macOS automatic update; signed releases remain required for in-app updates.
 
 ## 1.0.19
 

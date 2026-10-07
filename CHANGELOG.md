@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Tagged releases can be marked Latest and update Windows in-app while macOS remains a clearly labeled manual DMG installation until Developer ID signing is available.
+
 ## 1.0.20
 
 ### Shared-task time logging

@@ -14197,7 +14197,7 @@ export default function App() {
     const projectCapMinutes = Math.round(
       Math.max(0, selectedQuickLogMission.projectCappedHours ?? 0) * 60
     )
-    if (projectCapMinutes > 0) {
+    if (selectedQuickLogUsageCustomer && selectedQuickLogUsageProject) {
       // Supabase's project usage includes regular HRS rows plus every shared task in the
       // project. The local reconstruction is only a startup fallback and can be incomplete
       // when the current client has not loaded every task belonging to the project.
@@ -14226,7 +14226,7 @@ export default function App() {
           : usedMinutes > 0
             ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
             : []
-      const percent = (usedMinutes / projectCapMinutes) * 100
+      const percent = projectCapMinutes > 0 ? (usedMinutes / projectCapMinutes) * 100 : 0
       gauges.push({
         kind: 'project',
         title: selectedQuickLogUsageProject || selectedQuickLogUsageCustomer || 'Project',
@@ -14242,39 +14242,37 @@ export default function App() {
     const taskCapMinutes = Math.round(
       Math.max(0, selectedQuickLogMission.cappedHours ?? 0) * 60
     )
-    if (taskCapMinutes > 0) {
-      const sharedUsage = selectedQuickLogMission.shared
-        ? sharedFictiveTaskUsage[selectedQuickLogMission.id]
-        : null
-      const unknown = selectedQuickLogMission.shared && !sharedUsage
-      const usedMinutes = sharedUsage
-        ? Math.round(sharedUsage.usedSeconds / 60)
-        : unknown
-          ? 0
-          : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
-      const employees = sharedUsage
-        ? sharedUsage.employees.map(employee => ({
-            employeeId: employee.employeeId,
-            employeeName: employee.employeeName,
-            minutes: Math.round(employee.seconds / 60)
-          }))
-        : unknown
-          ? []
-          : usedMinutes > 0
-            ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
-            : []
-      const percent = (usedMinutes / taskCapMinutes) * 100
-      gauges.push({
-        kind: 'task',
-        title: selectedQuickLogMission.name,
-        usedMinutes,
-        capMinutes: taskCapMinutes,
-        percent,
-        status: toStatus(percent),
-        unknown,
-        employees
-      })
-    }
+    const sharedUsage = selectedQuickLogMission.shared
+      ? sharedFictiveTaskUsage[selectedQuickLogMission.id]
+      : null
+    const unknown = selectedQuickLogMission.shared && !sharedUsage
+    const usedMinutes = sharedUsage
+      ? Math.round(sharedUsage.usedSeconds / 60)
+      : unknown
+        ? 0
+        : getMissionUsedMinutesFromReports(selectedQuickLogMission, allReportItems)
+    const employees = sharedUsage
+      ? sharedUsage.employees.map(employee => ({
+          employeeId: employee.employeeId,
+          employeeName: employee.employeeName,
+          minutes: Math.round(employee.seconds / 60)
+        }))
+      : unknown
+        ? []
+        : usedMinutes > 0
+          ? [{ employeeId: null, employeeName: currentEmployeeName, minutes: usedMinutes }]
+          : []
+    const percent = taskCapMinutes > 0 ? (usedMinutes / taskCapMinutes) * 100 : 0
+    gauges.push({
+      kind: 'task',
+      title: selectedQuickLogMission.name,
+      usedMinutes,
+      capMinutes: taskCapMinutes,
+      percent,
+      status: toStatus(percent),
+      unknown,
+      employees
+    })
     return gauges
   }, [
     selectedQuickLogMission,
@@ -15858,6 +15856,7 @@ export default function App() {
     return (
       <div className={`quick-fictive-usage-stack${compact ? ' is-compact' : ''}`}>
         {selectedQuickLogUsageGauges.map(gauge => {
+          const hasCap = gauge.capMinutes > 0
           const width = gauge.unknown
             ? '0%'
             : `${Math.min(Math.max(gauge.percent, 0), 100)}%`
@@ -15865,7 +15864,7 @@ export default function App() {
           const detailsOpen = quickUsageDetailsOpen[gauge.kind]
           return (
             <div
-              className={`quick-fictive-usage is-${gauge.kind}${compact ? ' is-compact' : ''}`}
+              className={`quick-fictive-usage is-${gauge.kind}${hasCap ? '' : ' is-uncapped'}${compact ? ' is-compact' : ''}`}
               key={gauge.kind}
             >
               <div className="quick-fictive-usage-header">
@@ -15884,9 +15883,12 @@ export default function App() {
                   c="dimmed"
                   className="quick-fictive-usage-hours"
                 >
-                  {gauge.unknown ? '—' : minutesToHHMM(gauge.usedMinutes)} /{' '}
-                  {formatMinutesToLabel(gauge.capMinutes)} ·{' '}
-                  {percentLabel}
+                  {gauge.unknown ? '—' : minutesToHHMM(gauge.usedMinutes)}
+                  {hasCap ? (
+                    <> / {formatMinutesToLabel(gauge.capMinutes)} · {percentLabel}</>
+                  ) : (
+                    <> · No cap set</>
+                  )}
                 </Text>
                 {gauge.employees.length > 0 ? (
                   <ActionIcon
@@ -15912,15 +15914,17 @@ export default function App() {
                   </ActionIcon>
                 ) : null}
               </div>
-              <div
-                className="quick-fictive-usage-track"
-                aria-label={`${gauge.kind === 'project' ? 'Project' : 'Task'} utilization`}
-              >
+              {hasCap ? (
                 <div
-                  className={`quick-fictive-usage-fill is-${gauge.status}`}
-                  style={{ '--quick-fictive-progress': width } as CSSProperties}
-                />
-              </div>
+                  className="quick-fictive-usage-track"
+                  aria-label={`${gauge.kind === 'project' ? 'Project' : 'Task'} utilization`}
+                >
+                  <div
+                    className={`quick-fictive-usage-fill is-${gauge.status}`}
+                    style={{ '--quick-fictive-progress': width } as CSSProperties}
+                  />
+                </div>
+              ) : null}
               <Collapse in={detailsOpen && gauge.employees.length > 0} transitionDuration={160}>
                 <div className="quick-fictive-usage-employees">
                   {gauge.employees.map(employee => {

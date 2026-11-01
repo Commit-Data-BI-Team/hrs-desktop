@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Quick Log now shows cumulative project and shared-task hours even before an hour cap is set, with contributor details and no misleading utilization percentage.
 - Tagged releases can be marked Latest and update Windows in-app while macOS remains a clearly labeled manual DMG installation until Developer ID signing is available.
 
 ## 1.0.20

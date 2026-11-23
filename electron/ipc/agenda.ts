@@ -1,7 +1,7 @@
 import { app, ipcMain } from 'electron'
 import { spawn } from 'node:child_process'
 import path from 'node:path'
-import { validateArray, validateExactObject, validateOptionalString } from '../utils/validation'
+import { validateCalendarPassword, validateArray, validateExactObject, validateOptionalString } from '../utils/validation'
 import {
   clearAgendaAiConfig,
   getAgendaAiConfig,
@@ -202,11 +202,7 @@ export function registerAgendaIpc() {
       max: 200,
       allowNull: true
     })
-    const password = validateOptionalString(safe.password, {
-      min: 0,
-      max: 300,
-      allowNull: true
-    })
+    const password = safe.password == null ? null : validateCalendarPassword(safe.password)
     const personNames = safe.personNames
       ? validateArray(safe.personNames, value => validateOptionalString(value, { min: 0, max: 120 }) || '')
       : []

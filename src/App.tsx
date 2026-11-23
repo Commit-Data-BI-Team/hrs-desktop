@@ -39,6 +39,7 @@ import {
   IconUser,
   IconClock,
   IconCalendar,
+  IconCalendarStats,
   IconHistory,
   IconClipboardText,
   IconListDetails,
@@ -106,6 +107,10 @@ import {
   sanitizeReportFilePart,
   type DetailedReportEntry
 } from './reportExport'
+import { profileForReportSync, requiresEmployeeAction, validEmployeeId, DIFFERENT_ACCOUNT } from './reportProfile'
+import { pendingDay, retryDate } from './reportSyncScope'
+import { dayFingerprint, deletionSelectionKey, pendingDeleteDates, runDeletionDay, type DeleteOwner, type JiraDeleteTarget } from './reportDeletion'
+import { MeetingsAccessForm } from './components/MeetingsAccessForm'
 import { SprintBoard } from './SprintBoard'
 // import { ProductTour } from './components/ProductTour' // Disabled for now
 
@@ -336,14 +341,6 @@ type EmployeeAccessResult = {
   source: 'directReports' | 'accessibleRows' | 'none'
 }
 
-type HrsIdentity = {
-  employeeId: string | null
-  employeeName: string | null
-  email: string | null
-  username: string | null
-  source: 'employee_admin' | 'api_payload' | 'html' | 'credentials' | 'none'
-}
-
 type EmployeeHoursEntry = {
   date: string
   employee: string
@@ -463,10 +460,6 @@ type JiraWorklogEntry = {
   comment: unknown | null
   authorName?: string | null
   authorId?: string | null
-}
-
-type JiraDatedWorklogEntry = JiraWorklogEntry & {
-  issueKey: string
 }
 
 type JiraLoggedEntry = {
@@ -1463,18 +1456,22 @@ function getReportEntryKey(
   ].join('|')
 }
 
+type TrackedReport = Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance' | 'from' | 'to'>
+function jiraSlotKey(entry: TrackedReport, date: string) {
+  return entry.from && entry.to ? 'slot:' + [date, entry.taskId, entry.from, entry.to, entry.hours_HHMM].join('|') : null
+}
 function getJiraTrackingKeys(
-  entry: Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance'>,
+  entry: TrackedReport,
   date: string
 ) {
   const exactKey = getReportEntryKey(entry, date)
   const projectAgnosticKey = getReportEntryKey({ ...entry, projectInstance: '' }, date)
-  return exactKey === projectAgnosticKey ? [exactKey] : [exactKey, projectAgnosticKey]
+  return [...new Set([jiraSlotKey(entry, date), exactKey, projectAgnosticKey].filter((key): key is string => !!key))]
 }
 
 function findJiraLoggedEntry(
   entries: JiraLoggedEntries,
-  report: Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance'>,
+  report: TrackedReport,
   date: string
 ): JiraLoggedEntryMatch | null {
   for (const key of getJiraTrackingKeys(report, date)) {
@@ -1484,7 +1481,7 @@ function findJiraLoggedEntry(
   // Older builds persisted the HRS project label as part of the key. The label returned by
   // HRS can later differ, so recover the link only when the remaining fingerprint identifies
   // one unique Jira worklog. This avoids ever deleting an ambiguous Jira entry.
-  const prefix = `${date}|${report.taskId}|${report.hours_HHMM}|`
+  const prefix = getReportEntryKey({ ...report, projectInstance: '' }, date)
   const candidates = Object.entries(entries).filter(([key]) => key.startsWith(prefix))
   const unique = new Map<string, JiraLoggedEntryMatch>()
   for (const [key, entry] of candidates) {
@@ -1498,7 +1495,7 @@ function findJiraLoggedEntry(
 
 function withJiraLoggedEntryAliases(
   entries: JiraLoggedEntries,
-  report: Pick<WorkReportEntry, 'taskId' | 'hours_HHMM' | 'comment' | 'reporting_from' | 'projectInstance'>,
+  report: TrackedReport,
   date: string,
   jiraEntry: JiraLoggedEntry
 ) {
@@ -1548,21 +1545,6 @@ function recalculateMonthlyHours(days: WorkReportDay[]) {
     )
   }, 0)
   return Math.round((totalMinutes / 60) * 10) / 10
-}
-
-function updateMonthlyReportDay(
-  report: MonthlyReport,
-  dateKey: string,
-  reports: WorkReportEntry[]
-) {
-  const days = report.days.map(day =>
-    day.date === dateKey ? { ...day, reports } : day
-  )
-  return {
-    ...report,
-    days,
-    totalHours: recalculateMonthlyHours(days)
-  }
 }
 
 function buildJiraIssueOptions(items: JiraWorkItem[], includeSubtasks = false): SelectOption[] {
@@ -1858,14 +1840,14 @@ function buildJiraDeleteCandidates(params: {
     const startedDate = dayjs(entry.started).format('YYYY-MM-DD')
     if (startedDate !== dateKey) return false
     const commentText = extractJiraCommentText(entry.comment ?? '')
-    const hasExpectedComment = expectedComment && commentText.includes(expectedComment)
-    const hasRawComment = trimmedComment && commentText.includes(trimmedComment)
+    const hasExpectedComment = expectedComment && commentText.trim() === expectedComment
+    const hasRawComment = trimmedComment && commentText.trim() === trimmedComment
     const hasSeconds = seconds !== null && entry.seconds === seconds
     const hasExactStart =
       expectedStarted && entry.started
         ? dayjs(entry.started).isSame(dayjs(expectedStarted), 'minute')
         : false
-    return (hasExpectedComment || hasRawComment || hasExactStart) && (seconds === null || hasSeconds)
+    return hasSeconds && (hasExpectedComment || hasRawComment) && (!expectedStarted || hasExactStart)
   })
 }
 
@@ -2269,8 +2251,12 @@ export default function App() {
   const [reportingFrom, setReportingFrom] = useState('OFFICE')
   const [logLoading, setLogLoading] = useState(false)
   const [logError, setLogError] = useState<string | null>(null)
+  const pendingLogNotice = useRef<{ date: string; message: string; otherError: string | null } | null>(null)
   const [logSuccess, setLogSuccess] = useState<string | null>(null)
   const [deleteLoading, setDeleteLoading] = useState(false)
+  const deletionBusy = useRef(false)
+  const [deleteRevision, setDeleteRevision] = useState(0)
+  const [deleteNotice, setDeleteNotice] = useState<{error: boolean; text: string} | null>(null)
   const [editingEntry, setEditingEntry] = useState<{ dateKey: string; index: number } | null>(null)
   const [editHours, setEditHours] = useState('')
   const [editComment, setEditComment] = useState('')
@@ -2328,10 +2314,6 @@ export default function App() {
   )
   const [supabaseEmail, setSupabaseEmail] = useState('')
   const [supabasePassword, setSupabasePassword] = useState('')
-  const [supabaseDisplayName, setSupabaseDisplayName] = useState('')
-  const [supabaseEmployeeId, setSupabaseEmployeeId] = useState('')
-  const [supabaseHrsIdentity, setSupabaseHrsIdentity] = useState<HrsIdentity | null>(null)
-  const [supabaseIdentityLoading, setSupabaseIdentityLoading] = useState(false)
   const [supabaseLoading, setSupabaseLoading] = useState(false)
   const [supabaseSyncing, setSupabaseSyncing] = useState(false)
   const [supabaseError, setSupabaseError] = useState<string | null>(null)
@@ -2446,6 +2428,7 @@ export default function App() {
   >({ project: false, task: false })
   const [pendingReportSyncMonths, setPendingReportSyncMonths] = useState<string[]>([])
   const pendingReportSyncMonthsRef = useRef<string[]>([])
+  const reportSyncQueue = useRef(new Map<string, Promise<{ synced: number; error: string | null }>>())
   const reportReconciliationPromisesRef = useRef(
     new Map<string, Promise<{ synced: number; error: string | null }>>()
   )
@@ -3514,13 +3497,18 @@ export default function App() {
     }
   }
 
-  function clearMeetingsCredentials() {
-    setMeetingsUsername('')
-    setMeetingsPassword('')
-    void window.hrs?.setPreferences?.({
-      meetingsUsername: '',
-      meetingsPassword: ''
-    })
+  async function commitMeetingsCredentials(username: string, password: string) {
+    const saved = await window.hrs.setPreferences({ meetingsUsername: username, meetingsPassword: password })
+    if (saved.meetingsUsername !== username || saved.meetingsPassword !== password) {
+      throw new Error('Meeting credentials could not be saved.')
+    }
+    setMeetingsUsername(username)
+    setMeetingsPassword(password)
+  }
+
+  function renderMeetingsAccess() {
+    return <MeetingsAccessForm username={meetingsUsername} hasPassword={Boolean(meetingsPassword)}
+      ready={preferencesLoaded} onCommit={commitMeetingsCredentials} />
   }
 
   function hideAgendaItem(item: AgendaItem, options: { hideThread?: boolean; hideSender?: boolean } = {}) {
@@ -3937,12 +3925,7 @@ export default function App() {
 
   useEffect(() => {
     if (!window.hrs?.getSupabaseStatus) return
-    void (async () => {
-      const status = await loadSupabaseStatus()
-      if (status?.email) {
-        await syncSupabaseProfileFromHrs(status)
-      }
-    })()
+    void loadSupabaseStatus()
   }, [])
 
   useEffect(() => {
@@ -3994,7 +3977,10 @@ export default function App() {
   ])
 
   useEffect(() => {
-    if (!loggedIn || !supabaseStatus?.email) return
+    if (!loggedIn || !supabaseStatus?.email) {
+      supabaseAutoSetupRef.current = ''
+      return
+    }
     const key = [
       supabaseStatus.email,
       supabaseStatus.profile?.employee_id ?? '',
@@ -4002,9 +3988,9 @@ export default function App() {
     ].join(':')
     if (supabaseAutoSetupRef.current === key) return
     supabaseAutoSetupRef.current = key
-    void syncSupabaseProfileFromHrs(supabaseStatus).catch(error => {
-      setSupabaseError(getSupabaseErrorMessage(error))
-    })
+    // Existing first-manager bootstrap is separate from personal reporting.
+    // A missing directory identity must not block sync or modify a profile mapping.
+    void checkFirstManagerEligibility(supabaseStatus).catch(() => {})
   }, [
     loggedIn,
     supabaseStatus?.email,
@@ -4095,6 +4081,7 @@ export default function App() {
 
   async function openReportsWindow() {
     try {
+      if (isTray) { switchTrayPanel('reports'); return }
       if (window.hrs?.openReportsWindow) {
         await window.hrs.openReportsWindow()
         return
@@ -4108,6 +4095,7 @@ export default function App() {
 
   async function openSettingsWindow() {
     try {
+      if (isTray) { switchTrayPanel('settings'); return }
       if (window.hrs?.openSettingsWindow) {
         await window.hrs.openSettingsWindow()
         return
@@ -4121,6 +4109,7 @@ export default function App() {
 
   async function openMeetingsWindow() {
     try {
+      if (isTray) { switchTrayPanel('meetings'); return }
       if (window.hrs?.openMeetingsWindow) {
         await window.hrs.openMeetingsWindow()
         return
@@ -4134,6 +4123,7 @@ export default function App() {
 
   async function openSprintWindow() {
     try {
+      if (isTray) { switchTrayPanel('sprints'); return }
       if (window.hrs?.openSprintWindow) {
         await window.hrs.openSprintWindow()
         return
@@ -4671,20 +4661,6 @@ export default function App() {
     message.includes('JIRA 401') ||
     message.includes('JIRA 403')
 
-  const formatJiraDeletionError = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
-    const marker = 'JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED:'
-    const markerIndex = message.indexOf(marker)
-    return markerIndex >= 0 ? message.slice(markerIndex + marker.length).trim() : message
-  }
-
-  const isJiraDeletionPermissionError = (error: unknown) => {
-    const message = error instanceof Error ? error.message : String(error)
-    return (
-      message.includes('JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED:') ||
-      message.includes('you do not have permission to delete the specified worklog')
-    )
-  }
 
   async function loadSupabaseStatus() {
     if (!window.hrs?.getSupabaseStatus) return null
@@ -4693,8 +4669,6 @@ export default function App() {
       setSupabaseStatus(status)
       setSupabaseUrl(status.url)
       if (status.email) setSupabaseEmail(status.email)
-      if (status.profile?.display_name) setSupabaseDisplayName(status.profile.display_name)
-      if (status.profile?.employee_id) setSupabaseEmployeeId(String(status.profile.employee_id))
       if (status.email) {
         void loadSharedFictiveTasks()
       } else {
@@ -4717,10 +4691,11 @@ export default function App() {
 
   async function loadSharedProjectReports(
     month: Date,
-    options: { force?: boolean } = {}
+    options: { force?: boolean; status?: SupabaseStatus } = {}
   ): Promise<SupabaseWorkReportRow[]> {
-    const employeeId = supabaseStatus?.profile?.employee_id
-    if (!supabaseStatus?.email || !employeeId || !window.hrs?.getSupabaseWorkReports) {
+    const status = options.status ?? supabaseStatus
+    const employeeId = status?.profile?.employee_id
+    if (!status?.email || !employeeId || !window.hrs?.getSupabaseWorkReports) {
       setSharedProjectReportRows([])
       setSharedProjectReportMonthKey(null)
       setSharedProjectReportsError(null)
@@ -4818,79 +4793,17 @@ export default function App() {
     return message
   }
 
-  async function loadHrsIdentityForSupabase() {
-    if (!window.hrs?.getHrsIdentity) return null
-    setSupabaseIdentityLoading(true)
-    try {
-      const identity = await window.hrs.getHrsIdentity()
-      setSupabaseHrsIdentity(identity)
-      if (identity.employeeId) {
-        setSupabaseEmployeeId(identity.employeeId)
-      }
-      if (identity.employeeName && !supabaseDisplayName.trim()) {
-        setSupabaseDisplayName(identity.employeeName)
-      }
-      return identity
-    } catch (error) {
-      setSupabaseError(getSupabaseErrorMessage(error))
-      return null
-    } finally {
-      setSupabaseIdentityLoading(false)
-    }
-  }
-
-  async function syncSupabaseProfileFromHrs(statusOverride?: SupabaseStatus | null) {
-    const status = statusOverride ?? supabaseStatus
-    if (!status?.email || !window.hrs?.updateSupabaseProfile) return null
-    const identity = await loadHrsIdentityForSupabase()
-    if (!identity?.employeeId) return identity
-
-    const displayName = identity.employeeName || supabaseDisplayName || status.profile?.display_name || status.email
-    const currentEmployeeId = status.profile?.employee_id ? String(status.profile.employee_id) : ''
-    let hasDirectReports = false
-    if (window.hrs?.getEmployees) {
-      try {
-        const employeeAccess = await window.hrs.getEmployees()
-        setEmployeesResult(employeeAccess)
-        setEmployeesAccessChecked(true)
-        hasDirectReports = employeeAccess.source === 'directReports' && employeeAccess.hasEmployees
-      } catch {
-        hasDirectReports = false
-      }
-    }
-
-    if (hasDirectReports && status.profile?.role !== 'manager' && window.hrs?.claimSupabaseManager) {
-      try {
-        await window.hrs.claimSupabaseManager({
-          displayName,
-          employeeId: identity.employeeId
-        })
-        setSupabaseDisplayName(displayName)
-        setSupabaseEmployeeId(identity.employeeId)
-        await loadSupabaseStatus()
-        return identity
-      } catch (error) {
-        const message = getSupabaseErrorMessage(error)
-        if (!message.toLowerCase().includes('manager already exists')) {
-          throw error
-        }
-      }
-    }
-
-    const shouldUpdate =
-      currentEmployeeId !== identity.employeeId ||
-      (Boolean(displayName) && status.profile?.display_name?.trim() !== displayName.trim())
-
-    if (shouldUpdate) {
-      await window.hrs.updateSupabaseProfile({
-        displayName,
-        employeeId: identity.employeeId
-      })
-      setSupabaseDisplayName(displayName)
-      setSupabaseEmployeeId(identity.employeeId)
-      await loadSupabaseStatus()
-    }
-    return identity
+  async function checkFirstManagerEligibility(status: SupabaseStatus) {
+    const profile = status.profile
+    if (!profile || profile.role === 'manager' || !validEmployeeId(profile.employee_id)) return
+    const access = await window.hrs.getEmployees()
+    setEmployeesResult(access)
+    setEmployeesAccessChecked(true)
+    // This comparison is exclusively for the optional role grant, never for sync.
+    if (access.source !== 'directReports' || !access.hasEmployees || Number(access.currentEmployee?.id) !== profile.employee_id) return
+    await window.hrs.claimSupabaseManager({expectedProfileId: profile.id,
+      displayName: profile.display_name || status.email || undefined, employeeId: profile.employee_id})
+    await loadSupabaseStatus()
   }
 
   async function saveSupabaseConfig() {
@@ -4914,8 +4827,7 @@ export default function App() {
     setSupabaseMessage(null)
     try {
       await window.hrs.signInSupabase(supabaseEmail, supabasePassword)
-      const status = await loadSupabaseStatus()
-      await syncSupabaseProfileFromHrs(status)
+      await loadSupabaseStatus()
       setSupabasePassword('')
       setSupabaseMessage('Supabase connected.')
     } catch (error) {
@@ -4931,10 +4843,7 @@ export default function App() {
     setSupabaseMessage(null)
     try {
       const result = await window.hrs.signUpSupabase(supabaseEmail, supabasePassword)
-      const status = await loadSupabaseStatus()
-      if (status?.email) {
-        await syncSupabaseProfileFromHrs(status)
-      }
+      await loadSupabaseStatus()
       setSupabasePassword('')
       setSupabaseMessage(
         result.needsConfirmation
@@ -4979,61 +4888,17 @@ export default function App() {
     }
   }
 
-  async function saveSupabaseProfile() {
-    setSupabaseLoading(true)
-    setSupabaseError(null)
-    setSupabaseMessage(null)
-    try {
-      const identity = await loadHrsIdentityForSupabase()
-      if (!identity?.employeeId) {
-        throw new Error('Could not resolve your HRS employee ID automatically. Make sure HRS is logged in, then try again.')
-      }
-      await window.hrs.updateSupabaseProfile({
-        displayName: identity.employeeName || supabaseDisplayName,
-        employeeId: identity.employeeId
-      })
-      await loadSupabaseStatus()
-      setSupabaseMessage('Supabase profile saved.')
-    } catch (error) {
-      setSupabaseError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSupabaseLoading(false)
-    }
-  }
-
-  async function claimSupabaseManager() {
-    setSupabaseLoading(true)
-    setSupabaseError(null)
-    setSupabaseMessage(null)
-    try {
-      const identity = await loadHrsIdentityForSupabase()
-      if (!identity?.employeeId) {
-        throw new Error('Could not resolve your HRS employee ID automatically. Make sure HRS is logged in, then try again.')
-      }
-      await window.hrs.claimSupabaseManager({
-        displayName: identity.employeeName || supabaseDisplayName,
-        employeeId: identity.employeeId
-      })
-      await loadSupabaseStatus()
-      setSupabaseMessage('This Supabase user is now the first manager.')
-    } catch (error) {
-      setSupabaseError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSupabaseLoading(false)
-    }
-  }
-
   function buildSupabaseRowsFromMonthlyReport(
-    report: MonthlyReport,
+    report: Pick<MonthlyReport, 'days'>,
+    profile: SupabaseProfile,
     missionMapOverride: Record<string, string> = reportMissionMap
   ) {
-    const profile = supabaseStatus?.profile
-    const employeeId = profile?.employee_id
+    const employeeId = profile.employee_id
     if (!employeeId) {
       throw new Error('Set your Supabase profile employee_id before syncing reports.')
     }
     const employeeName =
-      profile.display_name || supabaseStatus?.email || storedUsername || `Employee ${employeeId}`
+      profile.display_name || profile.email || `Employee ${employeeId}`
     const rows: Array<Record<string, unknown>> = []
     const missions = allProjectMissions
     for (const day of report.days) {
@@ -5092,19 +4957,28 @@ export default function App() {
 
   async function syncHrsMonthToSupabase(
     month: Date,
-    options: { silent?: boolean; missionMapOverride?: Record<string, string> } = {}
+    options: { silent?: boolean; wholeMonth?: boolean; missionMapOverride?: Record<string, string> } = {}
+  ) {
+    // Manual recovery, background repair and a new Quick Log can all target one
+    // month. Take the next HRS snapshot only after the previous sync finishes.
+    return serializeSupabaseSnapshot(dayjs(month).format('YYYY-MM'), () => syncHrsMonthToSupabaseOnce(month, options))
+  }
+
+  async function serializeSupabaseSnapshot(key: string, next: () => Promise<{ synced: number; error: string | null }>) {
+    const prior = reportSyncQueue.current.get(key)
+    const job = prior ? prior.then(next, next) : next()
+    reportSyncQueue.current.set(key, job)
+    try { return await job }
+    finally { if (reportSyncQueue.current.get(key) === job) reportSyncQueue.current.delete(key) }
+  }
+
+  async function syncHrsMonthToSupabaseOnce(
+    month: Date,
+    options: { silent?: boolean; wholeMonth?: boolean; missionMapOverride?: Record<string, string> }
   ) {
     if (!window.hrs?.getReports || !window.hrs?.syncSupabaseWorkReports) {
       return { synced: 0, error: 'Supabase sync APIs are not available.' }
     }
-    const employeeId = supabaseStatus?.profile?.employee_id
-    if (!employeeId) {
-      const message = 'Supabase profile is missing an HRS employee identity.'
-      console.warn('[SUPABASE SYNC]', message)
-      if (!options.silent) setSupabaseError(message)
-      return { synced: 0, error: message }
-    }
-
     if (!options.silent) {
       setSupabaseSyncing(true)
       setSupabaseError(null)
@@ -5112,13 +4986,22 @@ export default function App() {
     }
 
     try {
-      const { start, end } = getMonthRange(month)
-      const report = (await window.hrs.getReports(start, end)) as MonthlyReport
-      const rows = buildSupabaseRowsFromMonthlyReport(report, options.missionMapOverride)
+      const linked = await profileForReportSync(window.hrs, supabaseStatus?.profile?.id)
+      const profile = linked.profile
+      if (supabaseStatus?.profile?.employee_id !== profile.employee_id) {
+        setSupabaseStatus(previous => previous?.profile?.id === profile.id ? linked : previous)
+      }
+      const date = dayjs(month).format('YYYY-MM-DD')
+      const { start, end } = options.wholeMonth ? getMonthRange(month) : {start:date,end:date}
+      const report = (await window.hrs.getReports(start, end, true)) as MonthlyReport
+      const coveredDates = report.days.map(d => normalizeReportDateKey(d.date))
+      const rows = buildSupabaseRowsFromMonthlyReport(report, profile, options.missionMapOverride)
       const result = await window.hrs.syncSupabaseWorkReports({
         startDate: start,
         endDate: end,
-        employeeId,
+        coveredDates,
+        employeeId: profile.employee_id,
+        expectedProfileId: profile.id,
         rows
       })
       console.log(
@@ -5128,8 +5011,13 @@ export default function App() {
         `synced=${result.synced}`
       )
       const monthKey = dayjs(month).format('YYYY-MM')
+      const notice = pendingLogNotice.current
+      if (notice && coveredDates.includes(notice.date)) {
+        setLogError(previous => previous === notice.message ? notice.otherError : previous)
+        pendingLogNotice.current = null
+      }
       reportsCacheRef.current.delete(`supabase:${monthKey}`)
-      await loadSharedProjectReports(month, { force: true })
+      await loadSharedProjectReports(month, { force: true, status: linked })
       const quickLogScope = getQuickLogProjectScope()
       if (quickLogScope) {
         await loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project)
@@ -5137,11 +5025,14 @@ export default function App() {
       if (sharedFictiveTasks.length) {
         await refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
       }
-      if (pendingReportSyncMonthsRef.current.includes(monthKey)) {
-        await persistPendingReportSyncMonth(monthKey, false)
+      for (const key of [...pendingReportSyncMonthsRef.current]) {
+        const retry = retryDate(key, profile)
+        if ((retry && coveredDates.includes(retry)) || (options.wholeMonth && key===monthKey)) {
+          await persistPendingReportSyncMonth(key, false)
+        }
       }
       if (!options.silent) {
-        setSupabaseMessage(`Synced ${result.synced} report rows to Supabase.`)
+        setSupabaseMessage(`Synced ${result.synced} report ${result.synced === 1 ? 'row' : 'rows'} to Supabase.`)
       }
       return { synced: result.synced, error: null }
     } catch (error) {
@@ -5158,6 +5049,7 @@ export default function App() {
   }
 
   async function persistPendingReportSyncMonth(monthKey: string, pending: boolean) {
+    if (!monthKey) return
     const next = Array.from(
       new Set(
         pending
@@ -5180,7 +5072,8 @@ export default function App() {
     month: Date,
     options: { missionMapOverride?: Record<string, string> } = {}
   ): Promise<{ synced: number; error: string | null }> {
-    const monthKey = dayjs(month).format('YYYY-MM')
+    const monthKey = pendingDay(supabaseStatus?.profile, dayjs(month).format('YYYY-MM-DD'))
+    if (!monthKey) return { synced:0, error:'Sign in to Supabase to retry your report.' }
     const existing = reportReconciliationPromisesRef.current.get(monthKey)
     if (existing) return existing
 
@@ -5200,6 +5093,7 @@ export default function App() {
           await persistPendingReportSyncMonth(monthKey, false)
           return lastResult
         }
+        if (requiresEmployeeAction(lastResult.error)) break // Don't retry the same rejected identity in a loop.
       }
       await persistPendingReportSyncMonth(monthKey, true)
       return lastResult
@@ -5216,33 +5110,8 @@ export default function App() {
   }
 
   async function syncCurrentReportsToSupabase() {
-    if (!monthlyReport) return
-    setSupabaseSyncing(true)
-    setSupabaseError(null)
-    setSupabaseMessage(null)
-    try {
-      const { start, end } = getMonthRange(reportMonth)
-      const rows = buildSupabaseRowsFromMonthlyReport(monthlyReport)
-      const result = await window.hrs.syncSupabaseWorkReports({
-        startDate: start,
-        endDate: end,
-        employeeId: supabaseStatus?.profile?.employee_id ?? undefined,
-        rows
-      })
-      await loadSharedProjectReports(reportMonth, { force: true })
-      const quickLogScope = getQuickLogProjectScope()
-      if (quickLogScope) {
-        await loadSupabaseProjectUsage(quickLogScope.customer, quickLogScope.project)
-      }
-      if (sharedFictiveTasks.length) {
-        await refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
-      }
-      setSupabaseMessage(`Synced ${result.synced} report rows to Supabase.`)
-    } catch (error) {
-      setSupabaseError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSupabaseSyncing(false)
-    }
+    if (!window.confirm('Reconcile the entire month from personal HRS reports? If old employee IDs are still under review, cancel and sync only the reporting day.')) return
+    await syncHrsMonthToSupabase(reportMonth,{wholeMonth:true})
   }
 
   const handleJiraAuthError = (message: string) => {
@@ -7594,7 +7463,6 @@ export default function App() {
 
   function getCurrentReporterName() {
     return (
-      supabaseHrsIdentity?.employeeName ||
       supabaseStatus?.profile?.display_name ||
       credentialsUsername ||
       'User'
@@ -7677,8 +7545,8 @@ export default function App() {
               Supabase
             </Text>
             <Group gap="xs" wrap="nowrap">
-              <Badge color={connected ? 'teal' : 'gray'} variant="light">
-                {connected ? 'Connected' : 'Disconnected'}
+              <Badge color={connected ? (supabaseStatus?.profile?.employee_id ? 'teal' : 'yellow') : 'gray'} variant="light">
+                {connected ? (supabaseStatus?.profile?.employee_id ? 'Signed in' : 'Signed in · not linked') : 'Disconnected'}
               </Badge>
               {connected && (
                 <Badge color={role === 'manager' ? 'blue' : 'gray'} variant="light">
@@ -7689,17 +7557,32 @@ export default function App() {
           </Group>
 
           {connected ? (
-            <Group justify="flex-end" align="center">
-              <Button
-                size={compact ? 'xs' : 'sm'}
-                variant="subtle"
-                color="red"
-                loading={supabaseLoading}
-                onClick={() => void signOutSupabase()}
-              >
-                Disconnect
-              </Button>
-            </Group>
+            <Stack gap="xs">
+              {!supabaseStatus?.profile && <Text size="xs" c="yellow">Signed in, but the Supabase profile has not been provisioned.</Text>}
+              {supabaseStatus?.profile && <Stack gap={4}>
+                <Text size="xs" role="status">
+                  {validEmployeeId(supabaseStatus.profile.employee_id)
+                    ? 'Reports sync using Supabase employee ID #' + supabaseStatus.profile.employee_id + ' · ' + supabaseStatus.email
+                    : 'No employee ID assigned. Ask an administrator to set profiles.employee_id in Supabase.'}
+                </Text>
+                <Button size="xs" variant="light" loading={supabaseLoading} onClick={async () => {
+                  setSupabaseLoading(true)
+                  try { await loadSupabaseStatus() } finally { setSupabaseLoading(false) }
+                }}>Refresh profile mapping</Button>
+              </Stack>}
+              {pendingDeletes.map(date => <Button key={date} size="xs" color="orange" variant="light"
+                loading={deleteLoading} onClick={() => void retryDeletedDay(date)}>Check pending deletion · {date}</Button>)}
+              <Group justify="space-between">
+                <Button size="xs" variant="light" loading={supabaseSyncing} disabled={!loggedIn}
+                  onClick={() => void syncHrsMonthToSupabase(logDate ?? new Date())}>
+                  Sync {dayjs(logDate ?? new Date()).format('DD MMM YYYY')} from HRS
+                </Button>
+                <Button size="xs" variant="subtle" loading={supabaseSyncing} disabled={!loggedIn}
+                  onClick={() => void syncCurrentReportsToSupabase()}>Reconcile whole month…</Button>
+                <Button size="xs" variant="subtle" color="red" loading={supabaseLoading}
+                  onClick={() => void signOutSupabase()}>Disconnect</Button>
+              </Group>
+            </Stack>
           ) : (
             <>
               <SimpleGrid cols={compact ? 1 : 2} spacing="xs">
@@ -8074,10 +7957,11 @@ export default function App() {
       setDuoHint(false)
       setSessionError('Saved HRS credentials were reset. Enter and save credentials on the login page.')
       if (isTray) {
-        try {
-          localStorage.setItem(HRS_CREDENTIAL_RESET_REQUEST_KEY, String(Date.now()))
-        } catch {}
-        await window.hrs.openMainWindow()
+        setCredentialsUsername('')
+        setCredentialsPassword('')
+        setAutoLoginEnabled(false)
+        setTraySettingsTab('access')
+        switchTrayPanel('settings')
       } else {
         setCredentialsModalOpen(true)
       }
@@ -8213,7 +8097,6 @@ export default function App() {
       const message = err instanceof Error ? err.message : String(err)
       const credentialsRejected = /Microsoft rejected the saved username or password/i.test(message)
       if (credentialsRejected) {
-        setMeetingsPassword('')
         setMeetingsCredentialsOpen(true)
       }
       setMeetingsError(message)
@@ -8883,10 +8766,15 @@ export default function App() {
             missionMapForSync[missionMapKey] = effectiveMission.id
           }
         }
-        await syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
+        const sync = await syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
           silent: true,
           missionMapOverride: missionMapForSync
         })
+        if (sync.error) {
+          await persistPendingReportSyncMonth(pendingDay(supabaseStatus?.profile,dateKey), true)
+          const warning = 'Supabase sync pending. ' + sync.error
+          if (!integrationFailures.includes(warning)) integrationFailures.push(warning)
+        }
 
         setReportWorkLogsByDate(prev => {
           const existing = prev[dateKey] ?? []
@@ -8919,10 +8807,11 @@ export default function App() {
             })
             const trackedReport = {
               taskId,
+              from: item.from, to: item.to,
               hours_HHMM: item.duration.hoursHHMM,
               comment: item.title,
               reporting_from: reportingFrom,
-              projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
+              projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName || ''
             }
             nextJiraLoggedEntries = withJiraLoggedEntryAliases(
               nextJiraLoggedEntries,
@@ -8947,7 +8836,7 @@ export default function App() {
 
       if (missionMapForSync !== reportMissionMap) setReportMissionMap(missionMapForSync)
       if (nextJiraLoggedEntries !== jiraLoggedEntries) {
-        persistJiraLoggedEntries(nextJiraLoggedEntries)
+        await persistJiraLoggedEntries(nextJiraLoggedEntries)
       }
       if (effectiveMission?.shared) {
         const refreshedUsage = await refreshSharedFictiveTaskUsage([effectiveMission])
@@ -10039,9 +9928,10 @@ export default function App() {
     }
   }
 
-  function persistJiraLoggedEntries(next: JiraLoggedEntries) {
+  async function persistJiraLoggedEntries(next: JiraLoggedEntries) {
     setJiraLoggedEntries(next)
-    void window.hrs.setJiraLoggedEntries(next)
+    try { await window.hrs.setJiraLoggedEntries(next) }
+    catch { throw Error('Jira tracking could not be saved locally. Check the existing worklog before logging again.') }
   }
 
   async function logReportEntryToJira(
@@ -10099,7 +9989,7 @@ export default function App() {
             ? (createdWorklog as JiraWorklogEntry).id
             : undefined
       })
-      persistJiraLoggedEntries(next)
+      await persistJiraLoggedEntries(next)
       void loadJiraWorklogHistory(issueKey)
       setLogSuccess('Logged to Jira.')
     } catch (err) {
@@ -10206,6 +10096,53 @@ export default function App() {
       : null
     const effectiveJiraIssueKey =
       overrides?.jiraIssueKey ?? effectiveMission?.jiraIssueKey ?? jiraIssueKey ?? mappedEpicForLog
+    // The browser adapter coordinates HRS, Supabase and Jira as one recoverable
+    // operation. The desktop IPC path below remains unchanged.
+    if (window.hrs.submitIntegratedWork) {
+      setLogLoading(true)
+      setLogError(null)
+      setLogSuccess(null)
+      try {
+        if (effectiveMission?.virtual && !effectiveMission.shared) {
+          throw new Error('This local fictive task is not yet available in the web client.')
+        }
+        const result = await window.hrs.submitIntegratedWork({
+          date: dayjs(effectiveDate).format('YYYY-MM-DD'),
+          taskId,
+          from: effectiveFromTime,
+          to: effectiveToTime,
+          comment: apiComment,
+          reportingFrom: effectiveReportingFrom,
+          sharedTaskId: effectiveMission?.shared ? effectiveMission.id : null,
+          logToJira: shouldLogToJira,
+          jiraIssueKey: effectiveJiraIssueKey
+        })
+        if (result.hrs !== 'confirmed' || result.supabase !== 'confirmed' ||
+            (shouldLogToJira && result.jira !== 'confirmed')) {
+          throw new Error('The report could not be fully confirmed. Review HRS before retrying.')
+        }
+        setLogSuccess('Work log saved.')
+        if (!overrides?.comment) setComment('')
+        reportsCacheRef.current.clear()
+        const month = dayjs(effectiveDate).toDate()
+        setReportMonth(month)
+        setSelectedReportDate(effectiveDate)
+        setCurrentMonthReport(null)
+        setCurrentMonthKey(null)
+        void loadReportsForMonth(month, { force: true })
+        if (effectiveMission?.shared) {
+          void refreshSharedFictiveTaskUsage([effectiveMission]).catch(() => {})
+        }
+        return true
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        overrides?.onError?.(message)
+        setLogError(message)
+        return false
+      } finally {
+        setLogLoading(false)
+      }
+    }
     let sharedUsageAfterSync: SharedFictiveTaskUsage | null = null
     let projectUsageAfterSync: SupabaseProjectUsage | null = null
     setLogLoading(true)
@@ -10456,7 +10393,8 @@ export default function App() {
         silent: true,
         missionMapOverride: missionMapForSync
       })
-      const supabaseFailure = supabaseSyncResult?.error ?? null
+      const supabaseFailure = supabaseSyncResult.error
+      if (supabaseFailure) await persistPendingReportSyncMonth(pendingDay(supabaseStatus?.profile,dayjs(effectiveDate).format('YYYY-MM-DD')), true)
       if (!supabaseFailure && effectiveCustomerName && effectiveProjectName) {
         projectUsageAfterSync = await loadSupabaseProjectUsage(
           effectiveCustomerName,
@@ -10502,10 +10440,11 @@ export default function App() {
       })
           const trackedReport = {
             taskId,
+            from: effectiveFromTime, to: effectiveToTime,
             hours_HHMM: duration.hoursHHMM,
             comment: apiComment,
             reporting_from: effectiveReportingFrom,
-            projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName
+            projectInstance: effectiveTask?.projectInstance || effectiveTask?.projectName || ''
           }
           const next = withJiraLoggedEntryAliases(jiraLoggedEntries, trackedReport, date, {
             issueKey: effectiveJiraIssueKey,
@@ -10515,7 +10454,7 @@ export default function App() {
                 ? (createdWorklog as JiraWorklogEntry).id
                 : undefined
           })
-      persistJiraLoggedEntries(next)
+      await persistJiraLoggedEntries(next)
           void loadJiraWorklogHistory(effectiveJiraIssueKey)
     } catch (err) {
       jiraFailure = err instanceof Error ? err.message : String(err)
@@ -10585,10 +10524,17 @@ export default function App() {
           metrics: slackMetrics
         })
       }
-      if (jiraFailure) {
-        setLogError(`HRS saved, Jira failed: ${jiraFailure}`)
-      } else if (supabaseFailure) {
-        setLogError(`HRS saved, Supabase sync failed: ${supabaseFailure}`)
+      if (jiraFailure || supabaseFailure) {
+        const message = [
+          'Hours saved in HRS. Do not log them again.',
+          jiraFailure && `Jira failed: ${jiraFailure}`,
+          supabaseFailure && `Supabase sync pending: ${supabaseFailure} Retry sync in Settings → Access.`
+        ].filter(Boolean).join(' ')
+        pendingLogNotice.current = supabaseFailure ? {
+          date: dayjs(effectiveDate).format('YYYY-MM-DD'), message,
+          otherError: jiraFailure ? `HRS saved, Jira failed: ${jiraFailure}` : null
+        } : null
+        setLogError(message)
       } else {
         setLogSuccess('Work log saved.')
       }
@@ -10825,362 +10771,232 @@ export default function App() {
     return { date: dateKey, workLogs }
   }
 
-  function getDetailedDeletionTimeRange(
-    detailed: ReportLogEntry[],
-    entryIndex: number,
-    report: WorkReportEntry
-  ) {
-    const candidate = detailed[entryIndex]
-    if (!candidate || candidate.taskId !== report.taskId) return null
-    const candidateHours =
-      candidate.hours_HHMM ||
-      (candidate.from && candidate.to
-        ? buildDurationFromTimes(candidate.from, candidate.to)?.hoursHHMM
-        : null)
-    if (candidateHours && report.hours_HHMM && candidateHours !== report.hours_HHMM) return null
-    const reportComment = normalizeText(report.comment || '')
-    const candidateComment = normalizeText(candidate.comment || '')
-    if (reportComment && candidateComment && reportComment !== candidateComment) return null
-    return extractTimeRangeFromRecord(candidate as unknown as Record<string, unknown>)
+
+
+  async function jiraTargetForDeletion(
+    row: WorkReportEntry, date: string, day: WorkReportEntry[], links: JiraLoggedEntries
+  ): Promise<JiraDeleteTarget | null> {
+    const slot = jiraSlotKey(row, date)
+    const weakKey = getReportEntryKey({ ...row, projectInstance: '' }, date)
+    const peers = day.filter(r => getReportEntryKey({ ...r, projectInstance: '' }, date) === weakKey)
+    const match = findJiraLoggedEntry(links, row, date)
+    if (match && ((!(slot && match.key === slot) && peers.length > 1) ||
+      (slot && day.filter(r => jiraSlotKey(r, date) === slot).length > 1))) {
+      throw Error('Several HRS reports share this Jira link. No worklog was deleted.')
+    }
+    const mapped = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
+      date, taskId: row.taskId, hoursHHMM: row.hours_HHMM, comment: row.comment, reportingFrom: row.reporting_from
+    })
+    const issue = match?.entry.issueKey || mapped?.jiraIssueKey
+    if (match && mapped?.jiraIssueKey && mapped.jiraIssueKey !== match.entry.issueKey) {
+      throw Error('The stored Jira issue and the task mapping disagree. No worklog was deleted.')
+    }
+    if (!issue && !jiraMappings[taskMetaById.get(row.taskId)?.customerName || '']) return null
+    if (!jiraConfigured) throw Error('Connect Jira to verify the linked worklog before deleting.')
+    if (match?.entry.worklogId) return { issueKey: match.entry.issueKey, worklogId: match.entry.worklogId }
+    // An epic/customer is not an issue identity. Never delete a worklog from a different issue
+    // just because a reporter used the same comment or duration that day.
+    const result = issue
+      ? { worklogs: await window.hrs.getJiraIssueWorklogs(issue, true), partial: false }
+      : await window.hrs.findJiraWorklogsForDate(date)
+    if (result.partial) throw Error('Jira search was incomplete. No worklogs were deleted.')
+    const rawComment = stripMissionCommentMarkers(row.comment)
+    const f = { started: row.from ? buildJiraStarted(dayjs(date).toDate(),row.from) : null,
+      seconds: parseHoursHHMMToMinutes(row.hours_HHMM) * 60, expectedComment: buildJiraComment(null,rawComment), rawComment }
+    const probable = buildJiraDeleteCandidates({ worklogs: result.worklogs as JiraWorklogEntry[], dateKey: date,
+      expectedStarted: null, seconds: f.seconds, expectedComment: f.expectedComment, rawComment: f.rawComment })
+    if (probable.length === 0) {
+      if (match || (issue && result.worklogs.some(r => r.started && dayjs(r.started).format('YYYY-MM-DD') === date && r.seconds === f.seconds)))
+        throw Error('Cannot confirm the mapped Jira worklog. No reports were deleted.')
+      return null
+    }
+    const candidates = buildJiraDeleteCandidates({ worklogs: probable, dateKey: date, expectedStarted: f.started,
+      seconds: f.seconds, expectedComment: f.expectedComment, rawComment: f.rawComment })
+    if (!issue || candidates.length !== 1 || !candidates[0].id || !f.started) {
+      throw Error('Cannot uniquely link this HRS report to a Jira issue and worklog. Nothing was deleted.')
+    }
+    return { issueKey: issue, worklogId: candidates[0].id }
   }
 
-  function getJiraDeletionFingerprint(
-    removedEntry: WorkReportEntry,
-    dateKey: string,
-    entryIndex: number,
-    timeRangeOverride?: { from: string; to: string } | null
-  ) {
-    const timeRange =
-      timeRangeOverride ??
-      reportTimeRangesByIndex.get(dateKey)?.get(entryIndex) ??
-      buildReportEntryKeys(removedEntry, dateKey)
-        .map(key => reportTimeRanges.get(key))
-        .find(Boolean) ??
-      null
-    const started = timeRange
-      ? buildJiraStarted(dayjs(dateKey).toDate(), timeRange.from)
-      : null
-    const seconds = removedEntry.hours_HHMM
-      ? Math.max(1, parseHoursHHMMToMinutes(removedEntry.hours_HHMM) * 60)
-      : null
-    const meta = taskMetaById.get(removedEntry.taskId) ?? {
-      taskId: removedEntry.taskId,
-      taskName: removedEntry.taskName,
-      customerName: '',
-      projectName: removedEntry.projectInstance || 'Project'
+
+  async function personalDay(date: string): Promise<WorkReportDay> {
+    const result = await window.hrs.getReports(date, date, true) as MonthlyReport
+    const days = result?.days?.filter(day => normalizeReportDateKey(day.date) === date)
+    if (days?.length !== 1 || !Array.isArray(days[0].reports)) {
+      throw Error('HRS did not return the requested personal day. No empty day was assumed.')
+    }
+    return days[0]
+  }
+
+  function deletionSteps(owner: DeleteOwner, date: string, missionMap: Record<string,string>) {
+    const verifyOwner = async () => {
+      const { profile } = await profileForReportSync(window.hrs, owner.profileId)
+      if (profile.employee_id !== owner.employeeId) throw Error(DIFFERENT_ACCOUNT)
+      return profile
     }
     return {
-      timeRange,
-      started,
-      seconds,
-      meta,
-      expectedComment: buildJiraComment(
-        meta,
-        stripMissionCommentMarkers(removedEntry.comment)
-      ),
-      rawComment: stripMissionCommentMarkers(removedEntry.comment)
-    }
-  }
-
-  async function resolveJiraLoggedEntryForDeletion(
-    removedEntry: WorkReportEntry,
-    dateKey: string,
-    entryIndex: number,
-    trackedEntries: JiraLoggedEntries = jiraLoggedEntries,
-    timeRangeOverride?: { from: string; to: string } | null
-  ): Promise<JiraLoggedEntryMatch | null> {
-    const tracked = findJiraLoggedEntry(trackedEntries, removedEntry, dateKey)
-    if (tracked) return tracked
-
-    const mappedMission = findMappedMissionForReport(allProjectMissions, reportMissionMap, {
-      date: dateKey,
-      taskId: removedEntry.taskId,
-      hoursHHMM: removedEntry.hours_HHMM,
-      comment: removedEntry.comment,
-      reportingFrom: removedEntry.reporting_from
-    })
-    const meta = taskMetaById.get(removedEntry.taskId)
-    const customer = meta?.customerName ?? ''
-    const hasPotentialJiraLink = Boolean(
-      mappedMission?.jiraIssueKey || (customer && jiraMappings[customer])
-    )
-    if (!hasPotentialJiraLink || !window.hrs?.findJiraWorklogsForDate) return null
-    if (!jiraConfigured) {
-      throw new Error(
-        'Jira must be connected before this report can be safely deleted. The app needs to verify that no Jira worklog is left behind.'
-      )
-    }
-
-    const result = await window.hrs.findJiraWorklogsForDate(dateKey)
-    if (result.partial) {
-      throw new Error(
-        'Jira returned an incomplete worklog search. Nothing was deleted; please retry.'
-      )
-    }
-    const fingerprint = getJiraDeletionFingerprint(
-      removedEntry,
-      dateKey,
-      entryIndex,
-      timeRangeOverride
-    )
-    const candidates = buildJiraDeleteCandidates({
-      worklogs: result.worklogs,
-      dateKey,
-      expectedStarted: fingerprint.started,
-      seconds: fingerprint.seconds,
-      expectedComment: fingerprint.expectedComment,
-      rawComment: fingerprint.rawComment
-    }) as JiraDatedWorklogEntry[]
-    if (candidates.length > 1) {
-      throw new Error(
-        'More than one Jira worklog matched this report. Nothing was deleted; remove the ambiguity in Jira and retry.'
-      )
-    }
-    if (!candidates.length) return null
-    const candidate = candidates[0]
-    return {
-      key: getJiraTrackingKeys(removedEntry, dateKey)[0],
-      entry: {
-        issueKey: candidate.issueKey,
-        worklogId: candidate.id,
-        loggedAt: new Date().toISOString()
-      }
-    }
-  }
-
-  async function deleteLinkedJiraWorklog(
-    removedEntry: WorkReportEntry,
-    dateKey: string,
-    entryIndex: number,
-    jiraMatch: JiraLoggedEntryMatch,
-    trackedEntries: JiraLoggedEntries = jiraLoggedEntries,
-    timeRangeOverride?: { from: string; to: string } | null
-  ) {
-    const fingerprint = getJiraDeletionFingerprint(
-      removedEntry,
-      dateKey,
-      entryIndex,
-      timeRangeOverride
-    )
-    let worklogIds = jiraMatch.entry.worklogId ? [jiraMatch.entry.worklogId] : []
-    if (!worklogIds.length) {
-      const allLogs = await window.hrs.getJiraIssueWorklogs(jiraMatch.entry.issueKey)
-      const candidates = buildJiraDeleteCandidates({
-        worklogs: allLogs as JiraWorklogEntry[],
-        dateKey,
-        expectedStarted: fingerprint.started,
-        seconds: fingerprint.seconds,
-        expectedComment: fingerprint.expectedComment,
-        rawComment: fingerprint.rawComment
-      })
-      worklogIds = Array.from(new Set(candidates.map(entry => entry.id).filter(Boolean)))
-    }
-    if (worklogIds.length !== 1) {
-      throw new Error(
-        worklogIds.length
-          ? 'More than one Jira worklog matched this report. Nothing was deleted.'
-          : 'The linked Jira worklog could not be found. Nothing was deleted.'
-      )
-    }
-    try {
-      await window.hrs.deleteJiraWorklog({
-        issueKey: jiraMatch.entry.issueKey,
-        worklogId: worklogIds[0]
-      })
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      if (!message.includes('JIRA 404')) throw error
-      // A stale local link is equivalent to success when Jira confirms the worklog is gone.
-    }
-    jiraBudgetDetailsCacheRef.current.clear()
-    jiraIssuesCacheRef.current.clear()
-    void loadJiraWorklogHistory(jiraMatch.entry.issueKey)
-    return withoutJiraLoggedEntryAliases(trackedEntries, jiraMatch)
-  }
-
-  function applyOptimisticSharedUsageDeletion(
-    reports: Array<{ entry: WorkReportEntry; dateKey: string }>,
-    missionMap: Record<string, string> = reportMissionMap
-  ) {
-    const deletedSecondsByTask = new Map<string, number>()
-    for (const { entry, dateKey } of reports) {
-      const mission = findMappedMissionForReport(allProjectMissions, missionMap, {
-        date: dateKey,
-        taskId: entry.taskId,
-        hoursHHMM: entry.hours_HHMM,
-        comment: entry.comment,
-        reportingFrom: entry.reporting_from
-      })
-      if (!mission?.shared) continue
-      const seconds = Math.max(0, parseHoursHHMMToMinutes(entry.hours_HHMM) * 60)
-      deletedSecondsByTask.set(
-        mission.id,
-        (deletedSecondsByTask.get(mission.id) ?? 0) + seconds
-      )
-    }
-    if (!deletedSecondsByTask.size) return
-    setSharedFictiveTaskUsage(previous => {
-      const next = { ...previous }
-      for (const [taskId, deletedSeconds] of deletedSecondsByTask) {
-        const current = next[taskId]
-        if (!current) continue
-        next[taskId] = {
-          ...current,
-          usedSeconds: Math.max(0, current.usedSeconds - deletedSeconds)
-        }
-      }
-      return next
-    })
-  }
-
-  async function deleteReportEntry(dateKey: string, entryIndex: number) {
-    const dayInfo = reportsByDate.get(dateKey)
-    if (!dayInfo) return
-    if (entryIndex < 0 || entryIndex >= dayInfo.day.reports.length) {
-      setLogError('Selected report could not be found. Please refresh and try again.')
-      return
-    }
-    const remaining = dayInfo.day.reports.filter((_, idx) => idx !== entryIndex)
-    const removedEntry = dayInfo.day.reports[entryIndex]
-    const removedKey = removedEntry ? getReportEntryKey(removedEntry, dateKey) : null
-
-    setDeleteLoading(true)
-    setLogError(null)
-    setLogSuccess(null)
-    try {
-      const detailed = await ensureReportWorkLogsForDate(dateKey, dayInfo.day.reports.length)
-      const deletionTimeRange = getDetailedDeletionTimeRange(
-        detailed,
-        entryIndex,
-        removedEntry
-      )
-      const jiraMatch = await resolveJiraLoggedEntryForDeletion(
-        removedEntry,
-        dateKey,
-        entryIndex,
-        jiraLoggedEntries,
-        deletionTimeRange
-      )
-      let jiraDeleted = false
-      let jiraDeletionSkipped = false
-      let nextJiraEntries = jiraLoggedEntries
-      if (jiraMatch) {
-        try {
-          nextJiraEntries = await deleteLinkedJiraWorklog(
-            removedEntry,
-            dateKey,
-            entryIndex,
-            jiraMatch,
-            jiraLoggedEntries,
-            deletionTimeRange
-          )
-          jiraDeleted = true
-        } catch (error) {
-          if (!isJiraDeletionPermissionError(error)) throw error
-          jiraDeletionSkipped = true
-          nextJiraEntries = withoutJiraLoggedEntryAliases(jiraLoggedEntries, jiraMatch)
-        }
-      }
-      if (!remaining.length) {
-        await window.hrs.deleteLog(dateKey)
-      } else {
-        const items = dayInfo.day.reports
-          .map((report, idx) => ({ report, sourceIndex: idx }))
-          .filter(item => item.sourceIndex !== entryIndex)
-        const payload = buildLogWorkPayloadForMutation(
-          dateKey,
-          items,
-          dayInfo.day.reports,
-          detailed
-        )
-        await window.hrs.logWork(payload)
-      }
-      if (jiraMatch) persistJiraLoggedEntries(nextJiraEntries)
-      applyOptimisticSharedUsageDeletion([{ entry: removedEntry, dateKey }])
-      const removedMissionMapKey = buildReportMissionMapKey({
-        date: dateKey,
-        taskId: removedEntry.taskId,
-        hoursHHMM: removedEntry.hours_HHMM,
-        comment: removedEntry.comment,
-        reportingFrom: removedEntry.reporting_from
-      })
-      let missionMapForSync = reportMissionMap
-      if (reportMissionMap[removedMissionMapKey]) {
-        missionMapForSync = { ...reportMissionMap }
-        delete missionMapForSync[removedMissionMapKey]
-        setReportMissionMap(missionMapForSync)
-      }
-      const reconciliation = await syncHrsMonthToSupabaseReliably(dayjs(dateKey).toDate(), {
-        missionMapOverride: missionMapForSync
-      })
-      const hrsSuccessMessage =
-        !remaining.length
-          ? `All logs cleared for ${dateKey}${jiraDeleted ? ', including the linked Jira worklog' : ''}.`
-          : `Log removed for ${dateKey}${jiraDeleted ? ', including the linked Jira worklog' : ''}.`
-      const successMessage = jiraDeletionSkipped
-        ? `${hrsSuccessMessage} The Jira worklog for ${jiraMatch?.entry.issueKey ?? 'this report'} was kept because Jira denied deletion.`
-        : hrsSuccessMessage
-      if (reconciliation.error) {
-        setLogError(
-          `${successMessage} Shared gauge reconciliation is queued and will retry automatically: ${reconciliation.error}`
-        )
-      } else {
-        setLogSuccess(successMessage)
-      }
-      if (monthlyReport) {
-        const updated = updateMonthlyReportDay(monthlyReport, dateKey, remaining)
-        setMonthlyReport(updated)
-        const monthKey = dayjs(dateKey).format('YYYY-MM')
-        reportsCacheRef.current.set(monthKey, updated)
-      }
-      if (currentMonthReport && currentMonthKey === dayjs(dateKey).format('YYYY-MM')) {
-        const updated = updateMonthlyReportDay(currentMonthReport, dateKey, remaining)
-        setCurrentMonthReport(updated)
-      }
-      void refreshReportWorkLogsForDate(dateKey)
-      if (removedKey) {
-        setSelectedReportEntries(prev => {
-          if (!prev[removedKey]) return prev
-          const next = { ...prev }
-          delete next[removedKey]
-          return next
+      store: localStorage, owner, date,
+      verifyOwner: async () => { await verifyOwner() },
+      readDayHash: async () => dayFingerprint((await personalDay(date)).reports),
+      reconcile: async () => {
+        // Use the same serial queue as month snapshots so an older read can't restore the deleted row.
+        await serializeSupabaseSnapshot(date.slice(0, 7), async () => {
+          const profile = await verifyOwner()
+          const day = await personalDay(date)
+          await verifyOwner()
+          const rows = buildSupabaseRowsFromMonthlyReport({ days: [day] }, profile, missionMap)
+          const result = await window.hrs.syncSupabaseWorkReports({ expectedProfileId: profile.id,
+            employeeId: owner.employeeId, startDate: date, endDate: date, coveredDates: [date], rows })
+          if (result.synced !== rows.length) throw Error('Supabase did not confirm the day snapshot.')
+          return { synced: result.synced, error: null }
         })
       }
-      const monthKey = dayjs(dateKey).format('YYYY-MM')
-      reportsCacheRef.current.delete(monthKey)
-      if (currentMonthKey === monthKey) {
-        setCurrentMonthReport(null)
-        setCurrentMonthKey(null)
-      }
-      try {
-        const { start, end } = getMonthRange(dayjs(dateKey).toDate())
-        const data = await withTimeout(
-          window.hrs.getReports(start, end),
-          BOOT_TIMEOUT_MS,
-          'Refreshing reports'
-        )
-        const refreshed = data as MonthlyReport
-        reportsCacheRef.current.set(monthKey, refreshed)
-        setMonthlyReport(refreshed)
-        if (currentMonthKey === monthKey) {
-          setCurrentMonthReport(refreshed)
-        }
-      } catch {
-        // Fall back to reloading if the refresh fails.
-      }
-      loadReportsForMonth(dayjs(dateKey).toDate())
-    } catch (err) {
-      const message = formatJiraDeletionError(err)
-      if (message === 'AUTH_REQUIRED') {
-        setLoggedIn(false)
-        setLogError('Session expired. Please login again.')
-      } else {
-        setLogError(message)
-      }
-    } finally {
-      setDeleteLoading(false)
     }
   }
+
+  async function forgetDeletedJiraLinks(targets: JiraDeleteTarget[]) {
+    if (!targets.length) return
+    const saved = await window.hrs.getJiraLoggedEntries()
+    const ids = new Set(targets.map(t => t.issueKey + ':' + t.worklogId))
+    const rest = Object.fromEntries(Object.entries(saved).filter(([,v]) => !ids.has(v.issueKey + ':' + v.worklogId)))
+    await window.hrs.setJiraLoggedEntries(rest)
+    setJiraLoggedEntries(rest)
+    jiraBudgetDetailsCacheRef.current.clear()
+    jiraIssuesCacheRef.current.clear()
+  }
+
+  function refreshDeletedReports(date: string) {
+    const month = date.slice(0, 7)
+    reportsCacheRef.current.delete(month)
+    reportsCacheRef.current.delete('hrs:' + month)
+    reportsCacheRef.current.delete('supabase:' + month)
+    if (currentMonthKey === month) { setCurrentMonthReport(null); setCurrentMonthKey(null) }
+    void refreshReportWorkLogsForDate(date)
+    if (dayjs(reportMonth).format('YYYY-MM') === month) void loadReportsForMonth(reportMonth, { force: true })
+    void loadSharedProjectReports(dayjs(date).toDate(), {force: true})
+    const scope = getQuickLogProjectScope()
+    if (scope) void loadSupabaseProjectUsage(scope.customer, scope.project)
+    if (sharedFictiveTasks.length) void refreshSharedFictiveTaskUsage(sharedFictiveTasks, true)
+  }
+
+  const pendingDeletes = useMemo(() => {
+    const profile = supabaseStatus?.profile
+    if (!profile?.employee_id) return []
+    const owner = {profileId: profile.id, employeeId: profile.employee_id}
+    return pendingDeleteDates(localStorage, owner)
+  }, [supabaseStatus?.profile?.id, supabaseStatus?.profile?.employee_id, deleteRevision])
+
+  async function retryDeletedDay(date: string) {
+    if (deletionBusy.current || !supabaseStatus?.profile?.employee_id) return
+    deletionBusy.current = true
+    setDeleteLoading(true); setSupabaseError(null); setSupabaseMessage(null)
+    try {
+      const owner = {profileId: supabaseStatus.profile.id, employeeId: supabaseStatus.profile.employee_id}
+      const job = await runDeletionDay(deletionSteps(owner, date, reportMissionMap))
+      if (job) {
+        await forgetDeletedJiraLinks(job.targets)
+        refreshDeletedReports(date)
+        setSupabaseMessage('Deletion confirmed in HRS, Supabase and any linked Jira worklogs for ' + date + '.')
+      }
+    } catch (e) { setSupabaseError(getSupabaseErrorMessage(e)) }
+    finally { deletionBusy.current = false; setDeleteLoading(false); setDeleteRevision(v => v + 1) }
+  }
+
+  async function removePersonalReports(items: {dateKey: string; dayIndex: number}[], bulk: boolean) {
+    if (deletionBusy.current || !items.length) return
+    const fail = (text: string) => {
+      setDeleteNotice({error: true, text})
+      if (bulk) setBulkActionError(text)
+      else setLogError(text)
+    }
+    if (reportSource !== 'hrs') { fail('Open your personal HRS reports to delete a worklog.'); return }
+    deletionBusy.current = true
+    setDeleteLoading(true); setDeleteNotice(null); setLogError(null); setLogSuccess(null); setBulkActionError(null)
+    const byDate = new Map<string, Set<number>>()
+    for (const item of items) {
+      const indexes = byDate.get(item.dateKey) ?? new Set<number>()
+      indexes.add(item.dayIndex)
+      byDate.set(item.dateKey, indexes)
+    }
+    const completedDays: string[] = []
+    let activeDate = ''
+    let missionMap = { ...reportMissionMap }
+    try {
+      const { profile } = await profileForReportSync(window.hrs, supabaseStatus?.profile?.id)
+      setSupabaseStatus(prev => prev?.profile?.id === profile.id ? {...prev, profile} : prev)
+      const owner = { profileId: profile.id, employeeId: profile.employee_id }
+      for (const [date, indexes] of byDate) {
+        activeDate = date
+        const shown = reportsByDate.get(date)?.day.reports
+        if (!shown || [...indexes].some(i => !Number.isInteger(i) || !shown[i])) throw Error('Selection changed. Refresh Reports.')
+        const before = await dayFingerprint(shown)
+        const day = await personalDay(date)
+        if (await dayFingerprint(day.reports) !== before) throw Error('HRS changed since this screen was loaded. Refresh and select again.')
+        const removed = day.reports.filter((_, i) => indexes.has(i))
+        const retained = day.reports.filter((_, i) => !indexes.has(i))
+        const missionKey = (r: WorkReportEntry) => buildReportMissionMapKey({ date, taskId: r.taskId,
+          hoursHHMM: r.hours_HHMM, comment: r.comment, reportingFrom: r.reporting_from })
+        const nextMap = { ...missionMap }
+        for (const row of removed) if (!retained.some(other => missionKey(other) === missionKey(row))) delete nextMap[missionKey(row)]
+        const rawDetails = day.reports.some(r => !r.from || !r.to) ? await window.hrs.getWorkLogs(date, true) : []
+        const details = (Array.isArray(rawDetails) ? rawDetails : []).map(normalizeReportLogEntry)
+          .filter((r): r is ReportLogEntry => !!r?.from && !!r.to)
+        const timed = day.reports.map((r, i) => {
+          if (r.from && r.to) return r
+          const same = (d: {taskId: number; hours_HHMM?: string | null; comment?: string | null}) =>
+            d.taskId === r.taskId && d.hours_HHMM === r.hours_HHMM && (d.comment || '') === (r.comment || '')
+          const candidates = details.filter(same)
+          if (candidates.length === 1 && day.reports.filter(same).length === 1)
+            return { ...r, from: candidates[0].from!, to: candidates[0].to! }
+          if (!indexes.has(i)) throw Error('Cannot confirm the original times for a remaining HRS report. No day was rewritten.')
+          if (day.reports.filter(same).length > 1) throw Error('Two HRS reports cannot be distinguished. No report was deleted.')
+          return r
+        })
+        const selected = [...indexes].sort((a,b) => a-b)
+        const targetsForDate = async () => {
+          let links = await window.hrs.getJiraLoggedEntries()
+          const targets: JiraDeleteTarget[] = []
+          const status = await window.hrs.getJiraStatus()
+          for (const index of selected) {
+            const target = await jiraTargetForDeletion(timed[index], date, timed, links)
+            if (target) {
+              targets.push(target)
+              links = withJiraLoggedEntryAliases(links, timed[index], date,
+                { ...target, loggedAt: new Date().toISOString() })
+            }
+          }
+          if (targets.length) { await window.hrs.setJiraLoggedEntries(links); setJiraLoggedEntries(links) }
+          return { account: JSON.stringify([status.baseUrl, status.email]), targets }
+        }
+        const job = await runDeletionDay(deletionSteps(owner, date, nextMap), {
+          before, after: await dayFingerprint(retained), selected, resolveJira: targetsForDate,
+          deleteJira: async (target, account) => {
+            const status = await window.hrs.getJiraStatus()
+            if (!status.configured || JSON.stringify([status.baseUrl, status.email]) !== account) throw Error('Reconnect the original Jira account.')
+            if (await window.hrs.deleteJiraWorklog(target) !== true) throw Error('Jira did not confirm deletion.')
+          },
+          writeDay: async () => {
+            if (!retained.length) await window.hrs.deleteLog(date)
+            else await window.hrs.logWork({date, workLogs: timed.filter((_, i) => !indexes.has(i)).map(toLogWorkItem)})
+          }
+        })
+        completedDays.push(date)
+        missionMap = nextMap
+        setReportMissionMap(missionMap)
+        if (job) await forgetDeletedJiraLinks(job.targets)
+        refreshDeletedReports(date)
+      }
+      clearReportSelection()
+      const text = 'Deleted from HRS and Supabase, including any linked Jira worklogs.'
+      setLogSuccess(text); setDeleteNotice({error: false, text})
+    } catch (e) {
+      if (activeDate) refreshDeletedReports(activeDate)
+      fail((completedDays.length ? 'Completed: ' + completedDays.join(', ') + '. ' : '') +
+        (activeDate ? activeDate + ': ' : '') + (e instanceof Error ? e.message : String(e)))
+    } finally { deletionBusy.current = false; setDeleteLoading(false); setDeleteRevision(v => v + 1) }
+  }
+
+  const deleteReportEntry = (dateKey: string, dayIndex: number) => removePersonalReports([{dateKey, dayIndex}], false)
 
   function startEditReport(dateKey: string, index: number, entry: WorkReportEntry) {
     setEditError(null)
@@ -11268,15 +11084,15 @@ export default function App() {
       if (oldKey !== newKey && jiraMatch) {
         const withoutOld = withoutJiraLoggedEntryAliases(jiraLoggedEntries, jiraMatch)
         const next = withJiraLoggedEntryAliases(withoutOld, newEntry, dateKey, jiraMatch.entry)
-        persistJiraLoggedEntries(next)
+        await persistJiraLoggedEntries(next)
       }
       setLogSuccess(`Log updated for ${dateKey}.`)
       setEditHours(normalizedHours)
       setEditingEntry(null)
-      void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
-        silent: true,
+      const sync = await syncHrsMonthToSupabaseReliably(dayjs(dateKey).toDate(), {
         missionMapOverride: missionMapForSync
       })
+      if (sync.error) { setLogSuccess(null); setLogError('Edit saved in HRS; Supabase sync pending for '+dateKey+'. '+sync.error) }
       void refreshReportWorkLogsForDate(dateKey)
       loadReportsForMonth(dayjs(dateKey).toDate())
     } catch (err) {
@@ -11338,161 +11154,7 @@ export default function App() {
     setCommentRules(prev => prev.filter(rule => rule.id !== ruleId))
   }
 
-  async function bulkDeleteReports(items: ReportItem[]) {
-    if (!items.length) return
-    const byDate = new Map<string, ReportItem[]>()
-    for (const item of items) {
-      const list = byDate.get(item.dateKey) ?? []
-      list.push(item)
-      byDate.set(item.dateKey, list)
-    }
-    setDeleteLoading(true)
-    setBulkActionError(null)
-    let nextJiraEntries = { ...jiraLoggedEntries }
-    let nextMissionMap = { ...reportMissionMap }
-    const affectedMonths = new Set<string>()
-    const reconciliationFailures = new Map<string, string>()
-    const skippedJiraWorklogs: Array<{ issueKey: string; dateKey: string }> = []
-    const refreshAffectedMonths = () => {
-      for (const monthKey of affectedMonths) {
-        reportsCacheRef.current.delete(monthKey)
-        if (currentMonthKey === monthKey) {
-          setCurrentMonthReport(null)
-          setCurrentMonthKey(null)
-        }
-      }
-      if (affectedMonths.size) loadReportsForMonth(reportMonth)
-    }
-    try {
-      for (const [dateKey, entries] of byDate.entries()) {
-        const dayInfo = reportsByDate.get(dateKey)
-        if (!dayInfo) continue
-        const detailed = await ensureReportWorkLogsForDate(dateKey, dayInfo.day.reports.length)
-        const remaining = dayInfo.day.reports.filter((_, idx) =>
-          !entries.some(entry => entry.dayIndex === idx)
-        )
-        let dayJiraEntries = nextJiraEntries
-        for (const entry of entries) {
-          const removed = dayInfo.day.reports[entry.dayIndex]
-          if (!removed) continue
-          const deletionTimeRange = getDetailedDeletionTimeRange(
-            detailed,
-            entry.dayIndex,
-            removed
-          )
-          const jiraMatch = await resolveJiraLoggedEntryForDeletion(
-            removed,
-            dateKey,
-            entry.dayIndex,
-            dayJiraEntries,
-            deletionTimeRange
-          )
-          if (jiraMatch) {
-            try {
-              dayJiraEntries = await deleteLinkedJiraWorklog(
-                removed,
-                dateKey,
-                entry.dayIndex,
-                jiraMatch,
-                dayJiraEntries,
-                deletionTimeRange
-              )
-            } catch (error) {
-              if (!isJiraDeletionPermissionError(error)) throw error
-              dayJiraEntries = withoutJiraLoggedEntryAliases(dayJiraEntries, jiraMatch)
-              skippedJiraWorklogs.push({
-                issueKey: jiraMatch.entry.issueKey,
-                dateKey
-              })
-            }
-          }
-        }
-        if (!remaining.length) {
-          await window.hrs.deleteLog(dateKey)
-        } else {
-          const remainingItems = dayInfo.day.reports
-            .map((report, idx) => ({ report, sourceIndex: idx }))
-            .filter(item => !entries.some(entry => entry.dayIndex === item.sourceIndex))
-          const payload = buildLogWorkPayloadForMutation(
-            dateKey,
-            remainingItems,
-            dayInfo.day.reports,
-            detailed
-          )
-          await window.hrs.logWork(payload)
-        }
-        if (dayJiraEntries !== nextJiraEntries) {
-          nextJiraEntries = dayJiraEntries
-          persistJiraLoggedEntries(nextJiraEntries)
-        }
-        const removedReports = entries
-          .map(entry => dayInfo.day.reports[entry.dayIndex])
-          .filter((entry): entry is WorkReportEntry => Boolean(entry))
-          .map(entry => ({ entry, dateKey }))
-        applyOptimisticSharedUsageDeletion(removedReports, nextMissionMap)
-        let dayMissionMap = nextMissionMap
-        for (const entry of entries) {
-          const removed = dayInfo.day.reports[entry.dayIndex]
-          if (!removed) continue
-          const missionMapKey = buildReportMissionMapKey({
-            date: dateKey,
-            taskId: removed.taskId,
-            hoursHHMM: removed.hours_HHMM,
-            comment: removed.comment,
-            reportingFrom: removed.reporting_from
-          })
-          if (dayMissionMap[missionMapKey]) {
-            if (dayMissionMap === nextMissionMap) dayMissionMap = { ...nextMissionMap }
-            delete dayMissionMap[missionMapKey]
-          }
-        }
-        if (dayMissionMap !== nextMissionMap) {
-          nextMissionMap = dayMissionMap
-          setReportMissionMap(nextMissionMap)
-        }
-        const reconciliation = await syncHrsMonthToSupabaseReliably(dayjs(dateKey).toDate(), {
-          missionMapOverride: nextMissionMap
-        })
-        const monthKey = dayjs(dateKey).format('YYYY-MM')
-        if (reconciliation.error) {
-          reconciliationFailures.set(monthKey, reconciliation.error)
-        }
-        affectedMonths.add(monthKey)
-        void refreshReportWorkLogsForDate(dateKey)
-      }
-      clearReportSelection()
-      refreshAffectedMonths()
-      if (skippedJiraWorklogs.length) {
-        const uniqueIssues = Array.from(
-          new Set(skippedJiraWorklogs.map(worklog => worklog.issueKey))
-        )
-        setLogSuccess(
-          `Reports were removed from HRS and shared gauges. ${skippedJiraWorklogs.length} Jira ${
-            skippedJiraWorklogs.length === 1 ? 'worklog was' : 'worklogs were'
-          } kept because Jira denied deletion (${uniqueIssues.join(', ')}).`
-        )
-      }
-      if (reconciliationFailures.size) {
-        setBulkActionError(
-          `Reports were removed from HRS${
-            skippedJiraWorklogs.length
-              ? `; ${skippedJiraWorklogs.length} Jira ${
-                  skippedJiraWorklogs.length === 1 ? 'worklog was' : 'worklogs were'
-                } kept because Jira denied deletion`
-              : ' and linked Jira worklogs were removed'
-          }. Shared gauge reconciliation is queued for ${Array.from(
-            reconciliationFailures.keys()
-          ).join(', ')} and will retry automatically.`
-        )
-      }
-    } catch (err) {
-      refreshAffectedMonths()
-      const message = formatJiraDeletionError(err)
-      setBulkActionError(message)
-    } finally {
-      setDeleteLoading(false)
-    }
-  }
+  const bulkDeleteReports = (items: ReportItem[]) => removePersonalReports(items, true)
 
   async function bulkEditReports(items: ReportItem[]) {
     if (!items.length) return
@@ -11518,6 +11180,7 @@ export default function App() {
       let nextJiraEntries = { ...jiraLoggedEntries }
       let nextMissionMap = { ...reportMissionMap }
       let missionMapChanged = false
+      const waitingForSupabase: string[] = []
       const byDate = new Map<string, ReportItem[]>()
       for (const item of items) {
         const list = byDate.get(item.dateKey) ?? []
@@ -11591,18 +11254,19 @@ export default function App() {
           detailed
         )
         await window.hrs.logWork(payload)
-        void syncHrsMonthToSupabase(dayjs(dateKey).toDate(), {
-          silent: true,
+        const sync = await syncHrsMonthToSupabaseReliably(dayjs(dateKey).toDate(), {
           missionMapOverride: nextMissionMap
         })
+        if (sync.error) waitingForSupabase.push(dateKey)
         void refreshReportWorkLogsForDate(dateKey)
       }
       if (missionMapChanged) setReportMissionMap(nextMissionMap)
       if (nextJiraEntries !== jiraLoggedEntries) {
-        persistJiraLoggedEntries(nextJiraEntries)
+        await persistJiraLoggedEntries(nextJiraEntries)
       }
       clearReportSelection()
       setBulkEditOpen(false)
+      if (waitingForSupabase.length) setBulkActionError('Edits saved in HRS; Supabase sync pending for '+waitingForSupabase.join(', ')+'.')
       if (normalizedHours) setBulkEditHours(normalizedHours)
       loadReportsForMonth(reportMonth)
     } catch (err) {
@@ -11869,6 +11533,7 @@ export default function App() {
   }
 
   function openTrayDayEditor(date: Date) {
+    setDeleteNotice(null)
     const dateKey = dayjs(date).format('YYYY-MM-DD')
     handleCalendarChange(date)
     setTrayDayEditorDateKey(dateKey)
@@ -12947,14 +12612,16 @@ export default function App() {
     if (!loggedIn || !supabaseStatus?.profile?.employee_id || !pendingReportSyncMonths.length) {
       return
     }
-    for (const monthKey of pendingReportSyncMonths) {
-      const month = dayjs(`${monthKey}-01`)
+    for (const scope of pendingReportSyncMonths) {
+      const date=retryDate(scope,supabaseStatus.profile)
+      if (!date) continue
+      const month = dayjs(date)
       if (!month.isValid()) continue
       void syncHrsMonthToSupabaseReliably(month.toDate(), {
         missionMapOverride: reportMissionMap
       })
     }
-  }, [loggedIn, supabaseStatus?.profile?.employee_id, pendingReportSyncMonths, reportMissionMap])
+  }, [loggedIn, supabaseStatus?.profile?.id, supabaseStatus?.profile?.employee_id, pendingReportSyncMonths, reportMissionMap])
 
   useEffect(() => {
     if (
@@ -12969,12 +12636,13 @@ export default function App() {
       return
     }
 
-    const monthKey = dayjs(reportMonth).format('YYYY-MM')
-    const syncKey = `${supabaseStatus.profile.id}:${monthKey}`
+    if (!dayjs(reportMonth).isSame(dayjs(),'month')) return
+    const today = new Date()
+    const syncKey = pendingDay(supabaseStatus.profile, dayjs(today).format('YYYY-MM-DD'))
     if (automaticReportSyncKeysRef.current.has(syncKey)) return
     automaticReportSyncKeysRef.current.add(syncKey)
 
-    void syncHrsMonthToSupabaseReliably(reportMonth, {
+    void syncHrsMonthToSupabaseReliably(today, {
       missionMapOverride: reportMissionMap
     }).then(result => {
       if (result.error) automaticReportSyncKeysRef.current.delete(syncKey)
@@ -13812,8 +13480,6 @@ export default function App() {
       jiraProjectPeoplePercent,
       jiraProjectPositionSnapshots,
       meetingsBrowser,
-      meetingsUsername,
-      meetingsPassword,
       meetingsHeadless,
       trayMeetingsSettingsOpen,
       meetingsCollapsed,
@@ -13857,8 +13523,6 @@ export default function App() {
     jiraProjectPeoplePercent,
     jiraProjectPositionSnapshots,
     meetingsBrowser,
-    meetingsUsername,
-    meetingsPassword,
     meetingsHeadless,
     trayMeetingsSettingsOpen,
     meetingsCollapsed,
@@ -18579,7 +18243,8 @@ export default function App() {
     const customerLabel = getCustomerDisplayName(meta?.customerName || 'Customer')
     const entryKey = getReportEntryKey(report, report.dateKey)
     const isJiraLogged = Boolean(findJiraLoggedEntry(jiraLoggedEntries, report, report.dateKey))
-    const isSelected = Boolean(selectedReportEntries[entryKey])
+    const selectionKey = deletionSelectionKey(report)
+    const isSelected = Boolean(selectedReportEntries[selectionKey])
     const strippedComment = stripMissionCommentMarkers(report.comment)
     const commentLabel = strippedComment || 'No comment'
     const timeRange =
@@ -18649,7 +18314,7 @@ export default function App() {
             <Group gap="xs" className="report-meta">
               <Checkbox
                 checked={isSelected}
-                onChange={event => toggleReportSelection(entryKey, event.currentTarget.checked)}
+                onChange={event => toggleReportSelection(selectionKey, event.currentTarget.checked)}
                 aria-label="Select report"
                 className="report-select"
               />
@@ -18722,9 +18387,7 @@ export default function App() {
                     color="red"
                     loading={deleteLoading}
                     onClick={() => {
-                      const message = isJiraLogged
-                        ? 'Delete this report and its linked Jira worklog?'
-                        : 'Delete this log entry?'
+                      const message = 'Delete this report from HRS and Supabase, and remove its Jira worklog if linked?'
                       if (window.confirm(message)) {
                         deleteReportEntry(report.dateKey, report.dayIndex)
                       }
@@ -20294,17 +19957,9 @@ export default function App() {
                   </ActionIcon>
                 </Tooltip>
                 <Tooltip label="Jira Sprint Board" withArrow openDelay={120} withinPortal>
-                  <ActionIcon
-                    className="tray-nav-icon-btn"
-                    size={38}
-                    radius="md"
+                  <ActionIcon className="tray-nav-icon-btn" size={38} radius="md"
                     variant={trayPanel === 'sprints' ? 'light' : 'subtle'}
-                    onClick={() => {
-                      switchTrayPanel('sprints')
-                    }}
-                    aria-label="Jira Sprint Board"
-                    title="Jira Sprint Board"
-                  >
+                    onClick={() => switchTrayPanel('sprints')} aria-label="Jira Sprint Board" title="Jira Sprint Board">
                     <IconLayoutKanban size={18} stroke={2.2} />
                   </ActionIcon>
                 </Tooltip>
@@ -20351,9 +20006,6 @@ export default function App() {
                     currentEmployeeName={
                       supabaseStatus?.profile?.display_name || supabaseStatus?.email || null
                     }
-                    onExpand={() => {
-                      void openSprintWindow()
-                    }}
                     onClose={() => switchTrayPanel('log')}
                   />
                 </div>
@@ -22329,54 +21981,7 @@ export default function App() {
                       {renderSupabaseSettingsCard(true)}
                       {renderSlackSettingsCard(true)}
                       <Card radius="md" withBorder className="tray-settings-card tray-settings-meetings-card">
-                        <Stack gap="xs">
-                          <Group justify="space-between" align="center" wrap="nowrap">
-                            <Text fw={700} size="sm">
-                              Meetings access
-                            </Text>
-                            <Badge
-                              size="xs"
-                              color={meetingsUsername.trim() && meetingsPassword ? 'teal' : 'gray'}
-                              variant="light"
-                            >
-                              {meetingsUsername.trim() && meetingsPassword ? 'Connected' : 'Disconnected'}
-                            </Badge>
-                          </Group>
-                          {meetingsUsername.trim() && meetingsPassword ? (
-                            <Group justify="flex-end">
-                              <Button
-                                size="xs"
-                                variant="subtle"
-                                color="red"
-                                onClick={clearMeetingsCredentials}
-                              >
-                                Disconnect
-                              </Button>
-                            </Group>
-                          ) : (
-                            <>
-                              <SimpleGrid cols={2} spacing="xs">
-                                <TextInput
-                                  label="Username"
-                                  placeholder="you@company.com"
-                                  value={meetingsUsername}
-                                  onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                                  size="xs"
-                                />
-                                <PasswordInput
-                                  label="Password"
-                                  placeholder="••••••••"
-                                  value={meetingsPassword}
-                                  onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                                  size="xs"
-                                />
-                              </SimpleGrid>
-                              <Text size="xs" c="dimmed" className="meetings-chrome-note">
-                                *chrome must be installed to use this feature
-                              </Text>
-                            </>
-                          )}
-                        </Stack>
+                        {renderMeetingsAccess()}
                       </Card>
                       {AGENDA_UI_ENABLED && (
                         <Card radius="md" withBorder className="tray-settings-card">
@@ -22669,6 +22274,7 @@ export default function App() {
                     </Alert>
                   )}
 
+                  {deleteNotice && <Alert role="status" color={deleteNotice.error ? 'red' : 'teal'}>{deleteNotice.text}</Alert>}
                   {trayDayEditorReports.length ? (
                     <Stack gap="xs" className="tray-day-editor-list">
                       {trayDayEditorReports.map(report => {
@@ -22784,12 +22390,7 @@ export default function App() {
                                       color="red"
                                       loading={deleteLoading}
                                       onClick={() => {
-                                        const hasJiraWorklog = Boolean(
-                                          findJiraLoggedEntry(jiraLoggedEntries, report, dateKey)
-                                        )
-                                        const message = hasJiraWorklog
-                                          ? 'Delete this report and its linked Jira worklog?'
-                                          : 'Delete this report?'
+                                        const message = 'Delete this report from HRS and Supabase, and remove its Jira worklog if linked?'
                                         if (!window.confirm(message)) return
                                         void deleteReportEntry(dateKey, report.dayIndex)
                                       }}
@@ -23378,45 +22979,8 @@ export default function App() {
               </Group>
 
 	              <Card radius="md" withBorder className="tray-settings-meetings-card">
-	                <Stack gap="sm">
-	                  <Group justify="space-between" align="center" wrap="nowrap">
-	                    <Text fw={700}>Access</Text>
-	                    <Badge
-	                      color={meetingsUsername.trim() && meetingsPassword ? 'teal' : 'gray'}
-	                      variant="light"
-	                    >
-	                      {meetingsUsername.trim() && meetingsPassword ? 'Connected' : 'Disconnected'}
-	                    </Badge>
-	                  </Group>
-	                  {meetingsUsername.trim() && meetingsPassword ? (
-	                    <Group justify="flex-end">
-	                      <Button variant="subtle" color="red" onClick={clearMeetingsCredentials}>
-	                        Disconnect
-	                      </Button>
-	                    </Group>
-	                  ) : (
-	                    <>
-	                      <SimpleGrid cols={2} spacing="sm">
-	                        <TextInput
-	                          label="Domain user"
-	                          placeholder="you@company.com"
-	                          value={meetingsUsername}
-	                          onChange={event => setMeetingsUsername(event.currentTarget.value)}
-	                        />
-	                        <PasswordInput
-	                          label="Domain password"
-	                          placeholder="••••••••"
-	                          value={meetingsPassword}
-	                          onChange={event => setMeetingsPassword(event.currentTarget.value)}
-	                        />
-	                      </SimpleGrid>
-	                      <Text size="xs" c="dimmed">
-	                        *chrome must be installed to use this feature
-	                      </Text>
-	                    </>
-	                  )}
-	                </Stack>
-	              </Card>
+                    {renderMeetingsAccess()}
+                  </Card>
 
               <Group justify="space-between" align="center">
                 <Group gap="xs">
@@ -25974,6 +25538,7 @@ export default function App() {
                               </Alert>
                             )}
 
+                      {deleteNotice && !bulkActionError && <Alert role="status" color={deleteNotice.error ? 'red' : 'teal'}>{deleteNotice.text}</Alert>}
                       {bulkActionError && (
                         <Alert color="red" variant="light" radius="md">
                           {bulkActionError}
@@ -26000,7 +25565,7 @@ export default function App() {
                               onClick={() =>
                                 bulkLogToJira(
                                   filteredReportItems.filter(item =>
-                                    selectedReportEntries[getReportEntryKey(item, item.dateKey)]
+                                    selectedReportEntries[deletionSelectionKey(item)]
                                   )
                                 )
                               }
@@ -26012,10 +25577,10 @@ export default function App() {
                               variant="outline"
                               color="red"
                               onClick={() =>
-                                window.confirm('Delete selected logs?') &&
+                                window.confirm('Delete the selected reports from HRS and Supabase, including linked Jira worklogs?') &&
                                 bulkDeleteReports(
                                   filteredReportItems.filter(item =>
-                                    selectedReportEntries[getReportEntryKey(item, item.dateKey)]
+                                    selectedReportEntries[deletionSelectionKey(item)]
                                   )
                                 )
                               }
@@ -26192,24 +25757,7 @@ export default function App() {
                   ) : (
                     <>
                       <Collapse in={meetingsCredentialsOpen} transitionDuration={200}>
-                        <SimpleGrid
-                          cols={{ base: 1, sm: 2 }}
-                          spacing="md"
-                          className="meetings-credentials"
-                        >
-                          <TextInput
-                            label="Domain User"
-                            placeholder="you@company.com"
-                            value={meetingsUsername}
-                            onChange={event => setMeetingsUsername(event.currentTarget.value)}
-                          />
-                          <PasswordInput
-                            label="Domain Password"
-                            placeholder="••••••••"
-                            value={meetingsPassword}
-                            onChange={event => setMeetingsPassword(event.currentTarget.value)}
-                          />
-                        </SimpleGrid>
+                        {renderMeetingsAccess()}
                       </Collapse>
 
                       {meetingsProgress && (
@@ -26840,7 +26388,7 @@ export default function App() {
               onClick={() =>
                 bulkEditReports(
                   filteredReportItems.filter(item =>
-                    selectedReportEntries[getReportEntryKey(item, item.dateKey)]
+                    selectedReportEntries[deletionSelectionKey(item)]
                   )
                 )
               }

@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import path from 'node:path'
 import {
+  validateCalendarPassword,
   validateEnum,
   validateExactObject,
   validateNumberRange,
@@ -222,11 +223,7 @@ export function registerMeetingsIpc() {
       max: 200,
       allowNull: true
     })
-    const password = validateOptionalString(safe.password, {
-      min: 0,
-      max: 300,
-      allowNull: true
-    })
+    const password = safe.password == null ? null : validateCalendarPassword(safe.password)
 
     const pythonRunner = resolvePythonRunner('meetings_fetch.py', REQUIRED_PACKAGES)
     const args = [...pythonRunner.args, '--browser', browser]
@@ -247,20 +244,32 @@ export function registerMeetingsIpc() {
     }
     return new Promise<MeetingsResult>((resolve, reject) => {
       const child = spawn(pythonRunner.bin, args, { env, windowsHide: true })
+      child.stdout.setEncoding('utf8')
+      child.stderr.setEncoding('utf8')
       const senderId = event.sender.id
       activeMeetingsRuns.set(senderId, { child, awaitingDuoAction: false })
       let stdout = ''
       let stderr = ''
       let stderrBuffer = ''
+      let receivedBytes = 0
+      let oversized = false
       child.stdout.on('data', data => {
-        stdout += data.toString()
+        if (oversized) return
+        receivedBytes += Buffer.byteLength(data, 'utf8')
+        if (receivedBytes > MAX_MEETINGS_JSON_BYTES) {
+          oversized = true
+          stdout = ''
+          child.kill()
+          return
+        }
+        stdout += data
       })
       child.stderr.on('data', data => {
         const text = data.toString()
-        stderr += text
+        stderr = (stderr + text).slice(-64 * 1024)
         stderrBuffer += text
         const lines = stderrBuffer.split(/\r?\n/)
-        stderrBuffer = lines.pop() ?? ''
+        stderrBuffer = (lines.pop() ?? '').slice(-4096)
         for (const line of lines) {
           const trimmed = sanitizeProgressLine(line)
           if (trimmed === DUO_ACTION_REQUIRED_SIGNAL) {
@@ -287,6 +296,7 @@ export function registerMeetingsIpc() {
         if (activeMeetingsRuns.get(senderId)?.child === child) {
           activeMeetingsRuns.delete(senderId)
         }
+        if (oversized) { reject(new Error('Meetings response exceeds the supported 25 MB limit.')); return }
         const remaining = sanitizeProgressLine(stderrBuffer)
         if (remaining && !shouldIgnoreProgressLine(remaining)) {
           event.sender.send('meetings:progress', remaining)

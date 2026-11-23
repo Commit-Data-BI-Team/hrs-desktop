@@ -3,6 +3,9 @@ from __future__ import annotations
 import sys
 
 def main() -> int:
+    if sys.argv[1:] in (["--calendar-import-check"], ["--calendar-import-check", "--windows-browser"]):
+        from calendar_import_check import main as check_import
+        return check_import("--windows-browser" in sys.argv[1:])
     if len(sys.argv) == 2 and sys.argv[1] == "--runtime-version":
         print("hrs-python-runtime-v1")
         return 0

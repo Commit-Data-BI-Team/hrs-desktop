@@ -1,5 +1,7 @@
 import { app, BrowserWindow, ipcMain, session, Session } from 'electron'
 import dayjs from 'dayjs'
+import { createHash } from 'node:crypto'
+import { adminSessionLogin, employeeFromSelfPage, employeeFromSelfPayload, selectSessionEmployee } from '../hrs/employeeIdentity'
 import { clearCustomAuth, getCustomAuth, setCustomAuth } from '../hrs/config'
 import { clearHrsCredentials, getHrsCredentials, setHrsCredentials } from '../hrs/credentials'
 import {
@@ -295,94 +297,6 @@ function extractBooleanIcon(rowHtml: string, className: string): boolean {
   return /alt=["']True["']/i.test(cell) || /icon-yes/i.test(cell)
 }
 
-function normalizeEmployeeIdentity(value: string | null | undefined): string {
-  return (value ?? '')
-    .toLowerCase()
-    .replace(/@.*$/, '')
-    .replace(/[^a-z0-9א-ת]+/gi, '')
-    .trim()
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
-}
-
-function readStringField(record: Record<string, unknown>, keys: string[]): string | null {
-  for (const key of keys) {
-    const value = record[key]
-    if (typeof value === 'string' && value.trim()) return value.trim()
-    if (typeof value === 'number' && Number.isFinite(value)) return String(value)
-  }
-  return null
-}
-
-function findIdentityInPayload(payload: unknown, depth = 0): HrsIdentity | null {
-  if (depth > 5) return null
-  if (Array.isArray(payload)) {
-    for (const item of payload) {
-      const result = findIdentityInPayload(item, depth + 1)
-      if (result?.employeeId) return result
-    }
-    return null
-  }
-  if (!isPlainObject(payload)) return null
-
-  const employeeId = readStringField(payload, [
-    'employee_id',
-    'employeeId',
-    'employee',
-    'user_id',
-    'userId',
-    'id'
-  ])
-  const employeeName = readStringField(payload, [
-    'employee_name',
-    'employeeName',
-    'full_name',
-    'fullName',
-    'name'
-  ])
-  const email = readStringField(payload, ['email', 'user_email', 'userEmail'])
-  const username = readStringField(payload, ['username', 'user_name', 'userName'])
-  if (employeeId && /^\d+$/.test(employeeId)) {
-    return {
-      employeeId,
-      employeeName,
-      email,
-      username,
-      source: 'api_payload'
-    }
-  }
-
-  for (const value of Object.values(payload)) {
-    const result = findIdentityInPayload(value, depth + 1)
-    if (result?.employeeId) return result
-  }
-  return null
-}
-
-function findIdentityInHtml(html: string): HrsIdentity | null {
-  const patterns = [
-    /\bemployee[_-]?id["']?\s*[:=]\s*["']?(\d{1,10})/i,
-    /\buser[_-]?id["']?\s*[:=]\s*["']?(\d{1,10})/i,
-    /employee_id=(\d{1,10})/i,
-    /user_id=(\d{1,10})/i
-  ]
-  for (const pattern of patterns) {
-    const employeeId = html.match(pattern)?.[1]
-    if (employeeId) {
-      return {
-        employeeId,
-        employeeName: null,
-        email: null,
-        username: null,
-        source: 'html'
-      }
-    }
-  }
-  return null
-}
-
 function parseEmployeeRows(html: string): EmployeeAdminItem[] {
   const tbody = html.match(/<tbody[^>]*>([\s\S]*?)<\/tbody>/i)?.[1] ?? ''
   const rows = Array.from(tbody.matchAll(/<tr[^>]*>([\s\S]*?)<\/tr>/gi)).map(match => match[1])
@@ -606,7 +520,7 @@ function validateEmployeeHoursPayload(payload: unknown) {
   return { employeeId, fromDate, toDate, customerId: customerIdRaw }
 }
 
-async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccessResult> {
+async function fetchEmployeeAccess(cookieHeader: string, searchForSelf = false): Promise<EmployeeAccessResult> {
   console.log('[EMPLOYEES ACCESS DEBUG] probing employee admin page')
   const res = await fetch(EMPLOYEE_ADMIN_URL, {
     headers: {
@@ -637,8 +551,8 @@ async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccess
 
   const html = await res.text()
   const looksLikeEmployeeAdmin =
-    /Select employee to change/i.test(html) &&
-    /id=["']result_list["']/i.test(html) &&
+    /<table\b[^>]*\bid=["']result_list["']/i.test(html) &&
+    /\bfield-(?:username|email)\b/i.test(html) &&
     /field-full_name/i.test(html)
   if (!looksLikeEmployeeAdmin) {
     console.log('[EMPLOYEES ACCESS DEBUG] employee admin markers missing')
@@ -654,14 +568,23 @@ async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccess
   }
 
   const employees = parseEmployeeRows(html)
-  const creds = await getHrsCredentials()
-  const loginIdentity = normalizeEmployeeIdentity(creds.username)
-  const currentEmployee =
-    employees.find(employee => normalizeEmployeeIdentity(employee.username) === loginIdentity) ??
-    employees.find(employee => normalizeEmployeeIdentity(employee.email) === loginIdentity)
+  const login = adminSessionLogin(html)
+  let currentEmployee = selectSessionEmployee(employees, login)
+  // A paginated directory may not include the signed-in user on its first page.
+  if (searchForSelf && !currentEmployee && login && /class=["'][^"']*\bpaginator\b/i.test(html)) {
+    const search = new URL(EMPLOYEE_ADMIN_URL)
+    search.searchParams.set('q', login)
+    const hit = await fetch(search, {
+      headers: { Cookie: cookieHeader, Accept: 'text/html' }, redirect: 'error', signal: AbortSignal.timeout(10000)
+    })
+    if (hit.ok) {
+      const page = await hit.text()
+      if (adminSessionLogin(page) === login) currentEmployee = selectSessionEmployee(parseEmployeeRows(page), login)
+    }
+  }
   const currentEmployeeName = currentEmployee?.fullName ?? null
   const directReports = currentEmployeeName
-    ? employees.filter(employee => employee.id !== currentEmployee.id && employee.reportsTo === currentEmployeeName)
+    ? employees.filter(employee => employee.id !== currentEmployee?.id && employee.reportsTo === currentEmployeeName)
     : []
   const visibleEmployees = directReports.length
     ? directReports
@@ -682,20 +605,30 @@ async function fetchEmployeeAccess(cookieHeader: string): Promise<EmployeeAccess
   }
 }
 
+export async function getSessionHrsIdentity(fresh = false): Promise<HrsIdentity> {
+  const cookie = await getCookieHeader(getLoginSession())
+  const key = 'identity:' + createHash('sha256').update(cookie).digest('hex')
+  const cached = getCachedValue<HrsIdentity>(key)
+  if (!fresh && cached) return cached
+  const identity = await resolveHrsIdentity()
+  if (cookie !== await getCookieHeader(getLoginSession())) throw new Error('HRS session changed. Try again.')
+  setCachedValue(key, identity.employeeId ? identity : null)
+  return identity
+}
+
 async function resolveHrsIdentity(): Promise<HrsIdentity> {
   const loginSession = getLoginSession()
   const cookieHeader = await getCookieHeader(loginSession)
-  const creds = await getHrsCredentials()
 
   try {
-    const employeeAccess = await fetchEmployeeAccess(cookieHeader)
+    const employeeAccess = await fetchEmployeeAccess(cookieHeader, true)
     const current = employeeAccess.currentEmployee
     if (current?.id) {
       return {
         employeeId: current.id,
         employeeName: current.fullName || employeeAccess.currentEmployeeName,
         email: current.email || null,
-        username: current.username || creds.username,
+        username: current.username || null,
         source: 'employee_admin'
       }
     }
@@ -720,11 +653,11 @@ async function resolveHrsIdentity(): Promise<HrsIdentity> {
     )
     if (res.ok) {
       const payload = await res.json()
-      const identity = findIdentityInPayload(payload)
+      const identity = employeeFromSelfPayload(payload)
       if (identity?.employeeId) {
         return {
           ...identity,
-          username: identity.username ?? creds.username ?? null
+          source: 'api_payload'
         }
       }
     }
@@ -738,6 +671,15 @@ async function resolveHrsIdentity(): Promise<HrsIdentity> {
 
   try {
     const customAuth = await ensureCustomAuth(loginSession)
+    const date = getLocalIsoDate()
+    const report = await fetch(`${HRS_ORIGIN}/api/getReports/?startDate=${date}&endDate=${date}`, {
+      headers: { Cookie: cookieHeader, CustomAuth: customAuth, Accept: 'application/json' },
+      redirect: 'manual', signal: AbortSignal.timeout(10000)
+    }).catch(() => null)
+    if (report?.ok) {
+      const identity = employeeFromSelfPayload(await report.json().catch(() => null))
+      if (identity) return { ...identity, source: 'api_payload' }
+    }
     const reactUrl = `${HRS_ORIGIN}/react/hrs/hoursreporting/?key=${encodeURIComponent(customAuth)}`
     const res = await fetch(reactUrl, {
       headers: {
@@ -747,11 +689,11 @@ async function resolveHrsIdentity(): Promise<HrsIdentity> {
     })
     if (res.ok) {
       const html = await res.text()
-      const identity = findIdentityInHtml(html)
+      const identity = employeeFromSelfPage(html)
       if (identity?.employeeId) {
         return {
           ...identity,
-          username: creds.username ?? null
+          source: 'html'
         }
       }
     }
@@ -767,8 +709,8 @@ async function resolveHrsIdentity(): Promise<HrsIdentity> {
     employeeId: null,
     employeeName: null,
     email: null,
-    username: creds.username ?? null,
-    source: creds.username ? 'credentials' : 'none'
+    username: null,
+    source: 'none'
   }
 }
 
@@ -1059,13 +1001,13 @@ export function registerHrsIpc(
     }
   })
 
-  ipcMain.handle('hrs:getWorkLogs', async (_event, date?: string) => {
+  ipcMain.handle('hrs:getWorkLogs', async (_event, date?: string, fresh?: boolean) => {
     const cookieHeader = await getCookieHeader(getLoginSession())
 
     const targetDate = date ? validateDate(date) : getLocalIsoDate()
     const cacheKey = `worklogs:${targetDate}`
     const cached = getCachedValue(cacheKey)
-    if (cached) return cached
+    if (fresh !== true && cached) return cached
     const res = await fetch(
       `${HRS_ORIGIN}/api/user_work_logs/?date=${encodeURIComponent(targetDate)}`,
       {
@@ -1089,7 +1031,7 @@ export function registerHrsIpc(
     return payload
   })
 
-  ipcMain.handle('hrs:getReports', async (_event, startDate: string, endDate: string) => {
+  ipcMain.handle('hrs:getReports', async (_event, startDate: string, endDate: string, fresh = false) => {
     const safeStartDate = validateDate(startDate)
     const safeEndDate = validateDate(endDate)
     const loginSession = getLoginSession()
@@ -1097,7 +1039,7 @@ export function registerHrsIpc(
     const cookieHeader = await getCookieHeader(loginSession)
     const cacheKey = `reports:${safeStartDate}:${safeEndDate}`
     const cached = getCachedValue(cacheKey)
-    if (cached) return cached
+    if (!fresh && cached) return cached
 
     const res = await fetch(
       `${HRS_ORIGIN}/api/getReports/?startDate=${encodeURIComponent(safeStartDate)}&endDate=${encodeURIComponent(safeEndDate)}`,
@@ -1119,6 +1061,7 @@ export function registerHrsIpc(
     }
 
     const payload = await res.json()
+    if (fresh && cookieHeader !== await getCookieHeader(loginSession)) throw new Error('HRS session changed. Retry sync.')
     setCachedValue(cacheKey, payload)
     return payload
   })
@@ -1132,7 +1075,7 @@ export function registerHrsIpc(
     return result
   })
 
-  ipcMain.handle('hrs:getIdentity', async () => resolveHrsIdentity())
+  ipcMain.handle('hrs:getIdentity', (_event, fresh?: boolean) => getSessionHrsIdentity(fresh === true))
 
   ipcMain.handle('hrs:getEmployeeHoursReport', async (_event, payload: unknown) => {
     const safePayload = validateEmployeeHoursPayload(payload)

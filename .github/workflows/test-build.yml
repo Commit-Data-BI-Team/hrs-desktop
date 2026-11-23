@@ -83,6 +83,9 @@ jobs:
       
       - name: 🪟 Build Windows 64-bit
         run: npm run dist:win:x64 -- --publish never
+
+      - name: Verify meeting import from the packaged Windows runtime
+        run: node scripts/verify-packaged-calendar.mjs
       
       - name: ✅ Verify output
         run: |

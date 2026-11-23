@@ -119,4 +119,11 @@ const verification = spawnSync(executable, ['--runtime-version'], {
 if (verification.status !== 0 || !String(verification.stdout).includes('hrs-python-runtime-v1')) {
   throw new Error(`Bundled Python runtime verification failed: ${executable}`)
 }
+// --runtime-version alone does not import the calendar dependencies or TZ data.
+const calendar = spawnSync(executable, ['--calendar-import-check'], {
+  encoding:'utf8', windowsHide:true, timeout:30000
+})
+if (calendar.status !== 0 || JSON.parse(calendar.stdout || '{}').count !== 2) {
+  throw new Error('Bundled calendar import fixture failed: '+String(calendar.stderr || '').slice(-600))
+}
 console.log(`Bundled Python runtime ready: ${executable}`)

@@ -655,10 +655,10 @@ type HrsApi = {
   clearCredentials: () => Promise<boolean>
   autoLogin: () => Promise<boolean>
   checkSession: () => Promise<boolean>
-  getWorkLogs: (date?: string) => Promise<unknown[]>
-  getReports: (startDate: string, endDate: string) => Promise<MonthlyReport>
+  getWorkLogs: (date?: string, fresh?: boolean) => Promise<unknown[]>
+  getReports: (startDate: string, endDate: string, fresh?: boolean) => Promise<MonthlyReport>
   getEmployees: () => Promise<EmployeeAccessResult>
-  getHrsIdentity: () => Promise<HrsIdentity>
+  getHrsIdentity: (fresh?: boolean) => Promise<HrsIdentity>
   getEmployeeHoursReport: (payload: {
     employeeId: string
     fromDate: string
@@ -666,6 +666,22 @@ type HrsApi = {
     customerId?: string
   }) => Promise<EmployeeHoursReport>
   logWork: (payload: LogWorkPayload) => Promise<boolean>
+  submitIntegratedWork?: (payload: {
+    date: string
+    taskId: number
+    from: string
+    to: string
+    comment: string
+    reportingFrom: string
+    sharedTaskId: string | null
+    logToJira: boolean
+    jiraIssueKey: string | null
+  }) => Promise<{
+    operationId: string
+    hrs: string
+    supabase: string
+    jira: string
+  }>
   deleteLog: (date: string) => Promise<boolean>
   getJiraStatus: () => Promise<JiraStatus>
   setJiraCredentials: (email: string, token: string) => Promise<boolean>
@@ -730,7 +746,7 @@ type HrsApi = {
     items: JiraWorkItemDetail[]
     partial: boolean
   }>
-  getJiraIssueWorklogs: (issueKey: string) => Promise<JiraWorklogEntry[]>
+  getJiraIssueWorklogs: (issueKey: string, ownOnly?: boolean) => Promise<JiraWorklogEntry[]>
   findJiraWorklogsForDate: (date: string) => Promise<{
     worklogs: Array<JiraWorklogEntry & { issueKey: string }>
     partial: boolean
@@ -765,12 +781,9 @@ type HrsApi = {
   resendSupabaseConfirmation: (email: string) => Promise<boolean>
   signOutSupabase: () => Promise<boolean>
   claimSupabaseManager: (payload: {
+    expectedProfileId: string
     displayName?: string
-    employeeId?: string | number | null
-  }) => Promise<SupabaseProfile>
-  updateSupabaseProfile: (payload: {
-    displayName?: string
-    employeeId?: string | number | null
+    employeeId: number
   }) => Promise<SupabaseProfile>
   getSupabaseWorkReports: (
     startDate: string,
@@ -819,6 +832,8 @@ type HrsApi = {
     completed: boolean
   ) => Promise<{ completedAt: string | null }>
   syncSupabaseWorkReports: (payload: {
+    expectedProfileId: string
+    coveredDates: string[]
     startDate: string
     endDate: string
     employeeId?: string | number | null

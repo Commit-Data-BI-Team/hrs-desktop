@@ -63,11 +63,11 @@ function handleConfirmationRequest(request: IncomingMessage, response: ServerRes
   sendConfirmationPage(response, request.method === 'HEAD')
 }
 
-function listenForConfirmations(host: string) {
+export function listenForConfirmations(host: 'localhost' | '127.0.0.1', port: 3000 | 0 = 3000) {
   return new Promise<http.Server>((resolve, reject) => {
     const server = http.createServer(handleConfirmationRequest)
     server.once('error', reject)
-    server.listen({ host, port: 3000 }, () => {
+    server.listen({ host, port }, () => {
       server.removeListener('error', reject)
       server.unref()
       resolve(server)

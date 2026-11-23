@@ -41,4 +41,5 @@ jobs:
       - name: Run Playwright smoke tests
         env:
           E2E_USE_FILE: '1'
-        run: npm run test:e2e
+        # Tray focus is OS-wide. Isolate the desktop tests from one another.
+        run: npx playwright test --workers=1

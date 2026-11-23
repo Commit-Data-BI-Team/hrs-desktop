@@ -555,18 +555,35 @@ def build_driver(browser: str, headless: bool):
     return webdriver.Safari()
 
 
-def fetch_events(url: str, headers: dict) -> list[dict]:
+def fetch_events(url: str, headers: dict, *, get=None, sleep=time.sleep) -> list[dict]:
+    get = get or requests.get
     events = []
+    seen = set()
     while url:
-        response = requests.get(url, headers=headers, timeout=60)
-        if response.status_code == 200:
-            response_json = response.json()
-            events.extend(response_json.get("value", []))
-            url = response_json.get("@odata.nextLink")
-        else:
-            raise RuntimeError(
-                f"Graph calendar request failed {response.status_code}: {response.text[:500]}"
-            )
+        parsed = urlparse(url)
+        if parsed.scheme != "https" or parsed.netloc.lower() not in ("graph.microsoft.com", "graph.microsoft.com:443") or parsed.fragment:
+            raise RuntimeError("Invalid Microsoft Graph calendar continuation.")
+        if url in seen or len(seen) >= 200:
+            raise RuntimeError("Microsoft Graph calendar pagination did not finish.")
+        seen.add(url)
+        for attempt in range(3):
+            response = get(url, headers=headers, timeout=60, allow_redirects=False)
+            if response.status_code == 200:
+                break
+            retry = response.headers.get("Retry-After", str(1 << attempt))
+            if response.status_code in (429, 503) and attempt < 2 and retry.isdigit() and len(retry) < 3 and int(retry) <= 10:
+                sleep(int(retry))
+                continue
+            raise RuntimeError(f"Graph calendar request failed ({response.status_code}); no partial month was imported.")
+        page = response.json()
+        if not isinstance(page, dict) or not isinstance(page.get("value"), list):
+            raise RuntimeError("Microsoft Graph returned an invalid calendar page; no partial month was imported.")
+        events.extend(page["value"])
+        if len(events) > 5000:
+            raise RuntimeError("Calendar month exceeds the supported 5000 events.")
+        url = page.get("@odata.nextLink")
+        if url is not None and (not isinstance(url, str) or not url):
+            raise RuntimeError("Invalid Microsoft Graph calendar continuation.")
     return events
 
 
@@ -921,7 +938,7 @@ def microsoft_sign_in_error_message(driver) -> str | None:
     ):
         return (
             "Microsoft rejected the saved username or password. "
-            "Open Meetings > Edit credentials, enter the current Microsoft password, and try again."
+            "Open Settings > Access > Meetings access, edit and save the current Microsoft password, then sync again."
         )
     if any(
         marker in body_text
@@ -933,7 +950,7 @@ def microsoft_sign_in_error_message(driver) -> str | None:
     ):
         return (
             "Microsoft could not find the saved account. "
-            "Open Meetings > Edit credentials and verify the full email address."
+            "Open Settings > Access > Meetings access and verify the saved username."
         )
     if "password has expired" in body_text or "change your password" in body_text:
         return (
@@ -1705,7 +1722,7 @@ def wait_for_graph_explorer_after_duo(driver, timeout_seconds: int = 60) -> bool
 
 def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
     username = os.getenv("MS_USERNAME", "").strip()
-    password = os.getenv("MS_PASSWORD", "").strip()
+    password = os.getenv("MS_PASSWORD", "")
     duo_clicked = False
     auth_window_closed = False
 
@@ -1961,10 +1978,92 @@ def obtain_graph_token_via_browser(browser: str, headless: bool) -> str:
         driver.quit()
 
 
+def ipc_text(value, max_units: int) -> str:
+    # Electron validates JS UTF-16 lengths. Never split an astral character.
+    if not isinstance(value, str):
+        return ""
+    return value.strip().encode("utf-16-le", errors="replace")[:max_units * 2].decode("utf-16-le", errors="ignore")
+
+
+def normalize_calendar_events(all_events, timezone_name, attendance_lookup=None):
+    meetings = []
+    tz = pytz.timezone(timezone_name)
+    skipped_events = 0
+    for index, event in enumerate(all_events):
+        try:
+            if not isinstance(event, dict):
+                skipped_events += 1
+                log(f"Skipping malformed calendar event {index + 1}: payload is {type(event).__name__}.")
+                continue
+
+            raw_subject = event.get("subject")
+            subject = ipc_text(raw_subject, 500) or "No Subject"
+            start_part = event.get("start") if isinstance(event.get("start"), dict) else None
+            end_part = event.get("end") if isinstance(event.get("end"), dict) else None
+            attendees_raw = event.get("attendees")
+            if not isinstance(attendees_raw, list):
+                attendees_raw = []
+
+            attendee_names = []
+            attendee_emails = []
+            for attendee in attendees_raw:
+                if not isinstance(attendee, dict):
+                    continue
+                email_info = attendee.get("emailAddress") or {}
+                if not isinstance(email_info, dict):
+                    continue
+                name = email_info.get("name")
+                address = email_info.get("address")
+                if isinstance(name, str) and name:
+                    attendee_names.append(ipc_text(name, 500))
+                if isinstance(address, str) and address and len(address.encode("utf-16-le")) <= 640:
+                    attendee_emails.append(address)
+            attendees = ipc_text(", ".join(attendee_names), 20_000)
+
+            online_meeting = event.get("onlineMeeting") if isinstance(event.get("onlineMeeting"), dict) else {}
+            join_url = event.get("onlineMeetingUrl") or online_meeting.get("joinUrl")
+            if not isinstance(join_url, str):
+                join_url = None
+
+            start_local = parse_event_time(start_part, tz)
+            end_local = parse_event_time(end_part, tz)
+            if not start_local or not end_local:
+                skipped_events += 1
+                log(f"Skipping calendar event {index + 1}: invalid times.")
+                continue
+
+            attendance_info = attendance_lookup(join_url) if attendance_lookup else None
+            attendance_count = attendance_info[0] if attendance_info else None
+            attendance_emails = attendance_info[1] if attendance_info else []
+            meetings.append(
+                {
+                    "subject": subject,
+                    "startTime": start_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    "endTime": end_local.strftime("%Y-%m-%d %H:%M:%S"),
+                    "participants": attendees,
+                    "attendanceCount": attendance_count,
+                    "attendanceEmails": [email for email in attendance_emails if isinstance(email, str) and len(email.encode("utf-16-le")) <= 640][:1000],
+                    "attendeeEmails": attendee_emails[:1000],
+                }
+            )
+        except Exception as exc:
+            skipped_events += 1
+            log(
+                "Skipping calendar event after normalization error: "
+                f"item={index + 1} reason={exc.__class__.__name__}"
+            )
+
+    if skipped_events:
+        log(f"Skipped {skipped_events} malformed calendar events.")
+    if all_events and not meetings:
+        raise ValueError("Calendar returned events, but none had usable dates.")
+    return meetings
+
+
 def main() -> int:
     args = parse_args()
     username = os.getenv("MS_USERNAME", "").strip()
-    password = os.getenv("MS_PASSWORD", "").strip()
+    password = os.getenv("MS_PASSWORD", "")
 
     start_of_month, end_of_month, month_key = month_range(args.month, args.tz)
     api_url = (
@@ -1988,75 +2087,8 @@ def main() -> int:
     all_events = fetch_events(api_url, headers)
     log(f"Microsoft Graph returned {len(all_events)} raw calendar events.")
 
-    meetings = []
-    tz = pytz.timezone(args.tz)
-    skipped_events = 0
-    for index, event in enumerate(all_events):
-        try:
-            if not isinstance(event, dict):
-                skipped_events += 1
-                log(f"Skipping malformed calendar event {index + 1}: payload is {type(event).__name__}.")
-                continue
-
-            raw_subject = event.get("subject")
-            subject = raw_subject.strip() if isinstance(raw_subject, str) and raw_subject.strip() else "No Subject"
-            start_part = event.get("start") if isinstance(event.get("start"), dict) else None
-            end_part = event.get("end") if isinstance(event.get("end"), dict) else None
-            attendees_raw = event.get("attendees")
-            if not isinstance(attendees_raw, list):
-                attendees_raw = []
-
-            attendee_names = []
-            attendee_emails = []
-            for attendee in attendees_raw:
-                if not isinstance(attendee, dict):
-                    continue
-                email_info = attendee.get("emailAddress") or {}
-                if not isinstance(email_info, dict):
-                    continue
-                name = email_info.get("name")
-                address = email_info.get("address")
-                if isinstance(name, str) and name:
-                    attendee_names.append(name)
-                if isinstance(address, str) and address:
-                    attendee_emails.append(address)
-            attendees = ", ".join(attendee_names)
-
-            online_meeting = event.get("onlineMeeting") if isinstance(event.get("onlineMeeting"), dict) else {}
-            join_url = event.get("onlineMeetingUrl") or online_meeting.get("joinUrl")
-            if not isinstance(join_url, str):
-                join_url = None
-
-            start_local = parse_event_time(start_part, tz)
-            end_local = parse_event_time(end_part, tz)
-            if not start_local or not end_local:
-                skipped_events += 1
-                log(f"Skipping calendar event without valid times: {event_subject_for_log(event, index)}.")
-                continue
-
-            attendance_info = fetch_attendance(join_url, headers) if args.attendance else None
-            attendance_count = attendance_info[0] if attendance_info else None
-            attendance_emails = attendance_info[1] if attendance_info else []
-            meetings.append(
-                {
-                    "subject": subject,
-                    "startTime": start_local.strftime("%Y-%m-%d %H:%M:%S"),
-                    "endTime": end_local.strftime("%Y-%m-%d %H:%M:%S"),
-                    "participants": attendees,
-                    "attendanceCount": attendance_count,
-                    "attendanceEmails": attendance_emails,
-                    "attendeeEmails": attendee_emails,
-                }
-            )
-        except Exception as exc:
-            skipped_events += 1
-            log(
-                "Skipping calendar event after normalization error: "
-                f"{event_subject_for_log(event, index)} reason={exc.__class__.__name__}: {exc}"
-            )
-
-    if skipped_events:
-        log(f"Skipped {skipped_events} malformed calendar events.")
+    attendance_lookup = (lambda url: fetch_attendance(url, headers)) if args.attendance else None
+    meetings = normalize_calendar_events(all_events, args.tz, attendance_lookup)
 
     if args.csv:
         with open(args.csv, "w", newline="", encoding="utf-8") as csvfile:

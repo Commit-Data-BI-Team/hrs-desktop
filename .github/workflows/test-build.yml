@@ -83,6 +83,11 @@ jobs:
       
       - name: 🪟 Build Windows 64-bit
         run: npm run dist:win:x64 -- --publish never
+
+      - name: Verify meeting import from the NSIS-installed Windows runtime
+        run: node scripts/verify-packaged-calendar.mjs --install
+      - name: Verify the Windows tray saves only completed meeting credentials
+        run: npx playwright test tests/e2e/access-and-sync.spec.ts --grep "typing a meeting password" --workers=1 --reporter=list
       
       - name: ✅ Verify output
         run: |

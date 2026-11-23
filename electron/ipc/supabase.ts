@@ -12,6 +12,8 @@ import {
   SUPABASE_CONFIRMATION_REDIRECT_URL
 } from '../supabase/confirmationServer'
 import { mergeProjectUsageContributors } from '../../src/sharedProjects'
+import { checkPersonalSnapshotScope, confirmedDays, DIFFERENT_ACCOUNT, validEmployeeId } from '../../src/reportProfile'
+import { planPersonalWrites } from '../../src/personalReportInventory'
 
 type SupabaseProfile = {
   id: string
@@ -410,6 +412,7 @@ async function refreshSupabaseSession(client: SupabaseClient) {
 
 async function getAuthenticatedSupabaseUser(client: SupabaseClient): Promise<User | null> {
   let result = await client.auth.getUser()
+  if (result.error?.name === 'AuthSessionMissingError') return null
   if (result.error && isRefreshableSupabaseAuthError(result.error)) {
     if (await refreshSupabaseSession(client)) result = await client.auth.getUser()
   }
@@ -417,13 +420,29 @@ async function getAuthenticatedSupabaseUser(client: SupabaseClient): Promise<Use
   return result.data.user ?? null
 }
 
-async function getProfile(client: SupabaseClient): Promise<SupabaseProfile | null> {
-  const user = await getAuthenticatedSupabaseUser(client)
+async function getProfile(client: SupabaseClient, signedInUser?: User): Promise<SupabaseProfile | null> {
+  const user = signedInUser ?? await getAuthenticatedSupabaseUser(client)
   if (!user) return null
-  const { data, error } = await client
+  return readProfile(client.schema('public'), user.id)
+}
+
+async function reportDbForAccount(client: SupabaseClient, expectedId: string) {
+  const { data, error } = await client.auth.getSession()
+  if (error || !data.session || data.session.user.id !== expectedId) {
+    throw new Error('The Supabase account changed. Check your sign-in and retry sync.')
+  }
+  // schema() creates a separate PostgREST client. Pin its authorization to
+  // this operation; don't switch actors between reading the profile and writing.
+  const db = client.schema('public')
+  db.headers.set('Authorization', 'Bearer ' + data.session.access_token)
+  return db
+}
+
+async function readProfile(db: Pick<SupabaseClient, 'from'>, userId: string): Promise<SupabaseProfile | null> {
+  const { data, error } = await db
     .from('profiles')
     .select('id,email,employee_id,display_name,role')
-    .eq('id', user.id)
+    .eq('id', userId)
     .maybeSingle()
   if (error) throw new Error(error.message)
   return (data as SupabaseProfile | null) ?? null
@@ -557,7 +576,7 @@ export function registerSupabaseIpc() {
     const config = getSupabaseConfig()
     const client = await createSupabaseClient()
     const user = await getAuthenticatedSupabaseUser(client)
-    const profile = user ? await getProfile(client) : null
+    const profile = user ? await getProfile(client, user) : null
     return {
       configured: Boolean(config.url && config.publishableKey),
       url: config.url,
@@ -633,36 +652,18 @@ export function registerSupabaseIpc() {
   })
 
   ipcMain.handle('supabase:claimManager', async (_event, payload: unknown) => {
-    const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-    const client = await createSupabaseClient()
-    const { data, error } = await client.rpc('claim_first_manager', {
-      display_name_input: cleanNullableString(record.displayName, 250),
-      employee_id_input: cleanNumber(record.employeeId)
+    const r = payload && typeof payload === 'object' ? payload as Record<string, unknown> : {}
+    const auth = await createSupabaseClient()
+    const user = await getAuthenticatedSupabaseUser(auth)
+    if (!user || r.expectedProfileId !== user.id) throw Error(DIFFERENT_ACCOUNT)
+    const db = await reportDbForAccount(auth, user.id)
+    const profile = await readProfile(db, user.id)
+    if (!profile || !validEmployeeId(profile.employee_id) || r.employeeId !== profile.employee_id) throw Error(DIFFERENT_ACCOUNT)
+    // Role bootstrap must never assign/overwrite the administrator's numeric mapping.
+    const {data,error} = await db.rpc('claim_first_manager', {
+      display_name_input: cleanNullableString(r.displayName, 250), employee_id_input: null
     })
-    if (error) throw new Error(error.message)
-    return data as SupabaseProfile
-  })
-
-  ipcMain.handle('supabase:updateProfile', async (_event, payload: unknown) => {
-    const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
-    if (!app.isPackaged && process.env.HRS_SPRINT_E2E === '1') {
-      const role = process.env.HRS_SPRINT_E2E_ROLE === 'employee' ? 'employee' : 'manager'
-      return {
-        id: `e2e-${role}`,
-        email: `${role}@example.com`,
-        employee_id: cleanNumber(record.employeeId) ?? (role === 'manager' ? 1 : 2),
-        display_name:
-          cleanNullableString(record.displayName, 250) ??
-          (role === 'manager' ? 'E2E Manager' : 'E2E Employee'),
-        role
-      } satisfies SupabaseProfile
-    }
-    const client = await createSupabaseClient()
-    const { data, error } = await client.rpc('update_own_profile', {
-      display_name_input: cleanNullableString(record.displayName, 250),
-      employee_id_input: cleanNumber(record.employeeId)
-    })
-    if (error) throw new Error(error.message)
+    if (error) throw Error(error.message)
     return data as SupabaseProfile
   })
 
@@ -1261,29 +1262,14 @@ export function registerSupabaseIpc() {
     const endDate = validateDate(record.endDate)
     const rows = normalizeReportRows(record.rows)
     const requestedEmployeeId = cleanNumber(record.employeeId)
-    const client = await createSupabaseClient()
-    const user = await getAuthenticatedSupabaseUser(client)
-    if (!user) throw new Error('Supabase auth required')
-    const profile = await getProfile(client)
-    if (!profile?.employee_id) {
-      throw new Error('Supabase profile is missing an HRS employee identity')
-    }
-    if (
-      profile.role !== 'manager' &&
-      (requestedEmployeeId !== profile.employee_id ||
-        rows.some(row => row.employee_id !== profile.employee_id))
-    ) {
-      throw new Error('Employees may only synchronize their own HRS reports')
-    }
-    const employeeIds = Array.from(
-      new Set(
-        [
-          requestedEmployeeId,
-          ...(rows.length ? rows.map(row => row.employee_id) : []),
-          profile?.employee_id ?? null
-        ].filter((value): value is number => typeof value === 'number' && Number.isFinite(value))
-      )
-    )
+    const authClient = await createSupabaseClient()
+    const user = await getAuthenticatedSupabaseUser(authClient)
+    if (!user) throw new Error('Sign in to Supabase in Settings → Access before syncing.')
+    const client = await reportDbForAccount(authClient, user.id)
+    const profile = await readProfile(client, user.id)
+    // Refresh the server-owned profile at the write boundary. Do not query HRS for an ID.
+    const employeeId = checkPersonalSnapshotScope(profile, user.id, record.expectedProfileId, requestedEmployeeId, startDate, endDate, rows)
+    const covered = confirmedDays(record.coveredDates, startDate, endDate, rows)
 
     const { data: syncRun, error: syncRunError } = await client
       .from('sync_runs')
@@ -1299,34 +1285,35 @@ export function registerSupabaseIpc() {
       .single()
     if (syncRunError) throw new Error(syncRunError.message)
 
-    const { data: existingRowsWithSharedTask, error: existingRowsError } = employeeIds.length
-      ? await client
-          .from('work_reports')
-          .select('id,shared_fictive_task_id')
-          .eq('source', 'hrs')
-          .gte('report_date', startDate)
-          .lte('report_date', endDate)
-          .in('employee_id', employeeIds)
-      : { data: [], error: null }
-    const sharedColumnAvailable = !existingRowsError
-    if (existingRowsError && !isSharedSchemaMissing(existingRowsError)) {
-      throw new Error(existingRowsError.message)
+    type Existing = { id: string; synced_by: string | null; report_date: string; shared_fictive_task_id?: string | null } & Record<string, unknown>
+    const readExisting = async (shared: boolean) => {
+      const rows: Existing[] = []
+      let last = ''
+      for (;;) {
+        const table = client.from('work_reports')
+        const fields = 'id,synced_by,updated_at,employee_id,employee_name,customer,project,task_id,task_name,report_date,seconds,comment,reporting_from,from_time,to_time,source' as const
+        let query = (shared ? table.select(`${fields},shared_fictive_task_id` as const) : table.select(fields))
+          .in('source',['hrs','hrs_manual']).eq('employee_id', employeeId)
+          .gte('report_date', startDate).lte('report_date', endDate).order('id').limit(500)
+        if (last) query = query.gt('id', last)
+        const {data,error} = await query
+        if (error) throw error
+        if (!Array.isArray(data)) throw new Error('Supabase did not return the report inventory.')
+        const page: Existing[] = data
+        if (!page.length) return rows
+        rows.push(...page)
+        const next = page[page.length - 1].id
+        if (!next || next === last) throw new Error('Supabase did not return a complete report inventory.')
+        last = next
+      }
     }
-    let existingRows = existingRowsWithSharedTask as
-      | Array<{ id: string; shared_fictive_task_id?: string | null }>
-      | null
-    if (existingRowsError && isSharedSchemaMissing(existingRowsError)) {
-      const legacyResult = employeeIds.length
-        ? await client
-            .from('work_reports')
-            .select('id')
-            .eq('source', 'hrs')
-            .gte('report_date', startDate)
-            .lte('report_date', endDate)
-            .in('employee_id', employeeIds)
-        : { data: [], error: null }
-      if (legacyResult.error) throw new Error(legacyResult.error.message)
-      existingRows = legacyResult.data as Array<{ id: string }>
+    let sharedColumnAvailable = true
+    let existingRows: Existing[]
+    try { existingRows = await readExisting(true) }
+    catch (e) {
+      if (!isSharedSchemaMissing(e as {message: string})) throw e
+      sharedColumnAvailable = false
+      existingRows = await readExisting(false)
     }
     const existingSharedTaskById = new Map(
       (existingRows ?? [])
@@ -1348,31 +1335,46 @@ export function registerSupabaseIpc() {
         ...auditFields
       }
     })
-    let error: { message: string } | null = null
-
-    if (rowsWithAudit.length) {
-      const upsertResult = await client.from('work_reports').upsert(rowsWithAudit, {
-        onConflict: 'id'
-      })
-      error = upsertResult.error
+    const plan = planPersonalWrites(rowsWithAudit, existingRows, user.id, covered)
+    let error: {message:string} | null = null
+    const verifyMapping = async () => {
+      const current = await readProfile(client, user.id)
+      if (current?.employee_id !== employeeId) throw Error(DIFFERENT_ACCOUNT)
     }
-
-    if (!error) {
-      const incomingIds = new Set(rowsWithAudit.map(row => row.id))
-      const staleIds = (existingRows ?? [])
-        .map(row => row.id)
-        .filter(id => !incomingIds.has(id))
-
-      for (let index = 0; index < staleIds.length && !error; index += 100) {
-        const staleBatch = staleIds.slice(index, index + 100)
-        const deleteResult = await client
-          .from('work_reports')
-          .delete()
-          .in('id', staleBatch)
-        error = deleteResult.error
+    try {
+      // Never take over an existing PK. If another writer inserted it after
+      // our read, retry from a new snapshot; the next run inspects its owner.
+      for (const {previous,row} of plan.adopt) {
+        await verifyMapping()
+        if (typeof previous.updated_at!=='string') throw Error('Ownership review required: the manual import has no row version.')
+        const payload=sharedColumnAvailable && !('shared_fictive_task_id' in row && row.shared_fictive_task_id) && previous.shared_fictive_task_id
+          ? {...row, shared_fictive_task_id:previous.shared_fictive_task_id, task_name:previous.task_name} : row
+        const put=await client.from('work_reports').update(payload).eq('id',previous.id).eq('employee_id',employeeId)
+          .eq('source','hrs_manual').is('synced_by',null).eq('report_date',row.report_date).eq('updated_at',previous.updated_at).select('id')
+        if (put.error || put.data?.length!==1 || put.data[0]?.id!==row.id) throw Error('Manual import changed during sync. Refresh before retrying.')
       }
-    }
-
+      for (let i=0; i<plan.creates.length; i+=75) {
+        await verifyMapping()
+        const batch=plan.creates.slice(i,i+75)
+        const put=await client.from('work_reports').upsert(batch,{onConflict:'id',ignoreDuplicates:true}).select('id')
+        if (put.error) throw Error(put.error.message)
+        if (put.data?.length!==batch.length) throw Error('A report key already exists. Refresh and retry; its owner was not changed.')
+      }
+      if (plan.updates.length) await verifyMapping()
+      for (const row of plan.updates) {
+        const put=await client.from('work_reports').update(row).eq('id',row.id)
+          .eq('employee_id',employeeId).eq('synced_by',user.id).eq('source','hrs').eq('report_date',row.report_date).select('id')
+        if (put.error || put.data?.length!==1) throw Error(put.error?.message || 'Report changed while synchronizing. Retry.')
+      }
+      for (let i=0; i<plan.stale.length; i+=40) {
+        await verifyMapping()
+        const batch=plan.stale.slice(i,i+40)
+        const del=await client.from('work_reports').delete().in('id',batch)
+          .eq('employee_id',employeeId).eq('synced_by',user.id).eq('source','hrs').in('report_date',[...covered]).select('id')
+        if (del.error || del.data?.length!==batch.length) throw Error(del.error?.message || 'Supabase did not confirm the stale rows. Retry.')
+      }
+      if (plan.review) throw Error('Ownership review required: '+plan.review+' existing reports were left unchanged. Other eligible reports have synced.')
+    } catch (e) { error={message:e instanceof Error ? e.message : 'Could not reconcile the personal reports.'} }
     await client
       .from('sync_runs')
       .update({

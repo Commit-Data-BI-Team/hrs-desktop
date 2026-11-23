@@ -1,4 +1,5 @@
 import Store from 'electron-store'
+import { validPendingScope } from '../../src/reportSyncScope'
 
 type IntegrationFavoritePerson = {
   key: string
@@ -261,14 +262,14 @@ export function setJiraLoggedEntries(entries: JiraLoggedEntries): JiraLoggedEntr
 export function getPendingReportSyncMonths(): string[] {
   return Array.from(
     new Set(
-      (store.get('pendingReportSyncMonths') ?? []).filter(month => /^\d{4}-\d{2}$/.test(month))
+      (store.get('pendingReportSyncMonths') ?? []).filter(validPendingScope)
     )
   ).sort()
 }
 
 export function setPendingReportSyncMonths(months: string[]): string[] {
   const normalized = Array.from(
-    new Set(months.filter(month => /^\d{4}-\d{2}$/.test(month)))
+    new Set(months.filter(validPendingScope))
   ).sort()
   store.set('pendingReportSyncMonths', normalized)
   return normalized

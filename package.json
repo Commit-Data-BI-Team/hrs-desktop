@@ -2,7 +2,7 @@
   "name": "hrs-desktop",
   "description": "HRS Desktop time logging app",
   "private": true,
-  "version": "1.0.21",
+  "version": "1.0.22",
   "author": "b4db1r3",
   "type": "module",
   "scripts": {
@@ -85,6 +85,8 @@
       "dist-electron/**",
       "build/**",
       "scripts/**",
+      "!scripts/hrs-report-rekey.mjs",
+      "!scripts/verify-packaged-calendar.mjs",
       "package.json"
     ],
     "asarUnpack": [

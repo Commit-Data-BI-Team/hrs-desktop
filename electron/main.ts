@@ -74,6 +74,8 @@ let trayPinned = false
 let isQuitting = false
 let openMainRequested = false
 const processBootAt = Date.now()
+// HRS is intentionally a tray-only desktop app. Do not allow environment flags
+// or renderer IPC to create the former full-page Main window.
 const startInTray = true
 const iconPath = path.join(app.getAppPath(), 'build', 'icon.icns')
 const trayIconCandidates = {
@@ -849,13 +851,8 @@ function hideMainWindowForFloating() {
 }
 
 function restoreMainWindowFromFloating() {
-  if (!mainWindow) return
-  if (process.platform === 'win32') return
-  mainWindow.setSkipTaskbar(true)
-  mainWindow.show()
-  if (mainWindow.isMinimized()) {
-    mainWindow.restore()
-  }
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
+  if (tray) showTrayWindow()
 }
 
 function hideMainWindowToTray() {
@@ -868,21 +865,8 @@ function hideMainWindowToTray() {
 }
 
 function showMainWindow() {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    createMainWindow(false)
-    void checkForUpdatesOnOpen('main window')
-    return
-  }
-  openMainRequested = true
-  if (mainWindow.isFullScreen()) mainWindow.setFullScreen(false)
-  if (mainWindow.isMaximized()) mainWindow.unmaximize()
-  mainWindow.setSkipTaskbar(true)
-  mainWindow.show()
-  if (mainWindow.isMinimized()) {
-    mainWindow.restore()
-  }
-  mainWindow.focus()
-  void checkForUpdatesOnOpen('main window')
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.hide()
+  if (tray) showTrayWindow()
 }
 
 function resizeMainWindowForView(size: { width: number; height: number }) {
@@ -959,6 +943,11 @@ function loadRendererWindow(
 }
 
 function createMainWindow(startHidden = false) {
+  if (startInTray) {
+    logWarn('[main] blocked creation of the retired large Main page')
+    if (tray) showTrayWindow()
+    return
+  }
   const fittedSize = fitWindowSizeToDisplay(mainWindowSize.width, mainWindowSize.height)
   mainWindow = new BrowserWindow({
     width: fittedSize.width,
@@ -1045,6 +1034,11 @@ function createMainWindow(startHidden = false) {
 }
 
 function createFloatingWindow() {
+  if (startInTray) {
+    logWarn('[main] blocked detached floating window in tray-only mode')
+    if (tray) showTrayWindow()
+    return
+  }
   if (floatingWindow) {
     floatingWindow.focus()
     return
@@ -1112,6 +1106,26 @@ function createTrayWindow() {
     trayOpenOnReady = false
     showTrayWindow()
   })
+  trayWindow.webContents.setWindowOpenHandler(({ url }) => {
+    try { logWarn('[security] blocked secondary window from tray', new URL(url).origin) }
+    catch { logWarn('[security] blocked malformed secondary window from tray') }
+    return { action: 'deny' }
+  })
+  trayWindow.webContents.on('will-navigate', (event, url) => {
+    try {
+      const target = new URL(url)
+      const fileTray = target.protocol === 'file:' &&
+        target.pathname.endsWith('/dist-renderer/index.html') &&
+        target.searchParams.get('tray') === '1'
+      const devOrigin = process.env.VITE_DEV_SERVER_URL
+        ? new URL(process.env.VITE_DEV_SERVER_URL).origin : null
+      const devTray = devOrigin !== null && target.origin === devOrigin &&
+        target.searchParams.get('tray') === '1'
+      if (fileTray || devTray) return
+    } catch {}
+    event.preventDefault()
+    logWarn('[security] blocked navigation away from the Tray renderer')
+  })
   trayWindow.on('blur', () => {
     const blurAt = Date.now()
     if (blurAt < traySuppressBlurUntil) {
@@ -1143,6 +1157,10 @@ function createDetachedWindow(
   height: number,
   title: string
 ) {
+  if (startInTray) {
+    logWarn('[main] blocked detached application window in tray-only mode', mode)
+    return null as unknown as BrowserWindow
+  }
   const fittedSize = fitWindowSizeToDisplay(width, height)
   const window = new BrowserWindow({
     width: fittedSize.width,
@@ -1189,6 +1207,7 @@ function createDetachedWindow(
 }
 
 function openReportsWindow() {
+  if (startInTray) { if (tray) showTrayWindow(); return }
   if (!reportsWindow || reportsWindow.isDestroyed()) {
     reportsWindow = createDetachedWindow(
       'reports',
@@ -1204,6 +1223,7 @@ function openReportsWindow() {
 }
 
 function openSettingsWindow() {
+  if (startInTray) { if (tray) showTrayWindow(); return }
   if (!settingsWindow || settingsWindow.isDestroyed()) {
     settingsWindow = createDetachedWindow(
       'settings',
@@ -1219,6 +1239,7 @@ function openSettingsWindow() {
 }
 
 function openMeetingsWindow() {
+  if (startInTray) { if (tray) showTrayWindow(); return }
   if (!meetingsWindow || meetingsWindow.isDestroyed()) {
     meetingsWindow = createDetachedWindow(
       'meetings',
@@ -1239,17 +1260,8 @@ function sendRequestedMainView() {
 }
 
 function openSprintView() {
-  requestedMainView = 'sprints'
-  const needsWindow = !mainWindow || mainWindow.isDestroyed()
-  showMainWindow()
-  if (!mainWindow || mainWindow.isDestroyed()) return
-  resizeMainWindowForView(sprintViewSize)
-  if (needsWindow || mainWindow.webContents.isLoadingMainFrame()) {
-    mainWindow.webContents.once('did-finish-load', sendRequestedMainView)
-  } else {
-    sendRequestedMainView()
-  }
-  if (trayWindow?.isVisible()) beginHideTrayWindow('open-main')
+  requestedMainView = 'default'
+  if (tray) showTrayWindow()
 }
 
 function getTrayWindowPosition() {
@@ -1507,30 +1519,26 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('app:openMainWindow', () => {
     requestedMainView = 'default'
-    showMainWindow()
-    resizeMainWindowForView(mainWindowSize)
-    sendRequestedMainView()
-    if (trayWindow?.isVisible()) {
-      beginHideTrayWindow('open-main')
-    }
+    if (!tray) return false
+    showTrayWindow()
     return true
   })
   ipcMain.handle('app:openReportsWindow', () => {
+    if (startInTray) { if (tray) showTrayWindow(); return false }
     openReportsWindow()
     return true
   })
   ipcMain.handle('app:openSettingsWindow', () => {
+    if (startInTray) { if (tray) showTrayWindow(); return false }
     openSettingsWindow()
     return true
   })
   ipcMain.handle('app:openMeetingsWindow', () => {
+    if (startInTray) { if (tray) showTrayWindow(); return false }
     openMeetingsWindow()
     return true
   })
-  ipcMain.handle('app:openSprintWindow', () => {
-    openSprintView()
-    return true
-  })
+  ipcMain.handle('app:openSprintWindow', () => false)
   ipcMain.handle('app:closeSprintWindow', () => {
     requestedMainView = 'default'
     resizeMainWindowForView(mainWindowSize)
@@ -1539,6 +1547,7 @@ app.whenReady().then(() => {
   })
   ipcMain.handle('app:getRequestedMainView', () => requestedMainView)
   ipcMain.handle('app:openFloatingTimer', () => {
+    if (startInTray) { if (tray) showTrayWindow(); return false }
     hideMainWindowForFloating()
     createFloatingWindow()
     return true
@@ -1613,7 +1622,7 @@ app.whenReady().then(() => {
     trayOpenOnReady = true
     createTrayWindow()
   } else {
-    createMainWindow(false)
+    logError('[main] tray initialization failed; refusing to open the large Main window')
   }
 })
 

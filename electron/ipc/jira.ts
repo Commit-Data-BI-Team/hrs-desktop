@@ -2340,9 +2340,14 @@ export function registerJiraIpc() {
     }
   })
 
-  ipcMain.handle('jira:getIssueWorklogs', async (_event, issueKey: string) => {
+  ipcMain.handle('jira:getIssueWorklogs', async (_event, issueKey: string, ownOnly?: boolean) => {
     const safeIssueKey = validateJiraIssueKey(issueKey)
     const worklogs = await fetchAllWorklogs(safeIssueKey)
+    if (ownOnly === true) {
+      const me = await jiraRequest('/rest/api/3/myself') as {accountId?: string}
+      if (!me.accountId) throw new Error('Jira could not identify the signed-in worklog author.')
+      return normalizeWorklogs(worklogs.filter(row => row.author?.accountId === me.accountId))
+    }
     return normalizeWorklogs(worklogs)
   })
 
@@ -2351,6 +2356,7 @@ export function registerJiraIpc() {
     const currentUser = (await jiraRequest('/rest/api/3/myself')) as {
       accountId?: string
     }
+    if (!currentUser.accountId) throw new Error('Jira could not identify the signed-in worklog author.')
     const results = await Promise.allSettled(
       PROJECT_KEYS.map(projectKey =>
         searchIssuesWithLimit(
@@ -2385,7 +2391,7 @@ export function registerJiraIpc() {
           const issueWorklogs = normalizeWorklogs(await fetchAllWorklogs(issueKey))
           worklogs.push(
             ...issueWorklogs
-              .filter(entry => !currentUser.accountId || entry.authorId === currentUser.accountId)
+              .filter(entry => entry.authorId === currentUser.accountId)
               .map(entry => ({ ...entry, issueKey }))
           )
         }
@@ -2480,6 +2486,7 @@ export function registerJiraIpc() {
       const ownsWorklog = Boolean(
         currentUser.accountId && worklog.author?.accountId === currentUser.accountId
       )
+      if (!ownsWorklog) throw new Error('The linked worklog is not owned by the signed-in Jira account. No worklog was deleted.')
       const canDeleteOwn = Boolean(
         permissionData.permissions?.DELETE_OWN_WORKLOGS?.havePermission
       )
@@ -2490,7 +2497,7 @@ export function registerJiraIpc() {
         const requiredPermission = ownsWorklog ? 'Delete Own Worklogs' : 'Delete All Worklogs'
         const displayName = currentUser.displayName?.trim() || 'The connected Jira user'
         throw new Error(
-          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}. Ask a Jira administrator to grant it in the ${issueKey.split('-')[0]} project permission scheme. The HRS report and gauge were not changed.`
+          `JIRA_WORKLOG_DELETE_PERMISSION_REQUIRED: ${displayName} does not have "${requiredPermission}" permission for ${issueKey}.`
         )
       }
       await jiraRequest(

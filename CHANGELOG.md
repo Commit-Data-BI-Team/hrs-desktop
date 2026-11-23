@@ -2,6 +2,25 @@
 
 ## Unreleased
 
+## 1.0.22
+
+### Meeting access and calendar import
+
+- Editing the meetings password keeps the form open. Credentials are saved only on **Save credentials**; saving is no longer shown as a successful Microsoft sign-in. Leading and trailing password characters are preserved.
+- A long subject, oversized attendee list or malformed event no longer prevents valid meetings from appearing. Calendar imports preserve Hebrew and convert UTC and supported Windows time-zone names to local time.
+- Calendar paging now retries brief throttling or service unavailability, rejects invalid or repeated continuation pages, and reports an incomplete fetch instead of displaying it as an empty calendar. Microsoft sign-in and Duo are unchanged.
+
+### Personal hours and shared totals
+
+- Personal reports use the employee ID assigned to the signed-in Supabase profile. No separate HRS employee-ID lookup is required. A missing mapping keeps sync pending; after an administrator fills it, retry without reporting the hours again in HRS or Jira.
+- Logging and editing sync the reporting day. Retries are scoped to the account and day; browsing a past month does not replay its reports. A whole-month reconciliation requires explicit confirmation.
+- Personal sync preserves rows owned by other uploaders. A duration-only administrative import is replaced in place only when a single authoritative HRS report matches; ambiguous records are left for review.
+- Single and bulk deletion remove the personal HRS report, its Supabase copy and any confirmed linked Jira worklog. A Jira refusal stops the HRS deletion; a pending Supabase repair can resume without deleting the Jira worklog or HRS day twice.
+
+### Tray
+
+- Opening the app or requesting a retired full-page view keeps HRS Desktop in the tray. The compact Jira Sprint Board stays available there.
+
 ## 1.0.21
 
 ### Project and shared-task hours

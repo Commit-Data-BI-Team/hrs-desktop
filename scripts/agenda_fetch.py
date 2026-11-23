@@ -1998,7 +1998,7 @@ def obtain_graph_token_via_browser() -> str:
         browser = "chrome"
     headless = os.getenv("AGENDA_HEADLESS", "").strip().lower() in {"1", "true", "yes"}
     username = os.getenv("MS_USERNAME", "").strip()
-    password = os.getenv("MS_PASSWORD", "").strip()
+    password = os.getenv("MS_PASSWORD", "")
     duo_clicked = False
 
     log(f"Opening {browser.title()} for Microsoft Graph authentication.")

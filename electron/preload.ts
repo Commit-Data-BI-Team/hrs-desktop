@@ -11,11 +11,11 @@ contextBridge.exposeInMainWorld('hrs', {
   clearCredentials: () => ipcRenderer.invoke('hrs:clearCredentials'),
   autoLogin: () => ipcRenderer.invoke('hrs:autoLogin'),
   checkSession: () => ipcRenderer.invoke('hrs:checkSession'),
-  getWorkLogs: (date?: string) => ipcRenderer.invoke('hrs:getWorkLogs', date),
-  getReports: (startDate: string, endDate: string) =>
-    ipcRenderer.invoke('hrs:getReports', startDate, endDate),
+  getWorkLogs: (date?: string, fresh = false) => ipcRenderer.invoke('hrs:getWorkLogs', date, fresh),
+  getReports: (startDate: string, endDate: string, fresh = false) =>
+    ipcRenderer.invoke('hrs:getReports', startDate, endDate, fresh),
   getEmployees: () => ipcRenderer.invoke('hrs:getEmployees'),
-  getHrsIdentity: () => ipcRenderer.invoke('hrs:getIdentity'),
+  getHrsIdentity: (fresh = false) => ipcRenderer.invoke('hrs:getIdentity', fresh),
   getEmployeeHoursReport: (payload: unknown) =>
     ipcRenderer.invoke('hrs:getEmployeeHoursReport', payload),
   logWork: (payload: unknown) => ipcRenderer.invoke('hrs:logWork', payload),
@@ -77,8 +77,8 @@ contextBridge.exposeInMainWorld('hrs', {
     ipcRenderer.invoke('jira:getEpicDebug', epicKey),
   getJiraWorkItemDetails: (epicKey: string, forceRefresh?: boolean) =>
     ipcRenderer.invoke('jira:getWorkItemDetails', epicKey, forceRefresh),
-  getJiraIssueWorklogs: (issueKey: string) =>
-    ipcRenderer.invoke('jira:getIssueWorklogs', issueKey),
+  getJiraIssueWorklogs: (issueKey: string, ownOnly = false) =>
+    ipcRenderer.invoke('jira:getIssueWorklogs', issueKey, ownOnly),
   findJiraWorklogsForDate: (date: string) =>
     ipcRenderer.invoke('jira:findWorklogsForDate', date),
   createJiraIssue: (payload: {
@@ -107,10 +107,8 @@ contextBridge.exposeInMainWorld('hrs', {
   resendSupabaseConfirmation: (email: string) =>
     ipcRenderer.invoke('supabase:resendConfirmation', email),
   signOutSupabase: () => ipcRenderer.invoke('supabase:signOut'),
-  claimSupabaseManager: (payload: { displayName?: string; employeeId?: string | number | null }) =>
+  claimSupabaseManager: (payload: { expectedProfileId: string; displayName?: string; employeeId: number }) =>
     ipcRenderer.invoke('supabase:claimManager', payload),
-  updateSupabaseProfile: (payload: { displayName?: string; employeeId?: string | number | null }) =>
-    ipcRenderer.invoke('supabase:updateProfile', payload),
   getSupabaseWorkReports: (startDate: string, endDate: string) =>
     ipcRenderer.invoke('supabase:getWorkReports', startDate, endDate),
   getIsraeliHolidays: (month: string) => ipcRenderer.invoke('holidays:getIsraeli', month),
@@ -131,6 +129,8 @@ contextBridge.exposeInMainWorld('hrs', {
     startDate: string
     endDate: string
     employeeId?: string | number | null
+    expectedProfileId: string
+    coveredDates: string[]
     rows: unknown[]
   }) => ipcRenderer.invoke('supabase:syncWorkReports', payload),
   getProjectManagementConfig: () => ipcRenderer.invoke('pm:getConfig'),

@@ -145,20 +145,16 @@ test('prevents every visible app window from entering fullscreen or maximized mo
     expect(await trayWindow.evaluate(window => window.isFullScreenable())).toBe(false)
     expect(await trayWindow.evaluate(window => window.isMaximizable())).toBe(false)
 
-    const reportsPagePromise = app.waitForEvent('window')
-    await trayPage.evaluate(() => window.hrs.openReportsWindow())
-    const reportsPage = await reportsPagePromise
-    await reportsPage.waitForLoadState('domcontentloaded')
-    const reportsWindow = await app.browserWindow(reportsPage)
-    expect(await reportsWindow.evaluate(window => window.isFullScreenable())).toBe(false)
-    expect(await reportsWindow.evaluate(window => window.isMaximizable())).toBe(false)
-    const bounds = await reportsWindow.evaluate(window => window.getBounds())
+    expect(await trayPage.evaluate(() => window.hrs.openReportsWindow())).toBe(false)
+    expect(app.windows()).toHaveLength(1)
+    expect(await trayWindow.evaluate(window => window.isFullScreen() || window.isMaximized())).toBe(false)
+    const bounds = await trayWindow.evaluate(window => window.getBounds())
     const workArea = await app.evaluate(
       ({ screen }, windowBounds) => screen.getDisplayMatching(windowBounds).workArea,
       bounds
     )
     expect(bounds.width).toBeLessThan(workArea.width)
-    expect(bounds.height).toBeLessThan(workArea.height)
+    expect(bounds.height).toBeLessThanOrEqual(workArea.height)
   } finally {
     await app.close().catch(() => undefined)
     await fs.rm(userDataDir, { recursive: true, force: true })

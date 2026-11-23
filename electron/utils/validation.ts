@@ -168,9 +168,15 @@ export function validateExactObject<T extends Record<string, unknown>>(
   return obj as T
 }
 
-/**
- * Validate nullable/optional string field.
- */
+export function validateCalendarPassword(value: unknown): string {
+  // A password is opaque; trimming it would change a valid Microsoft credential.
+  if (typeof value !== 'string' || value.length > 300 || value.includes('\0')) {
+    throw new Error('Invalid meeting password')
+  }
+  return value
+}
+
+/** Validate a nullable/optional non-secret string field. */
 export function validateOptionalString(
   value: unknown,
   options: { min?: number; max?: number; allowNull?: boolean } = {}

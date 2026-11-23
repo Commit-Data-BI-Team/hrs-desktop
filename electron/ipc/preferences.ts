@@ -1,5 +1,7 @@
 import { ipcMain } from 'electron'
+import { validPendingScope } from '../../src/reportSyncScope'
 import {
+  validateCalendarPassword,
   validateDate,
   validateEnum,
   validateExactObject,
@@ -140,9 +142,13 @@ function validatePreferencesPatch(payload: unknown) {
         out[key] = value === null ? null : validateStringLength(value, 1, 64)
         break
       case 'jiraBudgetTitle':
-      case 'meetingsUsername':
-      case 'meetingsPassword':
         out[key] = validateStringLength(value, 0, 500)
+        break
+      case 'meetingsUsername':
+        out[key] = validateStringLength(value, 0, 200)
+        break
+      case 'meetingsPassword':
+        out[key] = validateCalendarPassword(value)
         break
       case 'meetingsBrowser':
         out[key] = validateEnum(value, ['safari', 'chrome'] as const)
@@ -431,7 +437,8 @@ function validateJiraEntriesPayload(payload: unknown) {
       ['issueKey', 'loggedAt', 'worklogId'],
       'jira logged entry'
     )
-    out[validateStringLength(entryKey, 1, 260)] = {
+    // Legacy keys include the HRS comment and project label, not just a Jira ID.
+    out[validateStringLength(entryKey, 1, 8192)] = {
       issueKey: validateStringLength(safe.issueKey, 1, 64),
       loggedAt: validateStringLength(safe.loggedAt, 1, 64),
       worklogId: validateOptionalString(safe.worklogId, { min: 1, max: 64 }) ?? undefined
@@ -563,13 +570,13 @@ export function registerPreferencesIpc() {
   ipcMain.handle('app:getPendingReportSyncMonths', async () => getPendingReportSyncMonths())
 
   ipcMain.handle('app:setPendingReportSyncMonths', async (_event, months: unknown) => {
-    if (!Array.isArray(months) || months.length > 120) {
+    if (!Array.isArray(months) || months.length > 4096) {
       throw new Error('Invalid pending report sync months.')
     }
     return setPendingReportSyncMonths(
       months.map(month => {
-        const value = validateStringLength(month, 7, 7)
-        if (!/^\d{4}-\d{2}$/.test(value)) throw new Error('Invalid report sync month.')
+        const value = validateStringLength(month, 7, 150)
+        if (!validPendingScope(value)) throw new Error('Invalid report sync scope.')
         return value
       })
     )
